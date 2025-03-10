@@ -187,7 +187,7 @@ func TestMapOf(t *testing.T) {
         return true
     })
     
-    // need >= go 1.23
+    // need go >= 1.23
     for k, v := range m.Range {
         t.Log(k, v)
     }
