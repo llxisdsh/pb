@@ -223,8 +223,6 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 		o(c)
 	}
 	m.resizeCond = *sync.NewCond(&m.resizeMu)
-	// Directly using the built-in hash is already sufficiently excellent and faster than runtime.typehash
-	// m.keyHash, m.valEqual = defaultHasher[K, V]()
 	m.keyHash, m.valEqual = defaultHasherByBuiltIn[K, V]()
 	if keyHash != nil {
 		m.keyHash = func(pointer unsafe.Pointer, u uintptr) uintptr {
@@ -264,22 +262,16 @@ func (m *MapOf[K, V]) initSlow() (table *mapOfTable[K, V]) {
 	return table
 }
 
-// Load Compatible with `sync.Map`
+// Load compatible with `sync.Map`
 func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
 		return
 	}
+	// Inline findEntry
 	hash := uint64(m.keyHash(noescape(unsafe.Pointer(&key)), uintptr(table.seed)))
-	e := m.findEntry(table, hash, key)
-	if e != nil {
-		return e.Value, true
-	}
-	return
-}
-
-func (m *MapOf[K, V]) findEntry(table *mapOfTable[K, V], hash uint64, key K) *EntryOf[K, V] {
-	h2w := broadcast(h2(hash))
+	h2val := h2(hash)
+	h2w := broadcast(h2val)
 	bidx := uint64(len(table.buckets)-1) & h1(hash)
 	for b := &table.buckets[bidx]; b != nil; b = (*bucketOfPadded)(atomic.LoadPointer(&b.next)) {
 		metaw := atomic.LoadUint64(&b.meta)
@@ -287,17 +279,18 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable[K, V], hash uint64, key K) *En
 		for markedw != 0 {
 			idx := firstMarkedByteIndex(markedw)
 			if eptr := atomic.LoadPointer(&b.entries[idx]); eptr != nil {
-				if e := (*EntryOf[K, V])(eptr); e.Key == key {
-					return e
+				e := (*EntryOf[K, V])(eptr)
+				if e.Key == key {
+					return e.Value, true
 				}
 			}
 			markedw &= markedw - 1
 		}
 	}
-	return nil
+	return
 }
 
-// Store Compatible with `sync.Map`
+// Store compatible with `sync.Map`
 func (m *MapOf[K, V]) Store(key K, value V) {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -307,7 +300,7 @@ func (m *MapOf[K, V]) Store(key K, value V) {
 	m.mockSyncMap(table, hash, key, nil, &value, false)
 }
 
-// Swap Compatible with `sync.Map`
+// Swap compatible with `sync.Map`
 func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -317,7 +310,7 @@ func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 	return m.mockSyncMap(table, hash, key, nil, &value, false)
 }
 
-// LoadOrStore Compatible with `sync.Map`
+// LoadOrStore compatible with `sync.Map`
 func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -332,7 +325,7 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	return m.mockSyncMap(table, hash, key, nil, &value, true)
 }
 
-// Delete Compatible with `sync.Map`
+// Delete compatible with `sync.Map`
 func (m *MapOf[K, V]) Delete(key K) {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -342,7 +335,7 @@ func (m *MapOf[K, V]) Delete(key K) {
 	m.mockSyncMap(table, hash, key, nil, nil, false)
 }
 
-// LoadAndDelete Compatible with `sync.Map`
+// LoadAndDelete compatible with `sync.Map`
 func (m *MapOf[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -352,7 +345,7 @@ func (m *MapOf[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 	return m.mockSyncMap(table, hash, key, nil, nil, false)
 }
 
-// CompareAndSwap Compatible with `sync.Map`
+// CompareAndSwap compatible with `sync.Map`
 func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -366,7 +359,7 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 	return
 }
 
-// CompareAndDelete Compatible with `sync.Map`
+// CompareAndDelete compatible with `sync.Map`
 func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -419,7 +412,7 @@ func (m *MapOf[K, V]) mockSyncMap(
 	)
 }
 
-// LoadAndStore Compatible with `xsync.MapOf`.
+// LoadAndStore compatible with `xsync.MapOf`.
 func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -436,7 +429,7 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 	)
 }
 
-// LoadOrCompute Compatible with `xsync.MapOf`.
+// LoadOrCompute compatible with `xsync.MapOf`.
 func (m *MapOf[K, V]) LoadOrCompute(key K, valueFn func() V) (actual V, loaded bool) {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -468,7 +461,7 @@ func (m *MapOf[K, V]) LoadOrCompute(key K, valueFn func() V) (actual V, loaded b
 	)
 }
 
-// LoadOrTryCompute Compatible with `xsync.MapOf`.
+// LoadOrTryCompute compatible with `xsync.MapOf`.
 func (m *MapOf[K, V]) LoadOrTryCompute(
 	key K,
 	valueFn func() (newValue V, cancel bool),
@@ -510,7 +503,7 @@ func (m *MapOf[K, V]) LoadOrTryCompute(
 	)
 }
 
-// Compute Compatible with `xsync.MapOf`.
+// Compute compatible with `xsync.MapOf`.
 func (m *MapOf[K, V]) Compute(
 	key K,
 	valueFn func(oldValue V, loaded bool) (newValue V, delete bool),
@@ -602,6 +595,27 @@ func (m *MapOf[K, V]) ProcessEntry(
 	return m.processEntry(table, hash, key, fn)
 }
 
+func (m *MapOf[K, V]) findEntry(table *mapOfTable[K, V], hash uint64, key K) *EntryOf[K, V] {
+	h2val := h2(hash)
+	h2w := broadcast(h2val)
+	bidx := uint64(len(table.buckets)-1) & h1(hash)
+	for b := &table.buckets[bidx]; b != nil; b = (*bucketOfPadded)(atomic.LoadPointer(&b.next)) {
+		metaw := atomic.LoadUint64(&b.meta)
+		markedw := markZeroBytes(metaw^h2w) & metaMask
+		for markedw != 0 {
+			idx := firstMarkedByteIndex(markedw)
+			if eptr := atomic.LoadPointer(&b.entries[idx]); eptr != nil {
+				e := (*EntryOf[K, V])(eptr)
+				if e.Key == key {
+					return e
+				}
+			}
+			markedw &= markedw - 1
+		}
+	}
+	return nil
+}
+
 func (m *MapOf[K, V]) processEntry(
 	table *mapOfTable[K, V],
 	hash uint64,
@@ -610,14 +624,14 @@ func (m *MapOf[K, V]) processEntry(
 ) (V, bool) {
 
 	for {
-		h2 := h2(hash)
-		h2w := broadcast(h2)
+		h2val := h2(hash)
+		h2w := broadcast(h2val)
 		bidx := uint64(len(table.buckets)-1) & h1(hash)
 		rootb := &table.buckets[bidx]
 		rootb.mu.Lock()
 
 		// Check if a resize is needed.
-		if m.resizeInProgress() {
+		if atomic.LoadInt64(&m.resizing) == 1 {
 			rootb.mu.Unlock()
 			m.waitForResize()
 			table = (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
@@ -650,7 +664,8 @@ func (m *MapOf[K, V]) processEntry(
 				}
 			}
 
-			for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
+			markedw := markZeroBytes(metaw^h2w) & metaMask
+			for markedw != 0 {
 				idx := firstMarkedByteIndex(markedw)
 				if eptr := b.entries[idx]; eptr != nil {
 					e := (*EntryOf[K, V])(eptr)
@@ -679,6 +694,7 @@ func (m *MapOf[K, V]) processEntry(
 						return result, ok
 					}
 				}
+				markedw &= markedw - 1
 			}
 		}
 
@@ -692,7 +708,7 @@ func (m *MapOf[K, V]) processEntry(
 
 		// Insert into empty slot
 		if emptyb != nil {
-			atomic.StoreUint64(&emptyb.meta, setByte(emptyb.meta, h2, emptyidx))
+			atomic.StoreUint64(&emptyb.meta, setByte(emptyb.meta, h2val, emptyidx))
 			atomic.StorePointer(&emptyb.entries[emptyidx], unsafe.Pointer(newe))
 			rootb.mu.Unlock()
 			table.addSize(bidx, 1)
@@ -710,7 +726,7 @@ func (m *MapOf[K, V]) processEntry(
 		// Create new bucket and insert
 		atomic.StorePointer(&lastBucket.next, unsafe.Pointer(&bucketOfPadded{
 			bucketOf: bucketOf{
-				meta:    setByte(defaultMeta, h2, 0),
+				meta:    setByte(defaultMeta, h2val, 0),
 				entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newe)},
 			},
 		}))
@@ -720,13 +736,9 @@ func (m *MapOf[K, V]) processEntry(
 	}
 }
 
-func (m *MapOf[K, V]) resizeInProgress() bool {
-	return atomic.LoadInt64(&m.resizing) == 1
-}
-
 func (m *MapOf[K, V]) waitForResize() {
 	m.resizeMu.Lock()
-	for m.resizeInProgress() {
+	for atomic.LoadInt64(&m.resizing) == 1 {
 		m.resizeCond.Wait()
 	}
 	m.resizeMu.Unlock()
@@ -817,19 +829,7 @@ func copyBucketOf[K comparable, V any](
 	}
 }
 
-// Range calls f sequentially for each key and value present in the
-// map. If f returns false, range stops the iteration.
-//
-// Range does not necessarily correspond to any consistent snapshot
-// of the Map's contents: no key will be visited more than once, but
-// if the value for any key is stored or deleted concurrently, Range
-// may reflect any mapping for that key from any point during the
-// Range call.
-//
-// It is safe to modify the map while iterating it, including entry
-// creation, modification and deletion. However, the concurrent
-// modification rule apply, i.e. the changes may be not reflected
-// in the subsequently iterated entries.
+// Range compatible with `sync.Map`.
 func (m *MapOf[K, V]) Range(f func(key K, value V) bool) {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -870,12 +870,7 @@ func (m *MapOf[K, V]) Range(f func(key K, value V) bool) {
 	}
 }
 
-// need go >= 1.23
-//func (m *MapOf[K, V]) All() iter.Seq2[K, V] {
-//	return m.Range
-//}
-
-// Clear Compatible with `sync.Map`
+// Clear compatible with `sync.Map`
 func (m *MapOf[K, V]) Clear() {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -884,7 +879,7 @@ func (m *MapOf[K, V]) Clear() {
 	m.resize(table, mapClearHint)
 }
 
-// Size Compatible with `xsync.MapOf`
+// Size compatible with `xsync.MapOf`
 func (m *MapOf[K, V]) Size() int {
 	table := (*mapOfTable[K, V])(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -1179,7 +1174,6 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 	return unsafe.Pointer(x ^ 0)
 }
 
-// ------------------------------------------------------------------------
 func defaultHasherByBuiltIn[K comparable, V any]() (keyHash hashFunc, valEqual equalFunc) {
 	var m map[K]V
 	mapType := iTypeOf(m).MapType()
