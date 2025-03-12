@@ -60,7 +60,7 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 	if size != 64 {
 		t.Fatalf("size of 64B (one cache line) is expected, got: %d", size)
 	}
-	tabsize := unsafe.Sizeof(mapOfTable[string, int]{})
+	tabsize := unsafe.Sizeof(mapOfTable{})
 	t.Log("mapOfTable size:", tabsize)
 	if tabsize%cacheLineSize != 0 {
 		t.Fatalf("size of 64B (one cache line) is expected mapOfTable, got: %d", tabsize)
