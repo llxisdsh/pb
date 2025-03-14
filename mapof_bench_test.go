@@ -1,7 +1,3 @@
-// Copyright 2024 The Go Authors. All rights reserved.
-// Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
-
 package pb
 
 import (
@@ -86,6 +82,27 @@ func benchmarkMapOfLoadOrStoreFn(b *testing.B, data []string) {
 	})
 }
 
+func BenchmarkMapOfStore(b *testing.B) {
+	benchmarkMapOfStore(b, testData[:])
+}
+func BenchmarkMapOfStoreLarge(b *testing.B) {
+	benchmarkMapOfStore(b, testDataLarge[:])
+}
+func benchmarkMapOfStore(b *testing.B, data []string) {
+	b.ReportAllocs()
+	var m MapOf[string, int]
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		i := 0
+		for pb.Next() {
+			m.Store(data[i], i)
+			i++
+			if i >= len(data) {
+				i = 0
+			}
+		}
+	})
+}
 func BenchmarkMapOfLoadOrStoreInt(b *testing.B) {
 	benchmarkMapOfLoadOrStoreInt(b, testDataInt[:])
 }

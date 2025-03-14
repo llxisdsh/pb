@@ -849,6 +849,11 @@ func appendToBucketOf(h2 uint8, entryPtr unsafe.Pointer, b *bucketOfPadded) {
 	}
 }
 
+// All compatible with `sync.Map`.
+func (ht *MapOf[K, V]) All() func(yield func(K, V) bool) {
+	return ht.Range
+}
+
 // Range compatible with `sync.Map`.
 func (m *MapOf[K, V]) Range(f func(key K, value V) bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))

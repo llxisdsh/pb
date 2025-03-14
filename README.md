@@ -195,6 +195,16 @@ func TestMapOf(t *testing.T) {
 
 ```
 
+# pb.HashTrieMap
+The HashTrieMap is an optimization of the built-in HashTrieMap.
+- Supports lazy value generation with LoadOrCompute
+- Faster than the built-in HashTrieMap by more than 50%
+- All tests passed
+
+The optimization for the built-in HashTrieMap is:
+- Remove inited field, use root instead
+- Lazy initialization, only init on write, and use the resulting root for subsequent logic to reduce atomic calls
+
 
 ## License
 
