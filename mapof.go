@@ -273,7 +273,8 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	h2val := h2(hash)
 	h2w := broadcast(h2val)
 	bidx := uint64(len(table.buckets)-1) & h1(hash)
-	for b := &table.buckets[bidx]; b != nil; b = (*bucketOfPadded)(atomic.LoadPointer(&b.next)) {
+	b := &table.buckets[bidx]
+	for {
 		metaw := atomic.LoadUint64(&b.meta)
 		markedw := markZeroBytes(metaw^h2w) & metaMask
 		for markedw != 0 {
@@ -286,8 +287,10 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 			}
 			markedw &= markedw - 1
 		}
+		if b = (*bucketOfPadded)(atomic.LoadPointer(&b.next)); b == nil {
+			return
+		}
 	}
-	return
 }
 
 // Store compatible with `sync.Map`
@@ -599,7 +602,8 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uint64, key K) *EntryOf[
 	h2val := h2(hash)
 	h2w := broadcast(h2val)
 	bidx := uint64(len(table.buckets)-1) & h1(hash)
-	for b := &table.buckets[bidx]; b != nil; b = (*bucketOfPadded)(atomic.LoadPointer(&b.next)) {
+	b := &table.buckets[bidx]
+	for {
 		metaw := atomic.LoadUint64(&b.meta)
 		markedw := markZeroBytes(metaw^h2w) & metaMask
 		for markedw != 0 {
@@ -612,8 +616,10 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uint64, key K) *EntryOf[
 			}
 			markedw &= markedw - 1
 		}
+		if b = (*bucketOfPadded)(atomic.LoadPointer(&b.next)); b == nil {
+			return nil
+		}
 	}
-	return nil
 }
 
 func (m *MapOf[K, V]) processEntry(
@@ -652,7 +658,8 @@ func (m *MapOf[K, V]) processEntry(
 		var emptyidx int
 		// If no empty slot is found, use the last slot
 		var lastBucket *bucketOfPadded
-		for b := rootb; b != nil; b = (*bucketOfPadded)(b.next) {
+		b := rootb
+		for {
 			lastBucket = b
 			metaw := b.meta
 
@@ -695,6 +702,10 @@ func (m *MapOf[K, V]) processEntry(
 					}
 				}
 				markedw &= markedw - 1
+			}
+
+			if b = (*bucketOfPadded)(b.next); b == nil {
+				break
 			}
 		}
 
@@ -746,10 +757,12 @@ func (m *MapOf[K, V]) waitForResize() {
 
 func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfTable {
 	knownTableLen := len(knownTable.buckets)
+	minTableLen := m.minTableLen
+	growOnly := m.growOnly
 	// Fast path for shrink attempts.
 	if hint == mapShrinkHint {
-		if m.growOnly ||
-			m.minTableLen == knownTableLen ||
+		if growOnly ||
+			minTableLen == knownTableLen ||
 			knownTable.sumSize() > int64((knownTableLen*entriesPerMapOfBucket)/mapShrinkFraction) {
 			return knownTable
 		}
@@ -770,7 +783,7 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 		newTable = newMapOfTable[K, V](tableLen << 1)
 	case mapShrinkHint:
 		shrinkThreshold := int64((tableLen * entriesPerMapOfBucket) / mapShrinkFraction)
-		if tableLen > m.minTableLen && table.sumSize() <= shrinkThreshold {
+		if tableLen > minTableLen && table.sumSize() <= shrinkThreshold {
 			// Shrink the table with factor of 2.
 			atomic.AddInt64(&m.totalShrinks, 1)
 			newTable = newMapOfTable[K, V](tableLen >> 1)
@@ -783,7 +796,7 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 			return table
 		}
 	case mapClearHint:
-		newTable = newMapOfTable[K, V](m.minTableLen)
+		newTable = newMapOfTable[K, V](minTableLen)
 	default:
 		panic(fmt.Sprintf("unexpected resize hint: %d", hint))
 	}
@@ -804,11 +817,11 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 }
 
 func copyBucketOf[K comparable, V any](
-	b *bucketOfPadded,
+	rootb *bucketOfPadded,
 	destTable *mapOfTable,
 	hasher hashFunc,
 ) (copied int) {
-	rootb := b
+	b := rootb
 	rootb.mu.Lock()
 	for {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
@@ -821,11 +834,10 @@ func copyBucketOf[K comparable, V any](
 				copied++
 			}
 		}
-		if b.next == nil {
+		if b = (*bucketOfPadded)(b.next); b == nil {
 			rootb.mu.Unlock()
 			return
 		}
-		b = (*bucketOfPadded)(b.next)
 	}
 }
 
