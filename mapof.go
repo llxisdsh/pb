@@ -93,19 +93,14 @@ const (
 // lookups).
 type MapOf[K comparable, V any] struct {
 	// Sort fields by access frequency.
-	// CacheLine 1
 	table        unsafe.Pointer // *mapOfTable
 	keyHash      hashFunc
-	resizing     int64 // resize in progress flag; updated atomically
+	valEqual     equalFunc
+	resizeWg     unsafe.Pointer // *sync.WaitGroup
 	growOnly     bool
 	minTableLen  int
-	resizeMu     sync.Mutex // only used along with resizeCond
 	totalGrowths int64
 	totalShrinks int64
-
-	// CacheLine 2
-	resizeCond sync.Cond // used to wake up resize waiters (concurrent modifications)
-	valEqual   equalFunc
 }
 
 type mapOfTable struct {
@@ -222,7 +217,6 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 	for _, o := range options {
 		o(c)
 	}
-	m.resizeCond = *sync.NewCond(&m.resizeMu)
 	m.keyHash, m.valEqual = defaultHasherByBuiltIn[K, V]()
 	if keyHash != nil {
 		m.keyHash = func(pointer unsafe.Pointer, u uintptr) uintptr {
@@ -251,14 +245,38 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 //
 //go:noinline
 func (m *MapOf[K, V]) initSlow() (table *mapOfTable) {
-	m.resizeMu.Lock()
+	// Use CAS operation instead of mutex
+	// Create a temporary WaitGroup for initialization synchronization
+	wg := new(sync.WaitGroup)
+	wg.Add(1)
+
+	// Try to set resizeWg, if successful it means we've acquired the "lock"
+	if !atomic.CompareAndSwapPointer(&m.resizeWg, nil, unsafe.Pointer(wg)) {
+		// Another thread is initializing, wait for it to complete
+		wg = (*sync.WaitGroup)(atomic.LoadPointer(&m.resizeWg))
+		if wg != nil {
+			wg.Wait()
+		}
+
+		// Now the table should be initialized
+		return (*mapOfTable)(atomic.LoadPointer(&m.table))
+	}
+
+	// We've acquired the "lock", perform initialization
+	// Ensure the "lock" is released when the function returns
+	defer func() {
+		atomic.StorePointer(&m.resizeWg, nil)
+		wg.Done()
+	}()
+
+	// Check again if the table has been initialized by another thread
 	if table = (*mapOfTable)(atomic.LoadPointer(&m.table)); table != nil {
-		m.resizeMu.Unlock()
 		return table
 	}
+
+	// Perform initialization
 	table = m.init(nil, nil)
 	atomic.StorePointer(&m.table, unsafe.Pointer(table))
-	m.resizeMu.Unlock()
 	return table
 }
 
@@ -637,15 +655,22 @@ func (m *MapOf[K, V]) processEntry(
 		rootb.mu.Lock()
 
 		// Check if a resize is needed.
-		if atomic.LoadInt64(&m.resizing) == 1 {
+		// This is the first check, checking if there is a resize operation in progress
+		// before acquiring the bucket lock
+		if wg := (*sync.WaitGroup)(atomic.LoadPointer(&m.resizeWg)); wg != nil {
 			rootb.mu.Unlock()
-			m.waitForResize()
+			// Wait for the current resize operation to complete
+			wg.Wait()
 			table = (*mapOfTable)(atomic.LoadPointer(&m.table))
 			hash = uint64(m.keyHash(noescape(unsafe.Pointer(&key)), uintptr(table.seed)))
 			continue
 		}
 
 		// Check if the table has changed.
+		// This is the second check, checking if the table has been replaced by another
+		// thread after acquiring the bucket lock
+		// This is necessary because another thread may have completed a resize operation
+		// between the first check and acquiring the bucket lock
 		if newTable := (*mapOfTable)(atomic.LoadPointer(&m.table)); table != newTable {
 			rootb.mu.Unlock()
 			table = newTable
@@ -747,14 +772,6 @@ func (m *MapOf[K, V]) processEntry(
 	}
 }
 
-func (m *MapOf[K, V]) waitForResize() {
-	m.resizeMu.Lock()
-	for atomic.LoadInt64(&m.resizing) == 1 {
-		m.resizeCond.Wait()
-	}
-	m.resizeMu.Unlock()
-}
-
 func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfTable {
 	knownTableLen := len(knownTable.buckets)
 	minTableLen := m.minTableLen
@@ -767,12 +784,27 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 			return knownTable
 		}
 	}
+
 	// Slow path.
-	if !atomic.CompareAndSwapInt64(&m.resizing, 0, 1) {
+	// Create a new WaitGroup for the current resize operation
+	wg := new(sync.WaitGroup)
+	wg.Add(1)
+
+	// Try to set resizeWg, if successful it means we've acquired the "lock"
+	if !atomic.CompareAndSwapPointer(&m.resizeWg, nil, unsafe.Pointer(wg)) {
 		// Someone else started resize. Wait for it to finish.
-		m.waitForResize()
+		if wg = (*sync.WaitGroup)(atomic.LoadPointer(&m.resizeWg)); wg != nil {
+			wg.Wait()
+		}
 		return (*mapOfTable)(atomic.LoadPointer(&m.table))
 	}
+
+	// Ensure that the WaitGroup count is decreased and the pointer is cleared when the function returns
+	defer func() {
+		atomic.StorePointer(&m.resizeWg, nil)
+		wg.Done()
+	}()
+
 	var newTable *mapOfTable
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	tableLen := len(table.buckets)
@@ -789,10 +821,6 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 			newTable = newMapOfTable[K, V](tableLen >> 1)
 		} else {
 			// No need to shrink. Wake up all waiters and give up.
-			m.resizeMu.Lock()
-			atomic.StoreInt64(&m.resizing, 0)
-			m.resizeCond.Broadcast()
-			m.resizeMu.Unlock()
 			return table
 		}
 	case mapClearHint:
@@ -809,10 +837,6 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 	}
 	// Publish the new table and wake up all waiters.
 	atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
-	m.resizeMu.Lock()
-	atomic.StoreInt64(&m.resizing, 0)
-	m.resizeCond.Broadcast()
-	m.resizeMu.Unlock()
 	return newTable
 }
 
@@ -862,8 +886,8 @@ func appendToBucketOf(h2 uint8, entryPtr unsafe.Pointer, b *bucketOfPadded) {
 }
 
 // All compatible with `sync.Map`.
-func (ht *MapOf[K, V]) All() func(yield func(K, V) bool) {
-	return ht.Range
+func (m *MapOf[K, V]) All() func(yield func(K, V) bool) {
+	return m.Range
 }
 
 // Range compatible with `sync.Map`.
