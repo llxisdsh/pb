@@ -55,8 +55,8 @@ type structKey struct {
 }
 
 func TestMap_BucketOfStructSize(t *testing.T) {
-	size := unsafe.Sizeof(bucketOfPadded{})
-	t.Log("bucketOfPadded size:", size)
+	size := unsafe.Sizeof(bucketOf{})
+	t.Log("bucketOf size:", size)
 	if size != 64 {
 		t.Fatalf("size of 64B (one cache line) is expected, got: %d", size)
 	}
@@ -72,9 +72,8 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 		t.Fatalf("size of 64B (one cache line) is expected mapsize, got: %d", tabsize)
 	}
 	structType := reflect.TypeOf(MapOf[string, int]{})
-	t.Logf("Struct: %s", structType.Name())
+	t.Logf("Struct MapOf: %s", structType.Name())
 
-	// 遍历结构体的每个字段
 	for i := 0; i < structType.NumField(); i++ {
 		field := structType.Field(i)
 		fieldName := field.Name
@@ -85,7 +84,19 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 		t.Logf("Field: %-10s Type: %-10s Offset: %d Size: %d bytes\n",
 			fieldName, fieldType, fieldOffset, fieldSize)
 	}
+	structType = reflect.TypeOf(mapOfTable{})
+	t.Logf("Struct mapOfTable: %s", structType.Name())
 
+	for i := 0; i < structType.NumField(); i++ {
+		field := structType.Field(i)
+		fieldName := field.Name
+		fieldType := field.Type
+		fieldOffset := field.Offset
+		fieldSize := fieldType.Size()
+
+		t.Logf("Field: %-10s Type: %-10s Offset: %d Size: %d bytes\n",
+			fieldName, fieldType, fieldOffset, fieldSize)
+	}
 }
 
 func TestMyMapOf(t *testing.T) {
@@ -871,7 +882,7 @@ func testAllMapOf[K, V comparable](t *testing.T, m *MapOf[K, V], testData map[K]
 		expectStoredMapOf(t, k, v)(m.LoadOrStore(k, v))
 	}
 	visited := make(map[K]int)
-	m.Range(func(key K, got V) bool {
+	m.All()(func(key K, got V) bool {
 		want, ok := testData[key]
 		if !ok {
 			t.Errorf("unexpected key %v in map", key)
@@ -1857,6 +1868,14 @@ func TestNewMapOfPresized_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	stats = m.Stats()
 	if stats.RootBuckets != minTableLen {
 		t.Fatalf("table length was different from the minimum: %d", stats.RootBuckets)
+	}
+}
+
+func TestNewMapOfWithPadding(t *testing.T) {
+	const minTableLen = 128
+	m := NewMapOf[int, int](WithPadding())
+	for i := 0; i < minTableLen*EntriesPerMapOfBucket; i++ {
+		m.LoadOrStore(i, i)
 	}
 }
 

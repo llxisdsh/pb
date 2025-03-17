@@ -58,13 +58,13 @@ func benchmarkMapOfLoadOrStore(b *testing.B, data []string) {
 	})
 }
 
-func BenchmarkMapOfLoadOrStoreFn(b *testing.B) {
-	benchmarkMapOfLoadOrStoreFn(b, testData[:])
+func BenchmarkMapOfLoadOrCompute(b *testing.B) {
+	benchmarkMapOfLoadOrCompute(b, testData[:])
 }
-func BenchmarkMapOfLoadOrStoreFnLarge(b *testing.B) {
-	benchmarkMapOfLoadOrStoreFn(b, testDataLarge[:])
+func BenchmarkMapOfLoadOrComputeLarge(b *testing.B) {
+	benchmarkMapOfLoadOrCompute(b, testDataLarge[:])
 }
-func benchmarkMapOfLoadOrStoreFn(b *testing.B, data []string) {
+func benchmarkMapOfLoadOrCompute(b *testing.B, data []string) {
 	b.ReportAllocs()
 	var m MapOf[string, int]
 	b.ResetTimer()
@@ -82,27 +82,29 @@ func benchmarkMapOfLoadOrStoreFn(b *testing.B, data []string) {
 	})
 }
 
-func BenchmarkMapOfStore(b *testing.B) {
-	benchmarkMapOfStore(b, testData[:])
-}
-func BenchmarkMapOfStoreLarge(b *testing.B) {
-	benchmarkMapOfStore(b, testDataLarge[:])
-}
-func benchmarkMapOfStore(b *testing.B, data []string) {
-	b.ReportAllocs()
-	var m MapOf[string, int]
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			m.Store(data[i], i)
-			i++
-			if i >= len(data) {
-				i = 0
-			}
-		}
-	})
-}
+//	func BenchmarkMapOfStore(b *testing.B) {
+//		benchmarkMapOfStore(b, testData[:])
+//	}
+//
+//	func BenchmarkMapOfStoreLarge(b *testing.B) {
+//		benchmarkMapOfStore(b, testDataLarge[:])
+//	}
+//
+//	func benchmarkMapOfStore(b *testing.B, data []string) {
+//		b.ReportAllocs()
+//		var m MapOf[string, int]
+//		b.ResetTimer()
+//		b.RunParallel(func(pb *testing.PB) {
+//			i := 0
+//			for pb.Next() {
+//				m.Store(data[i], i)
+//				i++
+//				if i >= len(data) {
+//					i = 0
+//				}
+//			}
+//		})
+//	}
 func BenchmarkMapOfLoadOrStoreInt(b *testing.B) {
 	benchmarkMapOfLoadOrStoreInt(b, testDataInt[:])
 }

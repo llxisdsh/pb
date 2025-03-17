@@ -19,7 +19,6 @@ func TestHashTrieMapStructSize(t *testing.T) {
 	structType := reflect.TypeOf(HashTrieMap[string, int]{})
 	t.Logf("Struct: %s", structType.Name())
 
-	// 遍历结构体的每个字段
 	for i := 0; i < structType.NumField(); i++ {
 		field := structType.Field(i)
 		fieldName := field.Name
@@ -34,7 +33,6 @@ func TestHashTrieMapStructSize(t *testing.T) {
 	size = unsafe.Sizeof(indirect[string, int]{})
 	t.Log("indirect[string,int] size:", size)
 	structType = reflect.TypeOf(indirect[string, int]{})
-	// 遍历结构体的每个字段
 	for i := 0; i < structType.NumField(); i++ {
 		field := structType.Field(i)
 		fieldName := field.Name
@@ -49,7 +47,6 @@ func TestHashTrieMapStructSize(t *testing.T) {
 	size = unsafe.Sizeof(entry[string, int]{})
 	t.Log("entry[string,int] size:", size)
 	structType = reflect.TypeOf(entry[string, int]{})
-	// 遍历结构体的每个字段
 	for i := 0; i < structType.NumField(); i++ {
 		field := structType.Field(i)
 		fieldName := field.Name

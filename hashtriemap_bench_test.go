@@ -37,15 +37,15 @@ func benchmarkHashTrieMapLoad(b *testing.B, data []string) {
 	})
 }
 
-func BenchmarkHashTrieMapLoadOrStore(b *testing.B) {
-	benchmarkHashTrieMapLoadOrStore(b, testData[:])
+func BenchmarkHashTrieMapLoadOrCompute(b *testing.B) {
+	benchmarkHashTrieMapLoadOrCompute(b, testData[:])
 }
 
-func BenchmarkHashTrieMapLoadOrStoreLarge(b *testing.B) {
-	benchmarkHashTrieMapLoadOrStore(b, testDataLarge[:])
+func BenchmarkHashTrieMapLoadOrComputeLarge(b *testing.B) {
+	benchmarkHashTrieMapLoadOrCompute(b, testDataLarge[:])
 }
 
-func benchmarkHashTrieMapLoadOrStore(b *testing.B, data []string) {
+func benchmarkHashTrieMapLoadOrCompute(b *testing.B, data []string) {
 	b.ReportAllocs()
 	var m HashTrieMap[string, int]
 	m.init()

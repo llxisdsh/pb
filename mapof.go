@@ -93,46 +93,56 @@ const (
 // lookups).
 type MapOf[K comparable, V any] struct {
 	// Sort fields by access frequency.
-	table        unsafe.Pointer // *mapOfTable
-	keyHash      hashFunc
-	valEqual     equalFunc
-	resizeWg     unsafe.Pointer // *sync.WaitGroup
-	growOnly     bool
-	minTableLen  int
-	totalGrowths int64
-	totalShrinks int64
+	table         unsafe.Pointer // *mapOfTable
+	keyHash       hashFunc
+	resizeWg      unsafe.Pointer // *sync.WaitGroup
+	valEqual      equalFunc
+	minTableLen   int
+	growOnly      bool
+	enablePadding bool
+	totalGrowths  int64
+	totalShrinks  int64
 }
 
 type mapOfTable struct {
 	// Sort fields by access frequency.
-	buckets []bucketOfPadded
+	buckets []bucketOf
 	// striped counter for number of table entries;
 	// used to determine if a table shrinking is needed
 	// occupies min(buckets_memory/1024, 64KB) of memory
 	size []counterStripe
 	seed uint64
-	pad  [(cacheLineSize - (unsafe.Sizeof([]bucketOfPadded{})+unsafe.Sizeof([]counterStripe{})+8)%cacheLineSize) % cacheLineSize]byte
-}
-type counterStripe struct {
-	c int64
-	// The pad field consumes too much memory.
 	//lint:ignore U1000 prevents false sharing
-	//pad [cacheLineSize - 8]byte
+	pad [(cacheLineSize - unsafe.Sizeof(struct {
+		buckets []bucketOf
+		size    []counterStripe
+		seed    uint64
+	}{})%cacheLineSize) % cacheLineSize]byte
 }
 
-// bucketOfPadded is a CL-sized map bucket holding up to
-// entriesPerMapOfBucket entries.
-type bucketOfPadded struct {
-	//lint:ignore U1000 ensure each bucket takes two cache lines on both 32 and 64-bit archs
-	pad [(cacheLineSize - unsafe.Sizeof(bucketOf{})%cacheLineSize) % cacheLineSize]byte
-	bucketOf
+type counterStripe struct {
+	c int64
+}
+
+type counterStripeWithPadding struct {
+	c int64
+	//lint:ignore U1000 prevents false sharing
+	pad [cacheLineSize - 8]byte
 }
 
 type bucketOf struct {
+	//lint:ignore U1000 prevents false sharing
+	pad [(cacheLineSize - unsafe.Sizeof(struct {
+		entries [entriesPerMapOfBucket]unsafe.Pointer
+		meta    uint64
+		next    unsafe.Pointer
+		mu      sync.Mutex
+	}{})%cacheLineSize) % cacheLineSize]byte
+
 	// Sort fields by access frequency.
 	entries [entriesPerMapOfBucket]unsafe.Pointer // *EntryOf
 	meta    uint64
-	next    unsafe.Pointer // *bucketOfPadded
+	next    unsafe.Pointer // *bucketOf
 	mu      sync.Mutex
 }
 
@@ -143,7 +153,12 @@ type EntryOf[K comparable, V any] struct {
 }
 
 // NewMapOf creates a new MapOf instance. Direct initialization is also supported.
-// options: WithPresize for initial capacity or WithGrowOnly to disable shrinking
+//
+// options:
+//
+//	WithPresize for initial capacity
+//	WithGrowOnly to disable shrinking
+//	WithPadding enables padding for fields such as size to avoid false sharing
 func NewMapOf[K comparable, V any](
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
@@ -154,11 +169,19 @@ func NewMapOf[K comparable, V any](
 //
 // # Allows custom key hashing (keyHash) and value equality (valEqual) functions for compare-and-swap operations
 //
-// keyHash: nil uses the built-in hasher
+// keyHash:
 //
-// valEqual: nil uses the built-in comparison, but if the value is not of a comparable type, using the Compare series of functions will cause a panic
+//	nil uses the built-in hasher
 //
-// options: WithPresize for initial capacity or WithGrowOnly to disable shrinking
+// valEqual:
+//
+//	nil uses the built-in comparison, but if the value is not of a comparable type, using the Compare series of functions will cause a panic
+//
+// options:
+//
+//	WithPresize for initial capacity
+//	WithGrowOnly to disable shrinking
+//	WithPadding enables padding for fields such as size to avoid false sharing
 func NewMapOfWithHasher[K comparable, V any](
 	keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
@@ -169,8 +192,8 @@ func NewMapOfWithHasher[K comparable, V any](
 	return m
 }
 
-func newMapOfTable[K comparable, V any](minTableLen int) *mapOfTable {
-	buckets := make([]bucketOfPadded, minTableLen)
+func newMapOfTable(minTableLen int, enablePadding bool) *mapOfTable {
+	buckets := make([]bucketOf, minTableLen)
 	for i := range buckets {
 		buckets[i].meta = defaultMeta
 	}
@@ -180,7 +203,15 @@ func newMapOfTable[K comparable, V any](minTableLen int) *mapOfTable {
 	} else if counterLen > maxMapCounterLen {
 		counterLen = maxMapCounterLen
 	}
-	counter := make([]counterStripe, counterLen)
+
+	var counter []counterStripe
+	if enablePadding {
+		paddedCounter := make([]counterStripeWithPadding, counterLen)
+		counter = unsafe.Slice((*counterStripe)(unsafe.Pointer(&paddedCounter[0])), counterLen)
+	} else {
+		counter = make([]counterStripe, counterLen)
+	}
+
 	t := &mapOfTable{
 		buckets: buckets,
 		size:    counter,
@@ -193,14 +224,21 @@ func newMapOfTable[K comparable, V any](minTableLen int) *mapOfTable {
 //
 // # Allows custom key hasher (keyHash) and value equality (valEqual) functions for compare-and-swap operations
 //
-// keyHash: nil uses the built-in hasher
+// This function is not thread-safe, Even if this Init is not called, the Map will still be initialized automatically.
 //
-// valEqual: nil uses the built-in comparison, but if the value is not of a comparable type, using the Compare series of functions will cause a panic
+// keyHash:
 //
-// options: WithPresize for initial capacity or WithGrowOnly to disable shrinking
+//	nil uses the built-in hasher
 //
-// This function is not thread-safe.
-// Even if this Init is not called, the Map will still be initialized automatically.
+// valEqual:
+//
+//	nil uses the built-in comparison, but if the value is not of a comparable type, using the Compare series of functions will cause a panic
+//
+// options:
+//
+//	WithPresize for initial capacity
+//	WithGrowOnly to disable shrinking
+//	WithPadding enables padding for fields such as size to avoid false sharing
 func (m *MapOf[K, V]) Init(keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
 	options ...func(*MapConfig)) {
@@ -211,6 +249,7 @@ func (m *MapOf[K, V]) Init(keyHash func(key K, seed uintptr) uintptr,
 func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
 	options ...func(*MapConfig)) (table *mapOfTable) {
+
 	c := &MapConfig{
 		sizeHint: defaultMinMapTableLen * entriesPerMapOfBucket,
 	}
@@ -234,18 +273,18 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 		tableLen = int(nextPowOf2(uint32((float64(c.sizeHint) / entriesPerMapOfBucket) / mapLoadFactor)))
 	}
 
-	table = newMapOfTable[K, V](tableLen)
+	table = newMapOfTable(tableLen, c.enablePadding)
+	m.table = unsafe.Pointer(table)
 	m.minTableLen = tableLen
 	m.growOnly = c.growOnly
-	m.table = unsafe.Pointer(table)
+	m.enablePadding = c.enablePadding
 	return
 }
 
-// initSlow will be called by multiple threads, so it needs to be synchronized with a lock
+// initSlow will be called by multiple threads, so it needs to be synchronized with a "lock"
 //
 //go:noinline
 func (m *MapOf[K, V]) initSlow() (table *mapOfTable) {
-	// Use CAS operation instead of mutex
 	// Create a temporary WaitGroup for initialization synchronization
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
@@ -305,7 +344,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 			}
 			markedw &= markedw - 1
 		}
-		if b = (*bucketOfPadded)(atomic.LoadPointer(&b.next)); b == nil {
+		if b = (*bucketOf)(atomic.LoadPointer(&b.next)); b == nil {
 			return
 		}
 	}
@@ -634,7 +673,7 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uint64, key K) *EntryOf[
 			}
 			markedw &= markedw - 1
 		}
-		if b = (*bucketOfPadded)(atomic.LoadPointer(&b.next)); b == nil {
+		if b = (*bucketOf)(atomic.LoadPointer(&b.next)); b == nil {
 			return nil
 		}
 	}
@@ -679,10 +718,10 @@ func (m *MapOf[K, V]) processEntry(
 		}
 
 		// Find an empty slot in advance
-		var emptyb *bucketOfPadded
+		var emptyb *bucketOf
 		var emptyidx int
 		// If no empty slot is found, use the last slot
-		var lastBucket *bucketOfPadded
+		var lastBucket *bucketOf
 		b := rootb
 		for {
 			lastBucket = b
@@ -729,7 +768,7 @@ func (m *MapOf[K, V]) processEntry(
 				markedw &= markedw - 1
 			}
 
-			if b = (*bucketOfPadded)(b.next); b == nil {
+			if b = (*bucketOf)(b.next); b == nil {
 				break
 			}
 		}
@@ -760,11 +799,9 @@ func (m *MapOf[K, V]) processEntry(
 		}
 
 		// Create new bucket and insert
-		atomic.StorePointer(&lastBucket.next, unsafe.Pointer(&bucketOfPadded{
-			bucketOf: bucketOf{
-				meta:    setByte(defaultMeta, h2val, 0),
-				entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newe)},
-			},
+		atomic.StorePointer(&lastBucket.next, unsafe.Pointer(&bucketOf{
+			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newe)},
+			meta:    setByte(defaultMeta, h2val, 0),
 		}))
 		rootb.mu.Unlock()
 		table.addSize(bidx, 1)
@@ -806,28 +843,31 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 	}()
 
 	var newTable *mapOfTable
+	var newTableLen int
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	tableLen := len(table.buckets)
 	switch hint {
 	case mapGrowHint:
 		// Grow the table with factor of 2.
+		newTableLen = tableLen << 1
 		atomic.AddInt64(&m.totalGrowths, 1)
-		newTable = newMapOfTable[K, V](tableLen << 1)
 	case mapShrinkHint:
 		shrinkThreshold := int64((tableLen * entriesPerMapOfBucket) / mapShrinkFraction)
-		if tableLen > minTableLen && table.sumSize() <= shrinkThreshold {
-			// Shrink the table with factor of 2.
-			atomic.AddInt64(&m.totalShrinks, 1)
-			newTable = newMapOfTable[K, V](tableLen >> 1)
-		} else {
+		if tableLen > minTableLen && table.sumSize() > shrinkThreshold {
 			// No need to shrink. Wake up all waiters and give up.
 			return table
 		}
+		// Shrink the table with factor of 2.
+		newTableLen = tableLen >> 1
+		atomic.AddInt64(&m.totalShrinks, 1)
 	case mapClearHint:
-		newTable = newMapOfTable[K, V](minTableLen)
+		newTableLen = minTableLen
 	default:
 		panic(fmt.Sprintf("unexpected resize hint: %d", hint))
 	}
+
+	newTable = newMapOfTable(newTableLen, m.enablePadding)
+
 	// Copy the data only if we're not clearing the map.
 	if hint != mapClearHint {
 		for i := 0; i < tableLen; i++ {
@@ -841,7 +881,7 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 }
 
 func copyBucketOf[K comparable, V any](
-	rootb *bucketOfPadded,
+	rootb *bucketOf,
 	destTable *mapOfTable,
 	hasher hashFunc,
 ) (copied int) {
@@ -858,14 +898,14 @@ func copyBucketOf[K comparable, V any](
 				copied++
 			}
 		}
-		if b = (*bucketOfPadded)(b.next); b == nil {
+		if b = (*bucketOf)(b.next); b == nil {
 			rootb.mu.Unlock()
 			return
 		}
 	}
 }
 
-func appendToBucketOf(h2 uint8, entryPtr unsafe.Pointer, b *bucketOfPadded) {
+func appendToBucketOf(h2 uint8, entryPtr unsafe.Pointer, b *bucketOf) {
 	for {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
 			if b.entries[i] == nil {
@@ -875,13 +915,13 @@ func appendToBucketOf(h2 uint8, entryPtr unsafe.Pointer, b *bucketOfPadded) {
 			}
 		}
 		if b.next == nil {
-			newb := new(bucketOfPadded)
-			newb.entries[0] = entryPtr
-			newb.meta = setByte(defaultMeta, h2, 0)
-			b.next = unsafe.Pointer(newb)
+			b.next = unsafe.Pointer(&bucketOf{
+				entries: [entriesPerMapOfBucket]unsafe.Pointer{entryPtr},
+				meta:    setByte(defaultMeta, h2, 0),
+			})
 			return
 		}
-		b = (*bucketOfPadded)(b.next)
+		b = (*bucketOf)(b.next)
 	}
 }
 
@@ -898,7 +938,11 @@ func (m *MapOf[K, V]) Range(f func(key K, value V) bool) {
 	}
 
 	// Pre-allocate array big enough to fit entries for most hash tables.
-	bentries := make([]unsafe.Pointer, 0, 16*entriesPerMapOfBucket)
+	var initialCap int
+	if len(table.buckets) > 0 {
+		initialCap = min(1024, len(table.buckets)*entriesPerMapOfBucket>>2)
+	}
+	entries := make([]unsafe.Pointer, 0, initialCap)
 	for i := range table.buckets {
 		rootb := &table.buckets[i]
 		b := rootb
@@ -908,26 +952,26 @@ func (m *MapOf[K, V]) Range(f func(key K, value V) bool) {
 		for {
 			for i := 0; i < entriesPerMapOfBucket; i++ {
 				if b.entries[i] != nil {
-					bentries = append(bentries, b.entries[i])
+					entries = append(entries, b.entries[i])
 				}
 			}
 			if b.next == nil {
 				rootb.mu.Unlock()
 				break
 			}
-			b = (*bucketOfPadded)(b.next)
+			b = (*bucketOf)(b.next)
 		}
 		// Call the function for all copied entries.
-		for j := range bentries {
-			entry := (*EntryOf[K, V])(bentries[j])
-			if !f(entry.Key, entry.Value) {
+		for j := range entries {
+			e := (*EntryOf[K, V])(entries[j])
+			if !f(e.Key, e.Value) {
 				return
 			}
 			// Remove the reference to avoid preventing the copied
 			// entries from being GCed until this method finishes.
-			bentries[j] = nil
+			entries[j] = nil
 		}
-		bentries = bentries[:0]
+		entries = entries[:0]
 	}
 }
 
@@ -1061,7 +1105,7 @@ func (m *MapOf[K, V]) Stats() MapStats {
 			if b.next == nil {
 				break
 			}
-			b = (*bucketOfPadded)(atomic.LoadPointer(&b.next))
+			b = (*bucketOf)(atomic.LoadPointer(&b.next))
 			stats.TotalBuckets++
 		}
 		if nentries < stats.MinEntries {
@@ -1076,8 +1120,9 @@ func (m *MapOf[K, V]) Stats() MapStats {
 
 // MapConfig defines configurable Map/MapOf options.
 type MapConfig struct {
-	sizeHint int
-	growOnly bool
+	sizeHint      int
+	growOnly      bool
+	enablePadding bool
 }
 
 // WithPresize configures new Map/MapOf instance with capacity enough
@@ -1099,6 +1144,14 @@ func WithPresize(sizeHint int) func(*MapConfig) {
 func WithGrowOnly() func(*MapConfig) {
 	return func(c *MapConfig) {
 		c.growOnly = true
+	}
+}
+
+// WithPadding configures whether a new Map/MapOf instance enables padding to avoid false sharing.
+// Enabling padding may improve performance in high-concurrency environments but will increase memory usage.
+func WithPadding() func(*MapConfig) {
+	return func(c *MapConfig) {
+		c.enablePadding = true
 	}
 }
 
