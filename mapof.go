@@ -325,8 +325,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 		markedw := markZeroBytes(metaw^h2w) & metaMask
 		for markedw != 0 {
 			idx := firstMarkedByteIndex(markedw)
-			if eptr := atomic.LoadPointer(&b.entries[idx]); eptr != nil {
-				e := (*EntryOf[K, V])(eptr)
+			if e := (*EntryOf[K, V])(atomic.LoadPointer(&b.entries[idx])); e != nil {
 				if e.Key == key {
 					return e.Value, true
 				}
@@ -654,8 +653,7 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uint64, key K) *EntryOf[
 		markedw := markZeroBytes(metaw^h2w) & metaMask
 		for markedw != 0 {
 			idx := firstMarkedByteIndex(markedw)
-			if eptr := atomic.LoadPointer(&b.entries[idx]); eptr != nil {
-				e := (*EntryOf[K, V])(eptr)
+			if e := (*EntryOf[K, V])(atomic.LoadPointer(&b.entries[idx])); e != nil {
 				if e.Key == key {
 					return e
 				}
@@ -727,8 +725,7 @@ func (m *MapOf[K, V]) processEntry(
 			markedw := markZeroBytes(metaw^h2w) & metaMask
 			for markedw != 0 {
 				idx := firstMarkedByteIndex(markedw)
-				if eptr := b.entries[idx]; eptr != nil {
-					e := (*EntryOf[K, V])(eptr)
+				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
 					if e.Key == key {
 
 						newe, result, ok := fn(e)
@@ -876,8 +873,7 @@ func copyBucketOf[K comparable, V any](
 	rootb.mu.Lock()
 	for {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
-			if b.entries[i] != nil {
-				e := (*EntryOf[K, V])(b.entries[i])
+			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
 				hash := uint64(hasher(noescape(unsafe.Pointer(&e.Key)), uintptr(destTable.seed)))
 				bidx := uint64(len(destTable.buckets)-1) & h1(hash)
 				destb := &destTable.buckets[bidx]
@@ -1048,14 +1044,6 @@ func (table *mapOfTable) isZero() bool {
 	return true
 }
 
-func h1(h uint64) uint64 {
-	return h >> 7
-}
-
-func h2(h uint64) uint8 {
-	return uint8(h & 0x7f)
-}
-
 // Stats returns statistics for the MapOf. Just like other map
 // methods, this one is thread-safe. Yet it's an O(N) operation,
 // so it should be used only for diagnostics or debugging purposes.
@@ -1202,6 +1190,14 @@ func (s *MapStats) ToString() string {
 	return sb.String()
 }
 
+func h1(h uint64) uint64 {
+	return h >> 7
+}
+
+func h2(h uint64) uint8 {
+	return uint8(h & 0x7f)
+}
+
 // nextPowOf2 computes the next highest power of 2 of 32-bit v.
 // Source: https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
 func nextPowOf2(v uint32) uint32 {
@@ -1229,7 +1225,7 @@ func firstMarkedByteIndex(w uint64) int {
 // SWAR byte search: may produce false positives, e.g. for 0x0100,
 // so make sure to double-check bytes found by this function.
 func markZeroBytes(w uint64) uint64 {
-	return ((w - 0x0101010101010101) & (^w) & 0x8080808080808080)
+	return (w - 0x0101010101010101) & (^w) & 0x8080808080808080
 }
 
 func setByte(w uint64, b uint8, idx int) uint64 {
