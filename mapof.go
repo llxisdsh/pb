@@ -296,26 +296,15 @@ func (m *MapOf[K, V]) initSlow() (table *mapOfTable) {
 		if wg != nil {
 			wg.Wait()
 		}
-
 		// Now the table should be initialized
 		return (*mapOfTable)(atomic.LoadPointer(&m.table))
-	}
-
-	// We've acquired the "lock", perform initialization
-	// Ensure the "lock" is released when the function returns
-	defer func() {
-		atomic.StorePointer(&m.resizeWg, nil)
-		wg.Done()
-	}()
-
-	// Check again if the table has been initialized by another thread
-	if table = (*mapOfTable)(atomic.LoadPointer(&m.table)); table != nil {
-		return table
 	}
 
 	// Perform initialization
 	table = m.init(nil, nil)
 	atomic.StorePointer(&m.table, unsafe.Pointer(table))
+	atomic.StorePointer(&m.resizeWg, nil)
+	wg.Done()
 	return table
 }
 
@@ -836,12 +825,6 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 		return (*mapOfTable)(atomic.LoadPointer(&m.table))
 	}
 
-	// Ensure that the WaitGroup count is decreased and the pointer is cleared when the function returns
-	defer func() {
-		atomic.StorePointer(&m.resizeWg, nil)
-		wg.Done()
-	}()
-
 	var newTable *mapOfTable
 	var newTableLen int
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
@@ -855,6 +838,8 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 		shrinkThreshold := int64((tableLen * entriesPerMapOfBucket) / mapShrinkFraction)
 		if tableLen > minTableLen && table.sumSize() > shrinkThreshold {
 			// No need to shrink. Wake up all waiters and give up.
+			atomic.StorePointer(&m.resizeWg, nil)
+			wg.Done()
 			return table
 		}
 		// Shrink the table with factor of 2.
@@ -877,6 +862,8 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 	}
 	// Publish the new table and wake up all waiters.
 	atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
+	atomic.StorePointer(&m.resizeWg, nil)
+	wg.Done()
 	return newTable
 }
 
