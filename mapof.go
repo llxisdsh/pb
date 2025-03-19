@@ -248,7 +248,7 @@ func (m *MapOf[K, V]) Init(keyHash func(key K, seed uintptr) uintptr,
 
 func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
-	options ...func(*MapConfig)) (table *mapOfTable) {
+	options ...func(*MapConfig)) *mapOfTable {
 
 	c := &MapConfig{
 		sizeHint: defaultMinMapTableLen * entriesPerMapOfBucket,
@@ -273,18 +273,18 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 		tableLen = int(nextPowOf2(uint32((float64(c.sizeHint) / entriesPerMapOfBucket) / mapLoadFactor)))
 	}
 
-	table = newMapOfTable(tableLen, c.enablePadding)
+	table := newMapOfTable(tableLen, c.enablePadding)
 	m.table = unsafe.Pointer(table)
 	m.minTableLen = tableLen
 	m.growOnly = c.growOnly
 	m.enablePadding = c.enablePadding
-	return
+	return table
 }
 
 // initSlow will be called by multiple threads, so it needs to be synchronized with a "lock"
 //
 //go:noinline
-func (m *MapOf[K, V]) initSlow() (table *mapOfTable) {
+func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	// Create a temporary WaitGroup for initialization synchronization
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
@@ -298,6 +298,15 @@ func (m *MapOf[K, V]) initSlow() (table *mapOfTable) {
 		}
 		// Now the table should be initialized
 		return (*mapOfTable)(atomic.LoadPointer(&m.table))
+	}
+
+	// Although the table is always changed when resizeWg is not nil,
+	// it might have been changed before that.
+	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
+	if table != nil {
+		atomic.StorePointer(&m.resizeWg, nil)
+		wg.Done()
+		return table
 	}
 
 	// Perform initialization
@@ -319,23 +328,19 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	h2val := h2(hash)
 	h2w := broadcast(h2val)
 	bidx := uint64(len(table.buckets)-1) & h1(hash)
-	b := &table.buckets[bidx]
-	for {
+
+	for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(atomic.LoadPointer(&b.next)) {
 		metaw := atomic.LoadUint64(&b.meta)
-		markedw := markZeroBytes(metaw^h2w) & metaMask
-		for markedw != 0 {
+		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
 			if e := (*EntryOf[K, V])(atomic.LoadPointer(&b.entries[idx])); e != nil {
 				if e.Key == key {
 					return e.Value, true
 				}
 			}
-			markedw &= markedw - 1
-		}
-		if b = (*bucketOf)(atomic.LoadPointer(&b.next)); b == nil {
-			return
 		}
 	}
+	return
 }
 
 // Store compatible with `sync.Map`
@@ -647,23 +652,19 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uint64, key K) *EntryOf[
 	h2val := h2(hash)
 	h2w := broadcast(h2val)
 	bidx := uint64(len(table.buckets)-1) & h1(hash)
-	b := &table.buckets[bidx]
-	for {
+
+	for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(atomic.LoadPointer(&b.next)) {
 		metaw := atomic.LoadUint64(&b.meta)
-		markedw := markZeroBytes(metaw^h2w) & metaMask
-		for markedw != 0 {
+		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
 			if e := (*EntryOf[K, V])(atomic.LoadPointer(&b.entries[idx])); e != nil {
 				if e.Key == key {
 					return e
 				}
 			}
-			markedw &= markedw - 1
-		}
-		if b = (*bucketOf)(atomic.LoadPointer(&b.next)); b == nil {
-			return nil
 		}
 	}
+	return nil
 }
 
 func (m *MapOf[K, V]) processEntry(
@@ -709,8 +710,8 @@ func (m *MapOf[K, V]) processEntry(
 		var emptyidx int
 		// If no empty slot is found, use the last slot
 		var lastBucket *bucketOf
-		b := rootb
-		for {
+
+		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			lastBucket = b
 			metaw := b.meta
 
@@ -722,8 +723,7 @@ func (m *MapOf[K, V]) processEntry(
 				}
 			}
 
-			markedw := markZeroBytes(metaw^h2w) & metaMask
-			for markedw != 0 {
+			for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
 				idx := firstMarkedByteIndex(markedw)
 				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
 					if e.Key == key {
@@ -751,11 +751,6 @@ func (m *MapOf[K, V]) processEntry(
 						return result, ok
 					}
 				}
-				markedw &= markedw - 1
-			}
-
-			if b = (*bucketOf)(b.next); b == nil {
-				break
 			}
 		}
 
@@ -822,10 +817,14 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 		return (*mapOfTable)(atomic.LoadPointer(&m.table))
 	}
 
-	var newTable *mapOfTable
-	var newTableLen int
+	// Although the table is always changed when resizeWg is not nil,
+	// it might have been changed before that.
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	tableLen := len(table.buckets)
+
+	var newTable *mapOfTable
+	var newTableLen int
+
 	switch hint {
 	case mapGrowHint:
 		// Grow the table with factor of 2.
@@ -881,7 +880,8 @@ func copyBucketOf[K comparable, V any](
 				copied++
 			}
 		}
-		if b = (*bucketOf)(b.next); b == nil {
+		b = (*bucketOf)(b.next)
+		if b == nil {
 			rootb.mu.Unlock()
 			return
 		}

@@ -152,7 +152,7 @@ func BenchmarkLoadOrStore_original_syncMap(b *testing.B) {
 ```
 
 ## Usage
-
+Doc [here](https://pkg.go.dev/github.com/llxisdsh/pb)
 ```go
 import (
     "github.com/llxisdsh/pb"
