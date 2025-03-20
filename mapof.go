@@ -95,7 +95,7 @@ type MapOf[K comparable, V any] struct {
 	// Sort fields by access frequency.
 	table         unsafe.Pointer // *mapOfTable
 	keyHash       hashFunc
-	resizeWg      unsafe.Pointer // *sync.WaitGroup
+	resizeWg      WaitLock
 	valEqual      equalFunc
 	minTableLen   int
 	growOnly      bool
@@ -285,17 +285,9 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 //
 //go:noinline
 func (m *MapOf[K, V]) initSlow() *mapOfTable {
-	// Create a temporary WaitGroup for initialization synchronization
-	wg := new(sync.WaitGroup)
-	wg.Add(1)
-
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
-	if !atomic.CompareAndSwapPointer(&m.resizeWg, nil, unsafe.Pointer(wg)) {
-		// Another thread is initializing, wait for it to complete
-		wg = (*sync.WaitGroup)(atomic.LoadPointer(&m.resizeWg))
-		if wg != nil {
-			wg.Wait()
-		}
+	if !m.resizeWg.TryLock() {
+		m.resizeWg.WaitLock()
 		// Now the table should be initialized
 		return (*mapOfTable)(atomic.LoadPointer(&m.table))
 	}
@@ -304,16 +296,14 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	// it might have been changed before that.
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table != nil {
-		atomic.StorePointer(&m.resizeWg, nil)
-		wg.Done()
+		m.resizeWg.Unlock()
 		return table
 	}
 
 	// Perform initialization
 	table = m.init(nil, nil)
 	atomic.StorePointer(&m.table, unsafe.Pointer(table))
-	atomic.StorePointer(&m.resizeWg, nil)
-	wg.Done()
+	m.resizeWg.Unlock()
 	return table
 }
 
@@ -684,10 +674,9 @@ func (m *MapOf[K, V]) processEntry(
 		// Check if a resize is needed.
 		// This is the first check, checking if there is a resize operation in progress
 		// before acquiring the bucket lock
-		if wg := (*sync.WaitGroup)(atomic.LoadPointer(&m.resizeWg)); wg != nil {
+		if m.resizeWg.HasLock() {
 			rootb.mu.Unlock()
-			// Wait for the current resize operation to complete
-			wg.Wait()
+			m.resizeWg.WaitLock()
 			table = (*mapOfTable)(atomic.LoadPointer(&m.table))
 			hash = uint64(m.keyHash(noescape(unsafe.Pointer(&key)), uintptr(table.seed)))
 			continue
@@ -804,16 +793,9 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 	}
 
 	// Slow path.
-	// Create a new WaitGroup for the current resize operation
-	wg := new(sync.WaitGroup)
-	wg.Add(1)
-
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
-	if !atomic.CompareAndSwapPointer(&m.resizeWg, nil, unsafe.Pointer(wg)) {
-		// Someone else started resize. Wait for it to finish.
-		if wg = (*sync.WaitGroup)(atomic.LoadPointer(&m.resizeWg)); wg != nil {
-			wg.Wait()
-		}
+	if !m.resizeWg.TryLock() {
+		m.resizeWg.WaitLock()
 		return (*mapOfTable)(atomic.LoadPointer(&m.table))
 	}
 
@@ -834,8 +816,7 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 		shrinkThreshold := int64((tableLen * entriesPerMapOfBucket) / mapShrinkFraction)
 		if tableLen > minTableLen && table.sumSize() > shrinkThreshold {
 			// No need to shrink. Wake up all waiters and give up.
-			atomic.StorePointer(&m.resizeWg, nil)
-			wg.Done()
+			m.resizeWg.Unlock()
 			return table
 		}
 		// Shrink the table with factor of 2.
@@ -858,8 +839,7 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) *mapOfT
 	}
 	// Publish the new table and wake up all waiters.
 	atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
-	atomic.StorePointer(&m.resizeWg, nil)
-	wg.Done()
+	m.resizeWg.Unlock()
 	return newTable
 }
 
@@ -1318,3 +1298,73 @@ type iEmptyInterface struct {
 	Type *iType
 	Data unsafe.Pointer
 }
+
+// ------------------------------------------------------------------------
+
+// WaitLock is a simplified version of `WaitGroup`
+// that can flexibly wait for its own lock to finish without needing to acquire a lock
+type WaitLock struct {
+	state atomic.Uint32
+	sema  uint32
+}
+
+const (
+	waitLockCountBits       = 8
+	waitLockWaiterCountBits = 32 - waitLockCountBits
+	waitLockCountMask       = uint32(0xFF) << waitLockWaiterCountBits
+)
+
+func (w *WaitLock) TryLock() bool {
+	state := w.state.Load()
+	if state&waitLockCountMask != 0 {
+		return false
+	}
+	return w.state.CompareAndSwap(state, state|(1<<waitLockWaiterCountBits))
+}
+
+func (w *WaitLock) Unlock() {
+	state := w.state.Add(waitLockCountMask)
+	waiters := state & ^waitLockCountMask
+	if waiters == 0 || state&waitLockCountMask != 0 {
+		return
+	}
+	w.state.Store(0)
+	for ; waiters != 0; waiters-- {
+		runtime_Semrelease(&w.sema, false, 0)
+	}
+}
+
+func (w *WaitLock) HasLock() bool {
+	return w.state.Load()&waitLockCountMask != 0
+}
+
+func (w *WaitLock) WaitLock() {
+	for {
+		state := w.state.Load()
+		if state&waitLockCountMask == 0 {
+			return
+		}
+		if w.state.CompareAndSwap(state, state+1) {
+			runtime_Semacquire(&w.sema)
+			return
+		}
+	}
+}
+
+// Semacquire waits until *s > 0 and then atomically decrements it.
+// It is intended as a simple sleep primitive for use by the synchronization
+// library and should not be used directly.
+//
+//go:linkname runtime_Semacquire sync.runtime_Semacquire
+func runtime_Semacquire(addr *uint32)
+
+// Semrelease atomically increments *s and notifies a waiting goroutine
+// if one is blocked in Semacquire.
+// It is intended as a simple wakeup primitive for use by the synchronization
+// library and should not be used directly.
+// If handoff is true, pass count directly to the first waiter.
+// skipframes is the number of frames to omit during tracing, counting from
+// runtime_Semrelease's caller.
+//
+//go:linkname runtime_Semrelease sync.runtime_Semrelease
+func runtime_Semrelease(addr *uint32, handoff bool, skipframes int)
