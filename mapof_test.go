@@ -144,6 +144,27 @@ func TestMyMapOf(t *testing.T) {
 	t.Log(&idm)
 	t.Log(idm.LoadAndDelete(structKey{1, 1}))
 	t.Log(&idm)
+	var test int64
+	for k := int64(0); k <= 10000000; k++ {
+		atomic.StoreInt64(&test, k)
+		if test != k {
+			t.Fatal("sync test fail:", test, k)
+		}
+	}
+
+	var wg sync.WaitGroup
+	for k := int64(0); k <= 1000000; k++ {
+
+		wg.Add(1)
+		go func(k int64) {
+			atomic.StoreInt64(&test, k)
+			wg.Done()
+		}(k)
+		wg.Wait()
+		if test != k {
+			t.Fatal("async test2 fail:", test, k)
+		}
+	}
 }
 
 // // NewBadMapOf creates a new MapOf for the provided key and value

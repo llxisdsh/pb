@@ -58,22 +58,22 @@ const (
 )
 
 // MapOf is compatible with sync.Map.
-// It draws heavily from `xsync.MapOf` v3 and further implements fine-grained optimizations.
 // Demonstrates 10x higher performance than `sync.Map in go 1.24` under large datasets
 //
-// Unlike `xsync.MapOf`:
+// Key features of pb.MapOf:
+//   - Uses cache-line aligned for all structures
+//   - Implements zero-value usability
+//   - Lazy initialization
+//   - Defaults to the Go built-in hash, customizable on creation or initialization.
+//   - Provides complete sync.Map and compatibility
+//   - Specially optimized for read operations
+//   - Supports parallel resizing
+//   - Offers rich functional extensions, as well as LoadOrCompute, ProcessEntry, Size, IsZero, etc
+//   - All tests passed
+//   - Extremely fast, see benchmark tests below
 //
-// # Zero-initialization ready to use
-//
-// # Full `sync.Map` compatibility (all tests passed)
-//
-// # Further abstracted the logic, added functions such as `ProcessEntry` and `IsZero`
-//
-// # Performance is slightly better than the `xsync.MapOf` v3
-//
-// Must thank the authors of [xsync](https://github.com/puzpuzpuz/xsync) for their contributions.
-//
-// Below is an introduction to xsync.MapOf:
+// pb.MapOf is built upon xsync.MapOf. We extend our thanks to the authors of
+// [xsync](https://github.com/puzpuzpuz/xsync) and reproduce its introduction below:
 //
 // MapOf is like a Go map[K]V but is safe for concurrent
 // use by multiple goroutines without additional locking or
@@ -94,8 +94,7 @@ const (
 //
 // MapOf also borrows ideas from Java's j.u.c.ConcurrentHashMap
 // (immutable K/V pair structs instead of atomic snapshots)
-// and C++'s absl::flat_hash_map (meta memory and SWAR-based
-// lookups).
+// and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 type MapOf[K comparable, V any] struct {
 	// Sort fields by access frequency.
 	table         unsafe.Pointer // *mapOfTable
@@ -105,6 +104,7 @@ type MapOf[K comparable, V any] struct {
 	minTableLen   int
 	growOnly      bool
 	enablePadding bool
+	atomicReads   bool
 	totalGrowths  int64
 	totalShrinks  int64
 }
@@ -164,6 +164,7 @@ type EntryOf[K comparable, V any] struct {
 //   - WithPresize option for initial capacity,
 //   - WithGrowOnly option to disable shrinking,
 //   - WithPadding option enables padding for fields such as size to avoid false sharing,
+//   - WithAtomicReads enables atomic reads to provide stronger consistency guarantees,
 func NewMapOf[K comparable, V any](
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
@@ -181,6 +182,7 @@ func NewMapOf[K comparable, V any](
 //   - WithPresize option for initial capacity,
 //   - WithGrowOnly option to disable shrinking,
 //   - WithPadding option enables padding for fields such as size to avoid false sharing,
+//   - WithAtomicReads enables atomic reads to provide stronger consistency guarantees,
 func NewMapOfWithHasher[K comparable, V any](
 	keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
@@ -231,6 +233,7 @@ func newMapOfTable(minTableLen int, enablePadding bool) *mapOfTable {
 //   - WithPresize option for initial capacity,
 //   - WithGrowOnly option to disable shrinking,
 //   - WithPadding option enables padding for fields such as size to avoid false sharing,
+//   - WithAtomicReads enables atomic reads to provide stronger consistency guarantees,
 func (m *MapOf[K, V]) Init(keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
 	options ...func(*MapConfig)) {
@@ -270,6 +273,7 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 	m.minTableLen = tableLen
 	m.growOnly = c.growOnly
 	m.enablePadding = c.enablePadding
+	m.atomicReads = c.atomicReads
 	return table
 }
 
@@ -320,32 +324,31 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	h2val := h2(hash)
 	h2w := broadcast(h2val)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash)
-
-	// atomic version:
-	//for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(atomic.LoadPointer(&b.next)) {
-	//	metaw := atomic.LoadUint64(&b.meta)
-	//	for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
-	//		idx := firstMarkedByteIndex(markedw)
-	//		if e := (*EntryOf[K, V])(atomic.LoadPointer(&b.entries[idx])); e != nil {
-	//			if e.Key == key {
-	//				return e.Value, true
-	//			}
-	//		}
-	//	}
-	//}
-	// Not using atomic reads also satisfies the semantics of sync map
 	rootb := &table.buckets[bidx]
-	for b := rootb; b != nil; {
-		metaw := b.meta
+	if !m.atomicReads {
+		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
+			metaw := b.meta
+			for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
+				idx := firstMarkedByteIndex(markedw)
+				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
+					if e.Key == key {
+						return e.Value, true
+					}
+				}
+			}
+		}
+		return
+	}
+	for b := rootb; b != nil; b = (*bucketOf)(atomic.LoadPointer(&b.next)) {
+		metaw := atomic.LoadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
+			if e := (*EntryOf[K, V])(atomic.LoadPointer(&b.entries[idx])); e != nil {
 				if e.Key == key {
 					return e.Value, true
 				}
 			}
 		}
-		b = (*bucketOf)(b.next)
 	}
 	return
 }
@@ -696,32 +699,31 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key K) *EntryOf
 	h2val := h2(hash)
 	h2w := broadcast(h2val)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash)
-
-	// atomic version:
-	//for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(atomic.LoadPointer(&b.next)) {
-	//	metaw := atomic.LoadUint64(&b.meta)
-	//	for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
-	//		idx := firstMarkedByteIndex(markedw)
-	//		if e := (*EntryOf[K, V])(atomic.LoadPointer(&b.entries[idx])); e != nil {
-	//			if e.Key == key {
-	//				return e
-	//			}
-	//		}
-	//	}
-	//}
-	// Not using atomic reads also satisfies the semantics of sync map
 	rootb := &table.buckets[bidx]
-	for b := rootb; b != nil; {
-		metaw := b.meta
+	if !m.atomicReads {
+		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
+			metaw := b.meta
+			for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
+				idx := firstMarkedByteIndex(markedw)
+				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
+					if e.Key == key {
+						return e
+					}
+				}
+			}
+		}
+		return nil
+	}
+	for b := rootb; b != nil; b = (*bucketOf)(atomic.LoadPointer(&b.next)) {
+		metaw := atomic.LoadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
+			if e := (*EntryOf[K, V])(atomic.LoadPointer(&b.entries[idx])); e != nil {
 				if e.Key == key {
 					return e
 				}
 			}
 		}
-		b = (*bucketOf)(b.next)
 	}
 	return nil
 }
@@ -1007,40 +1009,48 @@ func (m *MapOf[K, V]) Range(f func(key K, value V) bool) {
 	if table == nil {
 		return
 	}
-
 	// Pre-allocate array big enough to fit entries for most hash tables.
-	var initialCap int
-	if len(table.buckets) > 0 {
-		initialCap = min(1024, len(table.buckets)*entriesPerMapOfBucket>>2)
+	entries := make([]unsafe.Pointer, 0, 16*entriesPerMapOfBucket)
+	if !m.atomicReads {
+		for i := range table.buckets {
+			rootb := &table.buckets[i]
+			for b := rootb; b != nil; b = (*bucketOf)(b.next) {
+				for i := 0; i < entriesPerMapOfBucket; i++ {
+					if b.entries[i] != nil {
+						entries = append(entries, b.entries[i])
+					}
+				}
+			}
+			// Call the function for all copied entries.
+			for j := range entries {
+				e := (*EntryOf[K, V])(entries[j])
+				if !f(e.Key, e.Value) {
+					return
+				}
+				entries[j] = nil // fast gc
+			}
+			entries = entries[:0]
+		}
+		return
 	}
-	entries := make([]unsafe.Pointer, 0, initialCap)
 	for i := range table.buckets {
 		rootb := &table.buckets[i]
-		b := rootb
-		// Prevent concurrent modifications and copy all entries into
-		// the intermediate slice.
 		rootb.mu.Lock()
-		for {
+		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			for i := 0; i < entriesPerMapOfBucket; i++ {
 				if b.entries[i] != nil {
 					entries = append(entries, b.entries[i])
 				}
 			}
-			if b.next == nil {
-				rootb.mu.Unlock()
-				break
-			}
-			b = (*bucketOf)(b.next)
 		}
+		rootb.mu.Unlock()
 		// Call the function for all copied entries.
 		for j := range entries {
 			e := (*EntryOf[K, V])(entries[j])
 			if !f(e.Key, e.Value) {
 				return
 			}
-			// Remove the reference to avoid preventing the copied
-			// entries from being GCed until this method finishes.
-			entries[j] = nil
+			entries[j] = nil // fast gc
 		}
 		entries = entries[:0]
 	}
@@ -1191,6 +1201,7 @@ type MapConfig struct {
 	sizeHint      int
 	growOnly      bool
 	enablePadding bool
+	atomicReads   bool
 }
 
 // WithPresize configures new Map/MapOf instance with capacity enough
@@ -1220,6 +1231,15 @@ func WithGrowOnly() func(*MapConfig) {
 func WithPadding() func(*MapConfig) {
 	return func(c *MapConfig) {
 		c.enablePadding = true
+	}
+}
+
+// WithAtomicReads enables atomic reads to provide stronger consistency guarantees.
+// Enabling this option will reduce read performance but offers stronger memory consistency guarantees.
+// However, regardless of the approach, reads can only satisfy eventual consistency.
+func WithAtomicReads() func(*MapConfig) {
+	return func(c *MapConfig) {
+		c.atomicReads = true
 	}
 }
 
