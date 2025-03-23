@@ -2,44 +2,44 @@
 # pb.MapOf
 
 MapOf is compatible with sync.Map.
-It draws heavily from `xsync.MapOf` v3 and further implements fine-grained optimizations.
 Demonstrates 10x higher performance than `sync.Map in go 1.24` under large datasets
 
-Unlike `xsync.MapOf`:
+Key features of pb.MapOf:
 
-- Zero-initialization ready to use
+- Uses cache-line aligned for all structures
+- Implements zero-value usability
+- Lazy initialization
+- Defaults to the Go built-in hash, customizable on creation or initialization.
+- Provides complete sync.Map and compatibility
+- Specially optimized for read operations
+- Supports parallel resizing
+- Offers rich functional extensions, as well as LoadOrCompute, ProcessEntry, Size, IsZero, etc
+- All tests passed
+- Extremely fast, see benchmark tests below
 
-- Compatible with `sync.Map` and `xsync.MapOf`, all tests passed.
+pb.MapOf is built upon xsync.MapOf. We extend our thanks to the authors of [xsync](https://github.com/puzpuzpuz/xsync) and reproduce its introduction below:
+```
+MapOf is like a Go map[K]V but is safe for concurrent
+use by multiple goroutines without additional locking or
+coordination. It follows the interface of sync.Map with
+a number of valuable extensions like Compute or Size.
 
-- Further abstracted the logic, added functions such as `ProcessEntry` and `IsZero`
+A MapOf must not be copied after first use.
 
-- Faster than `xsync.MapOf` v3, at least as of March 10, 2025.
+MapOf uses a modified version of Cache-Line Hash Table (CLHT)
+data structure: https://github.com/LPD-EPFL/CLHT
 
-Must thank the authors of [xsync](https://github.com/puzpuzpuz/xsync) for their contributions.
+CLHT is built around idea to organize the hash table in
+cache-line-sized buckets, so that on all modern CPUs update
+operations complete with at most one cache-line transfer.
+Also, Get operations involve no write to memory, as well as no
+mutexes or any other sort of locks. Due to this design, in all
+considered scenarios MapOf outperforms sync.Map.
 
-Below is an introduction to xsync.MapOf:
-
-    MapOf is like a Go map[K]V but is safe for concurrent
-    use by multiple goroutines without additional locking or
-    coordination. It follows the interface of sync.Map with
-    a number of valuable extensions like Compute or Size.
-    
-    A MapOf must not be copied after first use.
-    
-    MapOf uses a modified version of Cache-Line Hash Table (CLHT)
-    data structure: https://github.com/LPD-EPFL/CLHT
-    
-    CLHT is built around idea to organize the hash table in
-    cache-line-sized buckets, so that on all modern CPUs update
-    operations complete with at most one cache-line transfer.
-    Also, Get operations involve no write to memory, as well as no
-    mutexes or any other sort of locks. Due to this design, in all
-    considered scenarios MapOf outperforms sync.Map.
-    
-    MapOf also borrows ideas from Java's j.u.c.ConcurrentHashMap
-    (immutable K/V pair structs instead of atomic snapshots)
-    and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
-
+MapOf also borrows ideas from Java's j.u.c.ConcurrentHashMap
+(immutable K/V pair structs instead of atomic snapshots)
+and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
+```
 ## Benchmarks
 
 Below are my test results, focusing on `pb_MapOf`

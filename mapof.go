@@ -321,16 +321,31 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	h2w := broadcast(h2val)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash)
 
-	for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(atomic.LoadPointer(&b.next)) {
-		metaw := atomic.LoadUint64(&b.meta)
+	// atomic version:
+	//for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(atomic.LoadPointer(&b.next)) {
+	//	metaw := atomic.LoadUint64(&b.meta)
+	//	for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
+	//		idx := firstMarkedByteIndex(markedw)
+	//		if e := (*EntryOf[K, V])(atomic.LoadPointer(&b.entries[idx])); e != nil {
+	//			if e.Key == key {
+	//				return e.Value, true
+	//			}
+	//		}
+	//	}
+	//}
+	// Not using atomic reads also satisfies the semantics of sync map
+	rootb := &table.buckets[bidx]
+	for b := rootb; b != nil; {
+		metaw := b.meta
 		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(atomic.LoadPointer(&b.entries[idx])); e != nil {
+			if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
 				if e.Key == key {
 					return e.Value, true
 				}
 			}
 		}
+		b = (*bucketOf)(b.next)
 	}
 	return
 }
@@ -682,16 +697,31 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key K) *EntryOf
 	h2w := broadcast(h2val)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash)
 
-	for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(atomic.LoadPointer(&b.next)) {
-		metaw := atomic.LoadUint64(&b.meta)
+	// atomic version:
+	//for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(atomic.LoadPointer(&b.next)) {
+	//	metaw := atomic.LoadUint64(&b.meta)
+	//	for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
+	//		idx := firstMarkedByteIndex(markedw)
+	//		if e := (*EntryOf[K, V])(atomic.LoadPointer(&b.entries[idx])); e != nil {
+	//			if e.Key == key {
+	//				return e
+	//			}
+	//		}
+	//	}
+	//}
+	// Not using atomic reads also satisfies the semantics of sync map
+	rootb := &table.buckets[bidx]
+	for b := rootb; b != nil; {
+		metaw := b.meta
 		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(atomic.LoadPointer(&b.entries[idx])); e != nil {
+			if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
 				if e.Key == key {
 					return e
 				}
 			}
 		}
+		b = (*bucketOf)(b.next)
 	}
 	return nil
 }
@@ -884,7 +914,7 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) (*mapOf
 				copyWg.Add(1)
 				go func(start, end int) {
 					for i := start; i < end && i < tableLen; i++ {
-						copied := copyBucketOfThreadSafe[K, V](&table.buckets[i], newTable, m.keyHash)
+						copied := copyBucketOf[K, V](&table.buckets[i], newTable, m.keyHash)
 						if copied > 0 {
 							newTable.addSize(uintptr(i), copied)
 						}
@@ -896,7 +926,7 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) (*mapOf
 		} else {
 			// Serial processing
 			for i := 0; i < tableLen; i++ {
-				copied := copyBucketOfThreadSafe[K, V](&table.buckets[i], newTable, m.keyHash)
+				copied := copyBucketOf[K, V](&table.buckets[i], newTable, m.keyHash)
 				newTable.addSizePlain(uintptr(i), copied)
 			}
 		}
@@ -907,14 +937,12 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) (*mapOf
 	return newTable, true
 }
 
-func copyBucketOfThreadSafe[K comparable, V any](
+func copyBucketOf[K comparable, V any](
 	srcBucket *bucketOf,
 	destTable *mapOfTable,
 	hasher hashFunc,
 ) (copied int) {
 	b := srcBucket
-	// Locking the source buckets will block processEntry, which seems unnecessary,
-	// but it actually makes the resize faster.
 	srcBucket.mu.Lock()
 	for {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
@@ -926,7 +954,13 @@ func copyBucketOfThreadSafe[K comparable, V any](
 				hash := hasher(noescape(unsafe.Pointer(&e.Key)), destTable.seed)
 				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
 				destb := &destTable.buckets[bidx]
-				appendToBucketOfThreadSafe(h2(hash), b.entries[i], destb)
+
+				// Locking the buckets of the target table is necessary during parallel copying,
+				// when copying in a single thread, it's not necessary, but due to the spinning of the mutex,
+				// it remains extremely fast.
+				destb.mu.Lock()
+				appendToBucketOf(b.entries[i], destb, h2(hash))
+				destb.mu.Unlock()
 				copied++
 			}
 		}
@@ -938,18 +972,16 @@ func copyBucketOfThreadSafe[K comparable, V any](
 	}
 }
 
-func appendToBucketOfThreadSafe(h2 uint8, entryPtr unsafe.Pointer, destBucket *bucketOf) {
-	b := destBucket
-	// Locking the buckets of the target table is necessary during parallel copying,
-	// when copying in a single thread, it's not necessary, but due to the spinning of the mutex,
-	// it remains extremely fast.
-	destBucket.mu.Lock()
+func appendToBucketOf(
+	entryPtr unsafe.Pointer,
+	b *bucketOf,
+	h2 uint8,
+) {
 	for {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
 			if b.entries[i] == nil {
 				b.entries[i] = entryPtr
 				b.meta = setByte(b.meta, h2, i)
-				destBucket.mu.Unlock()
 				return
 			}
 		}
@@ -958,7 +990,6 @@ func appendToBucketOfThreadSafe(h2 uint8, entryPtr unsafe.Pointer, destBucket *b
 				entries: [entriesPerMapOfBucket]unsafe.Pointer{entryPtr},
 				meta:    setByte(defaultMeta, h2, 0),
 			})
-			destBucket.mu.Unlock()
 			return
 		}
 		b = (*bucketOf)(b.next)
