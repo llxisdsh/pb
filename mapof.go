@@ -107,7 +107,6 @@ type MapOf[K comparable, V any] struct {
 		minTableLen   int
 		growOnly      bool
 		enablePadding bool
-		atomicReads   bool
 	}{})%cacheLineSize) % cacheLineSize]byte
 
 	table         unsafe.Pointer // *mapOfTable
@@ -119,7 +118,6 @@ type MapOf[K comparable, V any] struct {
 	minTableLen   int  // WithPresize
 	growOnly      bool // WithGrowOnly
 	enablePadding bool // WithPadding
-	atomicReads   bool // WithAtomicReads
 }
 
 type mapOfTable struct {
@@ -176,7 +174,6 @@ type EntryOf[K comparable, V any] struct {
 //   - WithPresize option for initial capacity,
 //   - WithGrowOnly option to disable shrinking,
 //   - WithPadding option enables padding for fields such as size to avoid false sharing,
-//   - WithAtomicReads enables atomic reads to provide stronger consistency guarantees,
 func NewMapOf[K comparable, V any](
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
@@ -194,7 +191,6 @@ func NewMapOf[K comparable, V any](
 //   - WithPresize option for initial capacity,
 //   - WithGrowOnly option to disable shrinking,
 //   - WithPadding option enables padding for fields such as size to avoid false sharing,
-//   - WithAtomicReads enables atomic reads to provide stronger consistency guarantees,
 func NewMapOfWithHasher[K comparable, V any](
 	keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
@@ -245,7 +241,6 @@ func newMapOfTable(minTableLen int, enablePadding bool) *mapOfTable {
 //   - WithPresize option for initial capacity,
 //   - WithGrowOnly option to disable shrinking,
 //   - WithPadding option enables padding for fields such as size to avoid false sharing,
-//   - WithAtomicReads enables atomic reads to provide stronger consistency guarantees,
 func (m *MapOf[K, V]) Init(keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
 	options ...func(*MapConfig)) {
@@ -282,7 +277,6 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 	m.minTableLen = tableLen
 	m.growOnly = c.growOnly
 	m.enablePadding = c.enablePadding
-	m.atomicReads = c.atomicReads
 
 	table := newMapOfTable(tableLen, m.enablePadding)
 	m.table = unsafe.Pointer(table)
@@ -326,18 +320,23 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 }
 
 // Load compatible with `sync.Map`
+//
+// Using the build option `mapof_atomicreads` enables atomic reads,
+// boosting consistency but slowing performance slightly. See its description for details.
 func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
 		return
 	}
-	// Inline findEntry
+
+	// inline findEntry
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
 	h2val := h2(hash)
 	h2w := broadcast(h2val)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash)
 	rootb := &table.buckets[bidx]
-	if !m.atomicReads {
+
+	if !atomicReads {
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
 			for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
@@ -351,6 +350,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 		}
 		return
 	}
+
 	for b := rootb; b != nil; b = (*bucketOf)(atomic.LoadPointer(&b.next)) {
 		metaw := atomic.LoadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
@@ -712,7 +712,8 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key K) *EntryOf
 	h2w := broadcast(h2val)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash)
 	rootb := &table.buckets[bidx]
-	if !m.atomicReads {
+
+	if !atomicReads {
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
 			for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
@@ -726,6 +727,7 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key K) *EntryOf
 		}
 		return nil
 	}
+
 	for b := rootb; b != nil; b = (*bucketOf)(atomic.LoadPointer(&b.next)) {
 		metaw := atomic.LoadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
@@ -752,6 +754,7 @@ func (m *MapOf[K, V]) processEntry(
 		h2w := broadcast(h2val)
 		bidx := uintptr(len(table.buckets)-1) & h1(hash)
 		rootb := &table.buckets[bidx]
+
 		rootb.mu.Lock()
 
 		// Check if a resize is needed.
@@ -869,7 +872,7 @@ func (m *MapOf[K, V]) processEntry(
 	}
 }
 
-// Returns the current latest table and whether it was created by this thread
+// Returns the current latest table and whether it was created by current thread
 func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) (*mapOfTable, bool) {
 	// Create a new WaitGroup for the current resize operation
 	wg := new(sync.WaitGroup)
@@ -1016,50 +1019,59 @@ func (m *MapOf[K, V]) All() func(yield func(K, V) bool) {
 }
 
 // Range compatible with `sync.Map`.
-func (m *MapOf[K, V]) Range(f func(key K, value V) bool) {
+func (m *MapOf[K, V]) Range(yield func(key K, value V) bool) {
+	m.RangeEntry(func(e *EntryOf[K, V]) bool {
+		return yield(e.Key, e.Value)
+	})
+}
+
+// RangeEntry is used to iterate over all entries.
+//
+// By default, it performs lock-free iteration.
+// When used build option `mapof_atomicreads`, it locks each bucket, copies it out, and then iterates over the copy.
+//
+// IMPORTANT:
+//   - Never modify the Key or Value in an Entry under any circumstances.
+//   - Range always uses the current table, which may not reflect the most up-to-date situation.
+//     Like `sync.Map`, reads only satisfy eventual consistency.
+func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
 		return
 	}
-	// Pre-allocate array big enough to fit entries for most hash tables.
-	entries := make([]unsafe.Pointer, 0, 16*entriesPerMapOfBucket)
-	if !m.atomicReads {
+	
+	if !atomicReads {
 		for i := range table.buckets {
 			rootb := &table.buckets[i]
 			for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 				for i := 0; i < entriesPerMapOfBucket; i++ {
-					if b.entries[i] != nil {
-						entries = append(entries, b.entries[i])
+					if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+						if !yield(e) {
+							return
+						}
 					}
 				}
 			}
-			// Call the function for all copied entries.
-			for j := range entries {
-				e := (*EntryOf[K, V])(entries[j])
-				if !f(e.Key, e.Value) {
-					return
-				}
-				entries[j] = nil // fast gc
-			}
-			entries = entries[:0]
 		}
 		return
 	}
+
+	// Pre-allocate array big enough to fit entries for most hash tables.
+	entries := make([]*EntryOf[K, V], 0, 16*entriesPerMapOfBucket)
 	for i := range table.buckets {
 		rootb := &table.buckets[i]
 		rootb.mu.Lock()
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			for i := 0; i < entriesPerMapOfBucket; i++ {
-				if b.entries[i] != nil {
-					entries = append(entries, b.entries[i])
+				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+					entries = append(entries, e)
 				}
 			}
 		}
 		rootb.mu.Unlock()
 		// Call the function for all copied entries.
 		for j := range entries {
-			e := (*EntryOf[K, V])(entries[j])
-			if !f(e.Key, e.Value) {
+			if !yield(entries[j]) {
 				return
 			}
 			entries[j] = nil // fast gc
@@ -1213,7 +1225,6 @@ type MapConfig struct {
 	sizeHint      int
 	growOnly      bool
 	enablePadding bool
-	atomicReads   bool
 }
 
 // WithPresize configures new MapOf instance with capacity enough
@@ -1243,16 +1254,6 @@ func WithGrowOnly() func(*MapConfig) {
 func WithPadding() func(*MapConfig) {
 	return func(c *MapConfig) {
 		c.enablePadding = true
-	}
-}
-
-// WithAtomicReads enables atomic reads to provide faster consistency guarantees.
-// All table modifications are done under a lock, making non-atomic reads safe.
-// Enabling this option will reduce read performance but offers faster memory consistency guarantees.
-// However, regardless of the approach, reads can only satisfy eventual consistency.
-func WithAtomicReads() func(*MapConfig) {
-	return func(c *MapConfig) {
-		c.atomicReads = true
 	}
 }
 
