@@ -96,33 +96,46 @@ const (
 // (immutable K/V pair structs instead of atomic snapshots)
 // and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 type MapOf[K comparable, V any] struct {
-	// Sort fields by access frequency.
+	//lint:ignore U1000 prevents false sharing
+	pad [(cacheLineSize - unsafe.Sizeof(struct {
+		table         unsafe.Pointer
+		resizeWg      unsafe.Pointer
+		totalGrowths  int64
+		totalShrinks  int64
+		keyHash       hashFunc
+		valEqual      equalFunc
+		minTableLen   int
+		growOnly      bool
+		enablePadding bool
+		atomicReads   bool
+	}{})%cacheLineSize) % cacheLineSize]byte
+
 	table         unsafe.Pointer // *mapOfTable
-	keyHash       hashFunc
 	resizeWg      unsafe.Pointer // *sync.WaitGroup
-	valEqual      equalFunc
-	minTableLen   int
-	growOnly      bool
-	enablePadding bool
-	atomicReads   bool
 	totalGrowths  int64
 	totalShrinks  int64
+	keyHash       hashFunc
+	valEqual      equalFunc
+	minTableLen   int  // WithPresize
+	growOnly      bool // WithGrowOnly
+	enablePadding bool // WithPadding
+	atomicReads   bool // WithAtomicReads
 }
 
 type mapOfTable struct {
-	// Sort fields by access frequency.
-	buckets []bucketOf
-	// striped counter for number of table entries;
-	// used to determine if a table shrinking is needed
-	// occupies min(buckets_memory/1024, 64KB) of memory
-	size []counterStripe
-	seed uintptr
 	//lint:ignore U1000 prevents false sharing
 	pad [(cacheLineSize - unsafe.Sizeof(struct {
 		buckets []bucketOf
 		size    []counterStripe
 		seed    uintptr
 	}{})%cacheLineSize) % cacheLineSize]byte
+
+	buckets []bucketOf
+	// striped counter for number of table entries;
+	// used to determine if a table shrinking is needed
+	// occupies min(buckets_memory/1024, 64KB) of memory
+	size []counterStripe
+	seed uintptr
 }
 
 type counterStripe struct {
@@ -138,16 +151,15 @@ type counterStripeWithPadding struct {
 type bucketOf struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(cacheLineSize - unsafe.Sizeof(struct {
-		entries [entriesPerMapOfBucket]unsafe.Pointer
 		meta    uint64
+		entries [entriesPerMapOfBucket]unsafe.Pointer
 		next    unsafe.Pointer
 		mu      sync.Mutex
 	}{})%cacheLineSize) % cacheLineSize]byte
 
-	// Sort fields by access frequency.
-	entries [entriesPerMapOfBucket]unsafe.Pointer // *EntryOf
 	meta    uint64
-	next    unsafe.Pointer // *bucketOf
+	entries [entriesPerMapOfBucket]unsafe.Pointer // *EntryOf
+	next    unsafe.Pointer                        // *bucketOf
 	mu      sync.Mutex
 }
 
@@ -267,13 +279,13 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 	if c.sizeHint > defaultMinMapTableLen*entriesPerMapOfBucket {
 		tableLen = int(nextPowOf2(uint32((float64(c.sizeHint) / entriesPerMapOfBucket) / mapLoadFactor)))
 	}
-
-	table := newMapOfTable(tableLen, c.enablePadding)
-	m.table = unsafe.Pointer(table)
 	m.minTableLen = tableLen
 	m.growOnly = c.growOnly
 	m.enablePadding = c.enablePadding
 	m.atomicReads = c.atomicReads
+
+	table := newMapOfTable(tableLen, m.enablePadding)
+	m.table = unsafe.Pointer(table)
 	return table
 }
 
@@ -848,8 +860,8 @@ func (m *MapOf[K, V]) processEntry(
 
 		// Create new bucket and insert
 		atomic.StorePointer(&lastBucket.next, unsafe.Pointer(&bucketOf{
-			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newe)},
 			meta:    setByte(defaultMeta, h2val, 0),
+			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newe)},
 		}))
 		rootb.mu.Unlock()
 		table.addSize(bidx, 1)
@@ -982,15 +994,15 @@ func appendToBucketOf(
 	for {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
 			if b.entries[i] == nil {
-				b.entries[i] = entryPtr
 				b.meta = setByte(b.meta, h2, i)
+				b.entries[i] = entryPtr
 				return
 			}
 		}
 		if b.next == nil {
 			b.next = unsafe.Pointer(&bucketOf{
-				entries: [entriesPerMapOfBucket]unsafe.Pointer{entryPtr},
 				meta:    setByte(defaultMeta, h2, 0),
+				entries: [entriesPerMapOfBucket]unsafe.Pointer{entryPtr},
 			})
 			return
 		}
@@ -1196,7 +1208,7 @@ func (m *MapOf[K, V]) Stats() MapStats {
 	return stats
 }
 
-// MapConfig defines configurable Map/MapOf options.
+// MapConfig defines configurable MapOf options.
 type MapConfig struct {
 	sizeHint      int
 	growOnly      bool
@@ -1204,7 +1216,7 @@ type MapConfig struct {
 	atomicReads   bool
 }
 
-// WithPresize configures new Map/MapOf instance with capacity enough
+// WithPresize configures new MapOf instance with capacity enough
 // to hold sizeHint entries. The capacity is treated as the minimal
 // capacity meaning that the underlying hash table will never shrink
 // to a smaller capacity. If sizeHint is zero or negative, the value
@@ -1215,7 +1227,7 @@ func WithPresize(sizeHint int) func(*MapConfig) {
 	}
 }
 
-// WithGrowOnly configures new Map/MapOf instance to be grow-only.
+// WithGrowOnly configures new MapOf instance to be grow-only.
 // This means that the underlying hash table grows in capacity when
 // new keys are added, but does not shrink when keys are deleted.
 // The only exception to this rule is the Clear method which
@@ -1226,7 +1238,7 @@ func WithGrowOnly() func(*MapConfig) {
 	}
 }
 
-// WithPadding configures whether a new Map/MapOf instance enables padding to avoid false sharing.
+// WithPadding configures whether a new MapOf instance enables padding to avoid false sharing.
 // Enabling padding may improve performance in high-concurrency environments but will increase memory usage.
 func WithPadding() func(*MapConfig) {
 	return func(c *MapConfig) {
@@ -1234,8 +1246,9 @@ func WithPadding() func(*MapConfig) {
 	}
 }
 
-// WithAtomicReads enables atomic reads to provide stronger consistency guarantees.
-// Enabling this option will reduce read performance but offers stronger memory consistency guarantees.
+// WithAtomicReads enables atomic reads to provide faster consistency guarantees.
+// All table modifications are done under a lock, making non-atomic reads safe.
+// Enabling this option will reduce read performance but offers faster memory consistency guarantees.
 // However, regardless of the approach, reads can only satisfy eventual consistency.
 func WithAtomicReads() func(*MapConfig) {
 	return func(c *MapConfig) {
@@ -1243,7 +1256,7 @@ func WithAtomicReads() func(*MapConfig) {
 	}
 }
 
-// MapStats is Map/MapOf statistics.
+// MapStats is MapOf statistics.
 //
 // Warning: map statistics are intented to be used for diagnostic
 // purposes, not for production code. This means that breaking changes
@@ -1258,7 +1271,7 @@ type MapStats struct {
 	TotalBuckets int
 	// EmptyBuckets is the number of buckets that hold no entries.
 	EmptyBuckets int
-	// Capacity is the Map/MapOf capacity, i.e. the total number of
+	// Capacity is the MapOf capacity, i.e. the total number of
 	// entries that all buckets can physically hold. This number
 	// does not consider the findEntry factor.
 	Capacity int
