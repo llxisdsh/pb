@@ -57,23 +57,24 @@ type structKey struct {
 func TestMap_BucketOfStructSize(t *testing.T) {
 	size := unsafe.Sizeof(bucketOf{})
 	t.Log("bucketOf size:", size)
-	if size != 64 {
-		t.Fatalf("size of 64B (one cache line) is expected, got: %d", size)
-	}
-	tabsize := unsafe.Sizeof(mapOfTable{})
-	t.Log("mapOfTable size:", tabsize)
-	if tabsize%cacheLineSize != 0 {
-		t.Fatalf("size of 64B (one cache line) is expected mapOfTable, got: %d", tabsize)
+	if size%cacheLineSize != 0 {
+		t.Fatalf("size of 64B (one cache line) is expected bucketOf, got: %d", size)
 	}
 
-	mapsize := unsafe.Sizeof(MapOf[string, int]{})
-	t.Log("MapOf size:", mapsize)
-	if mapsize%cacheLineSize != 0 {
-		t.Fatalf("size of 64B (one cache line) is expected mapsize, got: %d", tabsize)
+	size = unsafe.Sizeof(mapOfTable{})
+	t.Log("mapOfTable size:", size)
+	if size%cacheLineSize != 0 {
+		t.Fatalf("size of 64B (one cache line) is expected mapOfTable, got: %d", size)
 	}
-	structType := reflect.TypeOf(MapOf[string, int]{})
-	t.Logf("Struct MapOf: %s", structType.Name())
 
+	size = unsafe.Sizeof(MapOf[string, int]{})
+	t.Log("MapOf size:", size)
+	if size%cacheLineSize != 0 {
+		t.Fatalf("size of 64B (one cache line) is expected MapOf, got: %d", size)
+	}
+
+	structType := reflect.TypeOf(bucketOf{})
+	t.Logf("Struct bucketOf: %s", structType.Name())
 	for i := 0; i < structType.NumField(); i++ {
 		field := structType.Field(i)
 		fieldName := field.Name
@@ -84,9 +85,9 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 		t.Logf("Field: %-10s Type: %-10s Offset: %d Size: %d bytes\n",
 			fieldName, fieldType, fieldOffset, fieldSize)
 	}
+
 	structType = reflect.TypeOf(mapOfTable{})
 	t.Logf("Struct mapOfTable: %s", structType.Name())
-
 	for i := 0; i < structType.NumField(); i++ {
 		field := structType.Field(i)
 		fieldName := field.Name
@@ -97,6 +98,20 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 		t.Logf("Field: %-10s Type: %-10s Offset: %d Size: %d bytes\n",
 			fieldName, fieldType, fieldOffset, fieldSize)
 	}
+
+	structType = reflect.TypeOf(MapOf[string, int]{})
+	t.Logf("Struct MapOf: %s", structType.Name())
+	for i := 0; i < structType.NumField(); i++ {
+		field := structType.Field(i)
+		fieldName := field.Name
+		fieldType := field.Type
+		fieldOffset := field.Offset
+		fieldSize := fieldType.Size()
+
+		t.Logf("Field: %-10s Type: %-10s Offset: %d Size: %d bytes\n",
+			fieldName, fieldType, fieldOffset, fieldSize)
+	}
+
 }
 
 func TestMapOfMisc(t *testing.T) {

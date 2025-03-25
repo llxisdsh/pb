@@ -73,7 +73,8 @@ const (
 //   - Provides complete sync.Map and compatibility
 //   - Specially optimized for read operations
 //   - Supports parallel resizing
-//   - Offers rich functional extensions, as well as LoadOrCompute, ProcessEntry, Size, IsZero, etc
+//   - Offers rich functional extensions, as well as LoadOrCompute, ProcessEntry, Size, IsZero,
+//     Clone, Batch processing functions, etc.
 //   - All tests passed
 //   - Extremely fast, see benchmark tests below
 //
@@ -337,6 +338,7 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 
 // Load compatible with `sync.Map`
 //
+// Notes:
 // Using the build option `mapof_atomicreads` enables atomic reads,
 // boosting consistency but slowing performance slightly. See its description for details.
 func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
@@ -522,6 +524,7 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 }
 
 // LoadOrCompute compatible with `xsync.MapOf`.
+// Alias: LoadOrStoreFn
 func (m *MapOf[K, V]) LoadOrCompute(key K, valueFn func() V) (actual V, loaded bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -633,23 +636,23 @@ func (m *MapOf[K, V]) Compute(
 //
 //	key: The key to look up or process
 //
-//	fn: Function called when the key doesn't exist, returns:
+//	valueFn: Function called when the key doesn't exist, returns:
 //	 - *EntryOf[K, V]: New entry, nil means don't store any value
 //	 - V: Result value to return to the caller
 //	 - bool: Whether the operation succeeded
 //
 // Returns:
-//   - result V: Existing value if key exists; otherwise the value returned by fn
-//   - ok bool: true if key exists; otherwise the bool value returned by fn
+//   - result V: Existing value if key exists; otherwise the value returned by valueFn
+//   - success bool: true if key exists; otherwise the bool value returned by valueFn
 //
-// Note:
+// Notes:
 //   - The fn function is executed while holding an internal lock.
 //     Keep the execution time short to avoid blocking other operations.
 //   - Avoid calling other map methods inside fn to prevent deadlocks.
 func (m *MapOf[K, V]) LoadOrProcessEntry(
 	key K,
-	fn func() (*EntryOf[K, V], V, bool),
-) (result V, ok bool) {
+	valueFn func() (*EntryOf[K, V], V, bool),
+) (result V, success bool) {
 
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -660,7 +663,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 				if loaded != nil {
 					return loaded, loaded.Value, true
 				}
-				return fn()
+				return valueFn()
 			},
 		)
 	}
@@ -674,7 +677,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 			if loaded != nil {
 				return loaded, loaded.Value, true
 			}
-			return fn()
+			return valueFn()
 		},
 	)
 }
@@ -700,20 +703,20 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 //
 // Returns:
 //   - result V: First return value from fn
-//   - ok bool: Second return value from fn
+//   - success bool: Second return value from fn
 //
 // Notes:
-//   - The input parameter e is immutable and should not be modified directly
+//   - The input parameter loaded is immutable and should not be modified directly
 //   - This method internally ensures thread safety and consistency
 //   - If you need to modify a value, return a new EntryOf instance
-//   - IMPORTANT: The fn function is executed while holding an internal lock.
+//   - The fn function is executed while holding an internal lock.
 //     Keep the execution time short to avoid blocking other operations.
 //   - Avoid calling other map methods inside fn to prevent deadlocks.
 //   - Do not perform expensive computations or I/O operations inside fn.
 func (m *MapOf[K, V]) ProcessEntry(
 	key K,
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
-) (result V, ok bool) {
+) (result V, success bool) {
 
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -1072,10 +1075,12 @@ func (m *MapOf[K, V]) RangeValues(yield func(value V) bool) {
 // By default, it performs lock-free iteration.
 // When used build option `mapof_atomicreads`, it locks each bucket, copies it out, and then iterates over the copy.
 //
-// IMPORTANT:
+// Notes:
 //   - Never modify the Key or Value in an Entry under any circumstances.
 //   - Range always uses the current table, which may not reflect the most up-to-date situation.
 //     Like `sync.Map`, reads only satisfy eventual consistency.
+//   - Using the build option `mapof_atomicreads` enables atomic reads,
+//     boosting consistency but slowing performance slightly. See its description for details.
 func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -1157,10 +1162,27 @@ func (m *MapOf[K, V]) IsZero() bool {
 
 // ToMap Collect all entries and return a map[K]V
 func (m *MapOf[K, V]) ToMap() map[K]V {
-	a := make(map[K]V)
-	m.Range(func(k K, v V) bool {
-		a[k] = v
+	a := make(map[K]V, m.Size())
+	m.RangeEntry(func(e *EntryOf[K, V]) bool {
+		a[e.Key] = e.Value
 		return true
+	})
+	return a
+}
+
+// ToMapWithLimit Collect up to limit entries into a map[K]V, limit < 0 is no limit
+func (m *MapOf[K, V]) ToMapWithLimit(limit int) map[K]V {
+	if limit == 0 {
+		return map[K]V{}
+	}
+	if limit < 0 {
+		limit = math.MaxInt
+	}
+	a := make(map[K]V, min(m.Size(), limit))
+	m.RangeEntry(func(e *EntryOf[K, V]) bool {
+		a[e.Key] = e.Value
+		limit--
+		return limit > 0
 	})
 	return a
 }
@@ -1175,9 +1197,9 @@ func (m *MapOf[K, V]) HasKey(key K) bool {
 	return m.findEntry(table, hash, key) != nil
 }
 
-// String Implement the formatting output interface fmt.Print %v
+// String Implement the formatting output interface fmt.Stringer
 func (m *MapOf[K, V]) String() string {
-	return strings.Replace(fmt.Sprint(m.ToMap()), "map[", "MapOf[", 1)
+	return strings.Replace(fmt.Sprint(m.ToMapWithLimit(1024)), "map[", "MapOf[", 1)
 }
 
 // MarshalJSON JSON serialization
@@ -1214,7 +1236,7 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 //   - table: current hash table
 //   - itemCount: number of items to be processed
 //   - growFactor: capacity change coefficient,
-//     0: no estimation for new items,
+//     =0: no estimation for new items,
 //     >0: estimate new items as itemCount * growFactor,
 //     <0: check if table shrinking is needed after operation
 //   - processor: function to process each item
@@ -1536,7 +1558,8 @@ func (m *MapOf[K, V]) FilterAndTransform(
 	var toProcess []EntryOf[K, V]
 	var toDelete []K
 
-	m.Range(func(key K, value V) bool {
+	m.RangeEntry(func(e *EntryOf[K, V]) bool {
+		key, value := e.Key, e.Value
 		if !filterFn(key, value) {
 			toDelete = append(toDelete, key)
 		} else if transformFn != nil {
@@ -1586,7 +1609,8 @@ func (m *MapOf[K, V]) Merge(
 
 	m.batchProcess(table, otherSize, 1.0,
 		func(table *mapOfTable, _, _ int) {
-			other.Range(func(key K, otherVal V) bool {
+			other.RangeEntry(func(e *EntryOf[K, V]) bool {
+				key, otherVal := e.Key, e.Value
 				hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
 				m.processEntry(table, hash, key,
 					func(Loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
@@ -1608,7 +1632,7 @@ func (m *MapOf[K, V]) Merge(
 // Returns a new MapOf containing the same key-value pairs
 func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 	if m.IsZero() {
-		return NewMapOf[K, V]()
+		return &MapOf[K, V]{}
 	}
 
 	// Create a new MapOf with the same configuration as the original
@@ -1628,11 +1652,12 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 		clone.batchProcess(table, size, 1.0,
 			func(table *mapOfTable, _, _ int) {
 				// Directly iterate and process all key-value pairs
-				m.Range(func(key K, value V) bool {
+				m.RangeEntry(func(e *EntryOf[K, V]) bool {
+					key, value := e.Key, e.Value
 					hash := clone.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
 					clone.processEntry(table, hash, key,
-						func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-							return &EntryOf[K, V]{Value: value}, value, e != nil
+						func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+							return &EntryOf[K, V]{Value: value}, value, loaded != nil
 						},
 					)
 					return true
