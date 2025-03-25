@@ -1036,10 +1036,34 @@ func (m *MapOf[K, V]) All() func(yield func(K, V) bool) {
 	return m.Range
 }
 
+// Keys is the iterator version for iterating over all keys.
+func (m *MapOf[K, V]) Keys() func(yield func(K) bool) {
+	return m.RangeKeys
+}
+
+// Values is the iterator version for iterating over all values.
+func (m *MapOf[K, V]) Values() func(yield func(V) bool) {
+	return m.RangeValues
+}
+
 // Range compatible with `sync.Map`.
 func (m *MapOf[K, V]) Range(yield func(key K, value V) bool) {
 	m.RangeEntry(func(e *EntryOf[K, V]) bool {
 		return yield(e.Key, e.Value)
+	})
+}
+
+// RangeKeys to iterate over all keys
+func (m *MapOf[K, V]) RangeKeys(yield func(key K) bool) {
+	m.RangeEntry(func(e *EntryOf[K, V]) bool {
+		return yield(e.Key)
+	})
+}
+
+// RangeValues to iterate over all values
+func (m *MapOf[K, V]) RangeValues(yield func(value V) bool) {
+	m.RangeEntry(func(e *EntryOf[K, V]) bool {
+		return yield(e.Value)
 	})
 }
 
@@ -1139,6 +1163,16 @@ func (m *MapOf[K, V]) ToMap() map[K]V {
 		return true
 	})
 	return a
+}
+
+// HasKey to check if the key exist
+func (m *MapOf[K, V]) HasKey(key K) bool {
+	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
+	if table == nil {
+		return false
+	}
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	return m.findEntry(table, hash, key) != nil
 }
 
 // String Implement the formatting output interface fmt.Print %v
