@@ -13,7 +13,8 @@ Key features of pb.MapOf:
 - Provides complete sync.Map and compatibility
 - Specially optimized for read operations
 - Supports parallel resizing
-- Offers rich functional extensions, as well as LoadOrCompute, ProcessEntry, Size, IsZero, etc
+- Offers rich functional extensions, as well as LoadOrCompute, ProcessEntry, Size, IsZero, 
+  Clone, Batch processing functions etc
 - All tests passed
 - Extremely fast, see benchmark tests below
 
