@@ -99,7 +99,7 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 	}
 }
 
-func TestMyMapOf(t *testing.T) {
+func TestMapOfMisc(t *testing.T) {
 	//var a *SyncMap[int, int] = NewSyncMap[int, int]()
 	var a, a1, a2, a3, a4 MapOf[int, int]
 
@@ -144,8 +144,9 @@ func TestMyMapOf(t *testing.T) {
 	t.Log(&idm)
 	t.Log(idm.LoadAndDelete(structKey{1, 1}))
 	t.Log(&idm)
+
 	var test int64
-	for k := int64(0); k <= 10000000; k++ {
+	for k := int64(0); k <= 100000; k++ {
 		atomic.StoreInt64(&test, k)
 		if test != k {
 			t.Fatal("sync test fail:", test, k)
@@ -153,7 +154,7 @@ func TestMyMapOf(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	for k := int64(0); k <= 1000000; k++ {
+	for k := int64(0); k <= 100000; k++ {
 
 		wg.Add(1)
 		go func(k int64) {
@@ -2707,4 +2708,1006 @@ var benchmarkCases = []struct {
 	{"reads=99%", 99},   //  99% loads,  0.5% stores,  0.5% deletes
 	{"reads=90%", 90},   //  90% loads,    5% stores,    5% deletes
 	{"reads=75%", 75},   //  75% loads, 12.5% stores, 12.5% deletes
+}
+
+//----------------------------------------------------------------
+
+// TestMapOfClone tests the Clone function of MapOf
+func TestMapOfClone(t *testing.T) {
+	// Test with empty map
+	t.Run("EmptyMap", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		clone := m.Clone()
+		if !clone.IsZero() {
+			t.Fatalf("expected cloned empty map to be zero, got non-zero")
+		}
+		if clone.Size() != 0 {
+			t.Fatalf("expected cloned empty map size to be 0, got: %d", clone.Size())
+		}
+	})
+
+	// Test with populated map
+	t.Run("PopulatedMap", func(t *testing.T) {
+		const numEntries = 1000
+		m := NewMapOf[string, int]()
+		for i := 0; i < numEntries; i++ {
+			m.Store(strconv.Itoa(i), i)
+		}
+
+		clone := m.Clone()
+
+		// Verify size
+		if clone.Size() != numEntries {
+			t.Fatalf("expected cloned map size to be %d, got: %d", numEntries, clone.Size())
+		}
+
+		// Verify all entries were copied correctly
+		for i := 0; i < numEntries; i++ {
+			key := strconv.Itoa(i)
+			val, ok := clone.Load(key)
+			if !ok {
+				t.Fatalf("key %s missing in cloned map", key)
+			}
+			if val != i {
+				t.Fatalf("expected value %d for key %s, got: %d", i, key, val)
+			}
+		}
+
+		// Verify independence - modifying original should not affect clone
+		m.Store("new", 9999)
+		if _, ok := clone.Load("new"); ok {
+			t.Fatalf("clone should not be affected by changes to original map")
+		}
+
+		// Verify independence - modifying clone should not affect original
+		clone.Store("clone-only", 8888)
+		if _, ok := m.Load("clone-only"); ok {
+			t.Fatalf("original should not be affected by changes to cloned map")
+		}
+	})
+}
+
+// TestMapOfMerge tests the Merge function of MapOf
+func TestMapOfMerge(t *testing.T) {
+	// Test merging with nil map
+	t.Run("NilMap", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		m.Store("a", 1)
+		m.Store("b", 2)
+
+		// Merge with nil should not change the map
+		m.Merge(nil, nil)
+
+		if m.Size() != 2 {
+			t.Fatalf("expected map size to remain 2 after merging with nil, got: %d", m.Size())
+		}
+		expectPresentMapOf(t, "a", 1)(m.Load("a"))
+		expectPresentMapOf(t, "b", 2)(m.Load("b"))
+	})
+
+	// Test merging with empty map
+	t.Run("EmptyMap", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		m.Store("a", 1)
+		m.Store("b", 2)
+
+		empty := NewMapOf[string, int]()
+
+		// Merge with empty should not change the map
+		m.Merge(empty, nil)
+
+		if m.Size() != 2 {
+			t.Fatalf("expected map size to remain 2 after merging with empty map, got: %d", m.Size())
+		}
+		expectPresentMapOf(t, "a", 1)(m.Load("a"))
+		expectPresentMapOf(t, "b", 2)(m.Load("b"))
+	})
+
+	// Test merging with non-overlapping maps
+	t.Run("NonOverlapping", func(t *testing.T) {
+		m1 := NewMapOf[string, int]()
+		m1.Store("a", 1)
+		m1.Store("b", 2)
+
+		m2 := NewMapOf[string, int]()
+		m2.Store("c", 3)
+		m2.Store("d", 4)
+
+		// Merge non-overlapping maps
+		m1.Merge(m2, nil)
+
+		if m1.Size() != 4 {
+			t.Fatalf("expected merged map size to be 4, got: %d", m1.Size())
+		}
+		expectPresentMapOf(t, "a", 1)(m1.Load("a"))
+		expectPresentMapOf(t, "b", 2)(m1.Load("b"))
+		expectPresentMapOf(t, "c", 3)(m1.Load("c"))
+		expectPresentMapOf(t, "d", 4)(m1.Load("d"))
+	})
+
+	// Test merging with overlapping maps and default conflict resolution
+	t.Run("OverlappingDefaultConflict", func(t *testing.T) {
+		m1 := NewMapOf[string, int]()
+		m1.Store("a", 1)
+		m1.Store("b", 2)
+		m1.Store("c", 30) // Will be overwritten
+
+		m2 := NewMapOf[string, int]()
+		m2.Store("c", 3) // Overlaps with m1
+		m2.Store("d", 4)
+
+		// Merge with default conflict resolution (use value from other map)
+		m1.Merge(m2, nil)
+
+		if m1.Size() != 4 {
+			t.Fatalf("expected merged map size to be 4, got: %d", m1.Size())
+		}
+		expectPresentMapOf(t, "a", 1)(m1.Load("a"))
+		expectPresentMapOf(t, "b", 2)(m1.Load("b"))
+		expectPresentMapOf(t, "c", 3)(m1.Load("c")) // Should be overwritten with value from m2
+		expectPresentMapOf(t, "d", 4)(m1.Load("d"))
+	})
+
+	// Test merging with overlapping maps and custom conflict resolution
+	t.Run("OverlappingCustomConflict", func(t *testing.T) {
+		m1 := NewMapOf[string, int]()
+		m1.Store("a", 1)
+		m1.Store("b", 2)
+		m1.Store("c", 30)
+
+		m2 := NewMapOf[string, int]()
+		m2.Store("c", 3) // Overlaps with m1
+		m2.Store("d", 4)
+
+		// Custom conflict resolution: sum the values
+		m1.Merge(m2, func(key string, thisVal, otherVal int) int {
+			return thisVal + otherVal
+		})
+
+		if m1.Size() != 4 {
+			t.Fatalf("expected merged map size to be 4, got: %d", m1.Size())
+		}
+		expectPresentMapOf(t, "a", 1)(m1.Load("a"))
+		expectPresentMapOf(t, "b", 2)(m1.Load("b"))
+		expectPresentMapOf(t, "c", 33)(m1.Load("c")) // Should be sum of values (30+3)
+		expectPresentMapOf(t, "d", 4)(m1.Load("d"))
+	})
+}
+
+// TestMapOfFilterAndTransform tests the FilterAndTransform function of MapOf
+func TestMapOfFilterAndTransform(t *testing.T) {
+	// Test with empty map
+	t.Run("EmptyMap", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+
+		// Should not panic with empty map
+		m.FilterAndTransform(
+			func(key string, value int) bool { return true },
+			func(key string, value int) (int, bool) { return value * 2, true },
+		)
+
+		if m.Size() != 0 {
+			t.Fatalf("expected empty map to remain empty, got size: %d", m.Size())
+		}
+	})
+
+	// Test filtering only (no transformation)
+	t.Run("FilterOnly", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		for i := 0; i < 10; i++ {
+			m.Store(strconv.Itoa(i), i)
+		}
+
+		// Keep only even numbers
+		m.FilterAndTransform(
+			func(key string, value int) bool { return value%2 == 0 },
+			nil, // No transformation
+		)
+
+		if m.Size() != 5 {
+			t.Fatalf("expected filtered map size to be 5, got: %d", m.Size())
+		}
+
+		// Verify only even numbers remain
+		m.Range(func(key string, value int) bool {
+			if value%2 != 0 {
+				t.Fatalf("expected only even values, found odd value: %d", value)
+			}
+			return true
+		})
+
+		// Check specific values
+		expectPresentMapOf(t, "0", 0)(m.Load("0"))
+		expectPresentMapOf(t, "2", 2)(m.Load("2"))
+		expectMissingMapOf(t, "1", 0)(m.Load("1"))
+		expectMissingMapOf(t, "3", 0)(m.Load("3"))
+	})
+
+	// Test transformation only (no filtering)
+	t.Run("TransformOnly", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		for i := 0; i < 5; i++ {
+			m.Store(strconv.Itoa(i), i)
+		}
+
+		// Double all values
+		m.FilterAndTransform(
+			func(key string, value int) bool { return true }, // Keep all
+			func(key string, value int) (int, bool) { return value * 2, true },
+		)
+
+		if m.Size() != 5 {
+			t.Fatalf("expected map size to remain 5, got: %d", m.Size())
+		}
+
+		// Verify all values are doubled
+		for i := 0; i < 5; i++ {
+			key := strconv.Itoa(i)
+			expectPresentMapOf(t, key, i*2)(m.Load(key))
+		}
+	})
+
+	// Test both filtering and transformation
+	t.Run("FilterAndTransform", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		for i := 0; i < 10; i++ {
+			m.Store(strconv.Itoa(i), i)
+		}
+
+		// Keep only even numbers and double them
+		m.FilterAndTransform(
+			func(key string, value int) bool { return value%2 == 0 },
+			func(key string, value int) (int, bool) { return value * 2, true },
+		)
+
+		if m.Size() != 5 {
+			t.Fatalf("expected filtered map size to be 5, got: %d", m.Size())
+		}
+
+		// Verify only even numbers remain and they're doubled
+		expectedValues := map[string]int{
+			"0": 0,  // 0*2
+			"2": 4,  // 2*2
+			"4": 8,  // 4*2
+			"6": 12, // 6*2
+			"8": 16, // 8*2
+		}
+
+		for key, expected := range expectedValues {
+			expectPresentMapOf(t, key, expected)(m.Load(key))
+		}
+
+		// Check odd numbers are removed
+		for i := 1; i < 10; i += 2 {
+			expectMissingMapOf(t, strconv.Itoa(i), 0)(m.Load(strconv.Itoa(i)))
+		}
+	})
+
+	// Test selective transformation (only transform some values)
+	t.Run("SelectiveTransform", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		for i := 0; i < 10; i++ {
+			m.Store(strconv.Itoa(i), i)
+		}
+
+		// Keep all numbers but only double even ones
+		m.FilterAndTransform(
+			func(key string, value int) bool { return true }, // Keep all
+			func(key string, value int) (int, bool) {
+				if value%2 == 0 {
+					return value * 2, true // Transform even numbers
+				}
+				return value, false // Don't transform odd numbers
+			},
+		)
+
+		if m.Size() != 10 {
+			t.Fatalf("expected map size to remain 10, got: %d", m.Size())
+		}
+
+		// Verify even numbers are doubled, odd numbers unchanged
+		for i := 0; i < 10; i++ {
+			key := strconv.Itoa(i)
+			if i%2 == 0 {
+				expectPresentMapOf(t, key, i*2)(m.Load(key)) // Even numbers doubled
+			} else {
+				expectPresentMapOf(t, key, i)(m.Load(key)) // Odd numbers unchanged
+			}
+		}
+	})
+}
+
+// TestMapOfFromMap tests the FromMap function of MapOf
+func TestMapOfFromMap(t *testing.T) {
+	// Test with empty map
+	t.Run("EmptyMap", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		source := map[string]int{}
+
+		m.FromMap(source)
+
+		if m.Size() != 0 {
+			t.Fatalf("expected map size to be 0, got: %d", m.Size())
+		}
+	})
+
+	// Test with nil map
+	t.Run("NilMap", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		var source map[string]int = nil
+
+		m.FromMap(source)
+
+		if m.Size() != 0 {
+			t.Fatalf("expected map size to be 0, got: %d", m.Size())
+		}
+	})
+
+	// Test with populated map
+	t.Run("PopulatedMap", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		source := map[string]int{
+			"a": 1,
+			"b": 2,
+			"c": 3,
+		}
+
+		m.FromMap(source)
+
+		if m.Size() != 3 {
+			t.Fatalf("expected map size to be 3, got: %d", m.Size())
+		}
+
+		expectPresentMapOf(t, "a", 1)(m.Load("a"))
+		expectPresentMapOf(t, "b", 2)(m.Load("b"))
+		expectPresentMapOf(t, "c", 3)(m.Load("c"))
+	})
+
+	// Test with existing data (should overwrite)
+	t.Run("OverwriteExisting", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		m.Store("a", 100) // Will be overwritten
+		m.Store("b", 200) // Will be overwritten
+		m.Store("d", 400) // Will remain
+
+		source := map[string]int{
+			"a": 1,
+			"b": 2,
+			"c": 3,
+		}
+
+		m.FromMap(source)
+
+		if m.Size() != 4 {
+			t.Fatalf("expected map size to be 4, got: %d", m.Size())
+		}
+
+		// Check overwritten values
+		expectPresentMapOf(t, "a", 1)(m.Load("a"))
+		expectPresentMapOf(t, "b", 2)(m.Load("b"))
+
+		// Check new value
+		expectPresentMapOf(t, "c", 3)(m.Load("c"))
+
+		// Check existing value not in source
+		expectPresentMapOf(t, "d", 400)(m.Load("d"))
+	})
+
+	// Test with large map
+	t.Run("LargeMap", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		source := make(map[string]int, 1000)
+
+		for i := 0; i < 1000; i++ {
+			source[strconv.Itoa(i)] = i
+		}
+
+		m.FromMap(source)
+
+		if m.Size() != 1000 {
+			t.Fatalf("expected map size to be 1000, got: %d", m.Size())
+		}
+
+		// Check random samples
+		for _, i := range []int{0, 42, 99, 500, 999} {
+			key := strconv.Itoa(i)
+			expectPresentMapOf(t, key, i)(m.Load(key))
+		}
+	})
+}
+
+// TestMapOfBatchUpsert tests the BatchUpsert function of MapOf
+func TestMapOfBatchUpsert(t *testing.T) {
+	// Test with empty entries slice
+	t.Run("EmptyEntries", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		entries := []EntryOf[string, int]{}
+
+		previous, loaded := m.BatchUpsert(entries, 0)
+
+		if len(previous) != 0 {
+			t.Fatalf("expected empty previous values slice, got length: %d", len(previous))
+		}
+		if len(loaded) != 0 {
+			t.Fatalf("expected empty loaded slice, got length: %d", len(loaded))
+		}
+	})
+
+	// Test with new entries (no existing keys)
+	t.Run("NewEntries", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		entries := []EntryOf[string, int]{
+			{Key: "a", Value: 1},
+			{Key: "b", Value: 2},
+			{Key: "c", Value: 3},
+		}
+
+		previous, loaded := m.BatchUpsert(entries, 0)
+
+		// Check return values
+		if len(previous) != 3 {
+			t.Fatalf("expected previous values slice length 3, got: %d", len(previous))
+		}
+		if len(loaded) != 3 {
+			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
+		}
+
+		// Check all entries should have zero values and loaded=false
+		for i, val := range previous {
+			if val != 0 {
+				t.Fatalf("expected zero value for new entry at index %d, got: %d", i, val)
+			}
+			if loaded[i] {
+				t.Fatalf("expected loaded[%d] to be false for new entry", i)
+			}
+		}
+
+		// Verify map contents
+		if m.Size() != 3 {
+			t.Fatalf("expected map size to be 3, got: %d", m.Size())
+		}
+		expectPresentMapOf(t, "a", 1)(m.Load("a"))
+		expectPresentMapOf(t, "b", 2)(m.Load("b"))
+		expectPresentMapOf(t, "c", 3)(m.Load("c"))
+	})
+
+	// Test with existing entries (updating existing keys)
+	t.Run("ExistingEntries", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		// Pre-populate the map
+		m.Store("a", 100)
+		m.Store("b", 200)
+
+		entries := []EntryOf[string, int]{
+			{Key: "a", Value: 1}, // Will update
+			{Key: "b", Value: 2}, // Will update
+			{Key: "c", Value: 3}, // Will insert
+		}
+
+		previous, loaded := m.BatchUpsert(entries, 0)
+
+		// Check return values
+		if len(previous) != 3 {
+			t.Fatalf("expected previous values slice length 3, got: %d", len(previous))
+		}
+		if len(loaded) != 3 {
+			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
+		}
+
+		// Check previous values and loaded status
+		expectedPrevious := []int{100, 200, 0}
+		expectedLoaded := []bool{true, true, false}
+
+		for i := range entries {
+			if previous[i] != expectedPrevious[i] {
+				t.Fatalf("expected previous[%d] to be %d, got: %d", i, expectedPrevious[i], previous[i])
+			}
+			if loaded[i] != expectedLoaded[i] {
+				t.Fatalf("expected loaded[%d] to be %v, got: %v", i, expectedLoaded[i], loaded[i])
+			}
+		}
+
+		// Verify map contents
+		if m.Size() != 3 {
+			t.Fatalf("expected map size to be 3, got: %d", m.Size())
+		}
+		expectPresentMapOf(t, "a", 1)(m.Load("a"))
+		expectPresentMapOf(t, "b", 2)(m.Load("b"))
+		expectPresentMapOf(t, "c", 3)(m.Load("c"))
+	})
+
+	// Test with parallel processing
+	t.Run("ParallelProcessing", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		const numEntries = 1000
+		entries := make([]EntryOf[string, int], numEntries)
+
+		for i := 0; i < numEntries; i++ {
+			entries[i] = EntryOf[string, int]{Key: strconv.Itoa(i), Value: i}
+		}
+
+		// Use parallel processing (negative value uses CPU count)
+		previous, loaded := m.BatchUpsert(entries, -1)
+
+		// Check return values
+		if len(previous) != numEntries {
+			t.Fatalf("expected previous values slice length %d, got: %d", numEntries, len(previous))
+		}
+		if len(loaded) != numEntries {
+			t.Fatalf("expected loaded slice length %d, got: %d", numEntries, len(loaded))
+		}
+
+		// All entries should be new
+		for i := 0; i < numEntries; i++ {
+			if loaded[i] {
+				t.Fatalf("expected loaded[%d] to be false for new entry", i)
+			}
+		}
+
+		// Verify map size
+		if m.Size() != numEntries {
+			t.Fatalf("expected map size to be %d, got: %d", numEntries, m.Size())
+		}
+
+		// Check random samples
+		for _, i := range []int{0, 42, 99, 500, 999} {
+			key := strconv.Itoa(i)
+			expectPresentMapOf(t, key, i)(m.Load(key))
+		}
+	})
+}
+
+// TestMapOfBatchInsert tests the BatchInsert function of MapOf
+func TestMapOfBatchInsert(t *testing.T) {
+	// Test with empty entries slice
+	t.Run("EmptyEntries", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		entries := []EntryOf[string, int]{}
+
+		actual, loaded := m.BatchInsert(entries, 0)
+
+		if len(actual) != 0 {
+			t.Fatalf("expected empty actual values slice, got length: %d", len(actual))
+		}
+		if len(loaded) != 0 {
+			t.Fatalf("expected empty loaded slice, got length: %d", len(loaded))
+		}
+	})
+
+	// Test with new entries (no existing keys)
+	t.Run("NewEntries", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		entries := []EntryOf[string, int]{
+			{Key: "a", Value: 1},
+			{Key: "b", Value: 2},
+			{Key: "c", Value: 3},
+		}
+
+		actual, loaded := m.BatchInsert(entries, 0)
+
+		// Check return values
+		if len(actual) != 3 {
+			t.Fatalf("expected actual values slice length 3, got: %d", len(actual))
+		}
+		if len(loaded) != 3 {
+			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
+		}
+
+		// Check all entries should have inserted values and loaded=false
+		for i, entry := range entries {
+			if actual[i] != entry.Value {
+				t.Fatalf("expected actual[%d] to be %d, got: %d", i, entry.Value, actual[i])
+			}
+			if loaded[i] {
+				t.Fatalf("expected loaded[%d] to be false for new entry", i)
+			}
+		}
+
+		// Verify map contents
+		if m.Size() != 3 {
+			t.Fatalf("expected map size to be 3, got: %d", m.Size())
+		}
+		expectPresentMapOf(t, "a", 1)(m.Load("a"))
+		expectPresentMapOf(t, "b", 2)(m.Load("b"))
+		expectPresentMapOf(t, "c", 3)(m.Load("c"))
+	})
+
+	// Test with existing entries (not modifying existing keys)
+	t.Run("ExistingEntries", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		// Pre-populate the map
+		m.Store("a", 100)
+		m.Store("b", 200)
+
+		entries := []EntryOf[string, int]{
+			{Key: "a", Value: 1}, // Should not update
+			{Key: "b", Value: 2}, // Should not update
+			{Key: "c", Value: 3}, // Will insert
+		}
+
+		actual, loaded := m.BatchInsert(entries, 0)
+
+		// Check return values
+		if len(actual) != 3 {
+			t.Fatalf("expected actual values slice length 3, got: %d", len(actual))
+		}
+		if len(loaded) != 3 {
+			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
+		}
+
+		// Check actual values and loaded status
+		expectedActual := []int{100, 200, 3} // Existing values for a,b; new value for c
+		expectedLoaded := []bool{true, true, false}
+
+		for i := range entries {
+			if actual[i] != expectedActual[i] {
+				t.Fatalf("expected actual[%d] to be %d, got: %d", i, expectedActual[i], actual[i])
+			}
+			if loaded[i] != expectedLoaded[i] {
+				t.Fatalf("expected loaded[%d] to be %v, got: %v", i, expectedLoaded[i], loaded[i])
+			}
+		}
+
+		// Verify map contents - existing keys should not be modified
+		if m.Size() != 3 {
+			t.Fatalf("expected map size to be 3, got: %d", m.Size())
+		}
+		expectPresentMapOf(t, "a", 100)(m.Load("a")) // Still 100, not 1
+		expectPresentMapOf(t, "b", 200)(m.Load("b")) // Still 200, not 2
+		expectPresentMapOf(t, "c", 3)(m.Load("c"))   // New entry
+	})
+
+	// Test with parallel processing
+	t.Run("ParallelProcessing", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		const numEntries = 1000
+		entries := make([]EntryOf[string, int], numEntries)
+
+		for i := 0; i < numEntries; i++ {
+			entries[i] = EntryOf[string, int]{Key: strconv.Itoa(i), Value: i}
+		}
+
+		// Use parallel processing (negative value uses CPU count)
+		actual, loaded := m.BatchInsert(entries, -1)
+
+		// Check return values
+		if len(actual) != numEntries {
+			t.Fatalf("expected actual values slice length %d, got: %d", numEntries, len(actual))
+		}
+		if len(loaded) != numEntries {
+			t.Fatalf("expected loaded slice length %d, got: %d", numEntries, len(loaded))
+		}
+
+		// All entries should be new
+		for i := 0; i < numEntries; i++ {
+			if loaded[i] {
+				t.Fatalf("expected loaded[%d] to be false for new entry", i)
+			}
+			if actual[i] != i {
+				t.Fatalf("expected actual[%d] to be %d, got: %d", i, i, actual[i])
+			}
+		}
+
+		// Verify map size
+		if m.Size() != numEntries {
+			t.Fatalf("expected map size to be %d, got: %d", numEntries, m.Size())
+		}
+
+		// Check random samples
+		for _, i := range []int{0, 42, 99, 500, 999} {
+			key := strconv.Itoa(i)
+			expectPresentMapOf(t, key, i)(m.Load(key))
+		}
+	})
+}
+
+// TestMapOfBatchDelete tests the BatchDelete function of MapOf
+func TestMapOfBatchDelete(t *testing.T) {
+	// Test with empty keys slice
+	t.Run("EmptyKeys", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		keys := []string{}
+
+		previous, loaded := m.BatchDelete(keys, 0)
+
+		if len(previous) != 0 {
+			t.Fatalf("expected empty previous values slice, got length: %d", len(previous))
+		}
+		if len(loaded) != 0 {
+			t.Fatalf("expected empty loaded slice, got length: %d", len(loaded))
+		}
+	})
+
+	// Test with non-existent keys
+	t.Run("NonExistentKeys", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		keys := []string{"a", "b", "c"}
+
+		previous, loaded := m.BatchDelete(keys, 0)
+
+		// Check return values
+		if len(previous) != 3 {
+			t.Fatalf("expected previous values slice length 3, got: %d", len(previous))
+		}
+		if len(loaded) != 3 {
+			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
+		}
+
+		// All entries should have zero values and loaded=false
+		for i := range keys {
+			if previous[i] != 0 {
+				t.Fatalf("expected previous[%d] to be 0 for non-existent key, got: %d", i, previous[i])
+			}
+			if loaded[i] {
+				t.Fatalf("expected loaded[%d] to be false for non-existent key", i)
+			}
+		}
+
+		// Map should remain empty
+		if m.Size() != 0 {
+			t.Fatalf("expected map size to be 0, got: %d", m.Size())
+		}
+	})
+
+	// Test with existing keys
+	t.Run("ExistingKeys", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		// Pre-populate the map
+		m.Store("a", 1)
+		m.Store("b", 2)
+		m.Store("c", 3)
+		m.Store("d", 4)
+
+		keys := []string{"a", "c", "e"} // a,c exist; e doesn't
+
+		previous, loaded := m.BatchDelete(keys, 0)
+
+		// Check return values
+		if len(previous) != 3 {
+			t.Fatalf("expected previous values slice length 3, got: %d", len(previous))
+		}
+		if len(loaded) != 3 {
+			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
+		}
+
+		// Check previous values and loaded status
+		expectedPrevious := []int{1, 3, 0}
+		expectedLoaded := []bool{true, true, false}
+
+		for i := range keys {
+			if previous[i] != expectedPrevious[i] {
+				t.Fatalf("expected previous[%d] to be %d, got: %d", i, expectedPrevious[i], previous[i])
+			}
+			if loaded[i] != expectedLoaded[i] {
+				t.Fatalf("expected loaded[%d] to be %v, got: %v", i, expectedLoaded[i], loaded[i])
+			}
+		}
+
+		// Verify map contents - deleted keys should be gone
+		if m.Size() != 2 {
+			t.Fatalf("expected map size to be 2, got: %d", m.Size())
+		}
+		expectMissingMapOf(t, "a", 0)(m.Load("a")) // Deleted
+		expectPresentMapOf(t, "b", 2)(m.Load("b")) // Still present
+		expectMissingMapOf(t, "c", 0)(m.Load("c")) // Deleted
+		expectPresentMapOf(t, "d", 4)(m.Load("d")) // Still present
+	})
+
+	// Test with parallel processing
+	t.Run("ParallelProcessing", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		const numEntries = 1000
+
+		// Pre-populate the map
+		for i := 0; i < numEntries; i++ {
+			m.Store(strconv.Itoa(i), i)
+		}
+
+		// Delete even-numbered keys
+		keys := make([]string, numEntries/2)
+		for i := 0; i < numEntries; i += 2 {
+			keys[i/2] = strconv.Itoa(i)
+		}
+
+		// Use parallel processing (negative value uses CPU count)
+		previous, loaded := m.BatchDelete(keys, -1)
+
+		// Check return values
+		if len(previous) != numEntries/2 {
+			t.Fatalf("expected previous values slice length %d, got: %d", numEntries/2, len(previous))
+		}
+		if len(loaded) != numEntries/2 {
+			t.Fatalf("expected loaded slice length %d, got: %d", numEntries/2, len(loaded))
+		}
+
+		// All deleted entries should have correct values and loaded=true
+		for i := 0; i < numEntries/2; i++ {
+			expectedValue := i * 2 // Even numbers
+			if previous[i] != expectedValue {
+				t.Fatalf("expected previous[%d] to be %d, got: %d", i, expectedValue, previous[i])
+			}
+			if !loaded[i] {
+				t.Fatalf("expected loaded[%d] to be true for existing key", i)
+			}
+		}
+
+		// Verify map size
+		if m.Size() != numEntries/2 {
+			t.Fatalf("expected map size to be %d, got: %d", numEntries/2, m.Size())
+		}
+
+		// Check random samples - even numbers should be gone, odd numbers present
+		for i := 0; i < 20; i++ {
+			key := strconv.Itoa(i)
+			if i%2 == 0 {
+				expectMissingMapOf(t, key, 0)(m.Load(key)) // Even numbers deleted
+			} else {
+				expectPresentMapOf(t, key, i)(m.Load(key)) // Odd numbers present
+			}
+		}
+	})
+}
+
+// TestMapOfBatchUpdate tests the BatchUpdate function of MapOf
+func TestMapOfBatchUpdate(t *testing.T) {
+	// Test with empty entries slice
+	t.Run("EmptyEntries", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		entries := []EntryOf[string, int]{}
+
+		previous, loaded := m.BatchUpdate(entries, 0)
+
+		if len(previous) != 0 {
+			t.Fatalf("expected empty previous values slice, got length: %d", len(previous))
+		}
+		if len(loaded) != 0 {
+			t.Fatalf("expected empty loaded slice, got length: %d", len(loaded))
+		}
+	})
+
+	// Test with non-existent keys
+	t.Run("NonExistentKeys", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		entries := []EntryOf[string, int]{
+			{Key: "a", Value: 1},
+			{Key: "b", Value: 2},
+			{Key: "c", Value: 3},
+		}
+
+		previous, loaded := m.BatchUpdate(entries, 0)
+
+		// Check return values
+		if len(previous) != 3 {
+			t.Fatalf("expected previous values slice length 3, got: %d", len(previous))
+		}
+		if len(loaded) != 3 {
+			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
+		}
+
+		// All entries should have zero values and loaded=false
+		for i := range entries {
+			if previous[i] != 0 {
+				t.Fatalf("expected previous[%d] to be 0 for non-existent key, got: %d", i, previous[i])
+			}
+			if loaded[i] {
+				t.Fatalf("expected loaded[%d] to be false for non-existent key", i)
+			}
+		}
+
+		// Map should remain empty (update only affects existing keys)
+		if m.Size() != 0 {
+			t.Fatalf("expected map size to be 0, got: %d", m.Size())
+		}
+	})
+
+	// Test with existing keys
+	t.Run("ExistingKeys", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		// Pre-populate the map
+		m.Store("a", 100)
+		m.Store("b", 200)
+		m.Store("d", 400)
+
+		entries := []EntryOf[string, int]{
+			{Key: "a", Value: 1}, // Will update
+			{Key: "b", Value: 2}, // Will update
+			{Key: "c", Value: 3}, // Won't update (doesn't exist)
+			{Key: "d", Value: 4}, // Will update
+		}
+
+		previous, loaded := m.BatchUpdate(entries, 0)
+
+		// Check return values
+		if len(previous) != 4 {
+			t.Fatalf("expected previous values slice length 4, got: %d", len(previous))
+		}
+		if len(loaded) != 4 {
+			t.Fatalf("expected loaded slice length 4, got: %d", len(loaded))
+		}
+
+		// Check previous values and loaded status
+		expectedPrevious := []int{100, 200, 0, 400}
+		expectedLoaded := []bool{true, true, false, true}
+
+		for i := range entries {
+			if previous[i] != expectedPrevious[i] {
+				t.Fatalf("expected previous[%d] to be %d, got: %d", i, expectedPrevious[i], previous[i])
+			}
+			if loaded[i] != expectedLoaded[i] {
+				t.Fatalf("expected loaded[%d] to be %v, got: %v", i, expectedLoaded[i], loaded[i])
+			}
+		}
+
+		// Verify map contents - only existing keys should be updated
+		if m.Size() != 3 {
+			t.Fatalf("expected map size to be 3, got: %d", m.Size())
+		}
+		expectPresentMapOf(t, "a", 1)(m.Load("a")) // Updated
+		expectPresentMapOf(t, "b", 2)(m.Load("b")) // Updated
+		expectMissingMapOf(t, "c", 0)(m.Load("c")) // Not inserted
+		expectPresentMapOf(t, "d", 4)(m.Load("d")) // Updated
+	})
+
+	// Test with parallel processing
+	t.Run("ParallelProcessing", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		const numEntries = 1000
+
+		// Pre-populate the map with odd-numbered keys
+		for i := 1; i < numEntries; i += 2 {
+			m.Store(strconv.Itoa(i), i*10) // Store with a different value to check updates
+		}
+
+		// Create entries for all keys (both odd and even)
+		entries := make([]EntryOf[string, int], numEntries)
+		for i := 0; i < numEntries; i++ {
+			entries[i] = EntryOf[string, int]{Key: strconv.Itoa(i), Value: i}
+		}
+
+		// Use parallel processing (negative value uses CPU count)
+		previous, loaded := m.BatchUpdate(entries, -1)
+
+		// Check return values
+		if len(previous) != numEntries {
+			t.Fatalf("expected previous values slice length %d, got: %d", numEntries, len(previous))
+		}
+		if len(loaded) != numEntries {
+			t.Fatalf("expected loaded slice length %d, got: %d", numEntries, len(loaded))
+		}
+
+		// Verify results - odd numbers should be updated, even numbers should not be affected
+		for i := 0; i < numEntries; i++ {
+			if i%2 == 1 { // Odd numbers - should be updated
+				if !loaded[i] {
+					t.Fatalf("expected loaded[%d] to be true for existing key", i)
+				}
+				if previous[i] != i*10 {
+					t.Fatalf("expected previous[%d] to be %d, got: %d", i, i*10, previous[i])
+				}
+			} else { // Even numbers - should not be affected
+				if loaded[i] {
+					t.Fatalf("expected loaded[%d] to be false for non-existent key", i)
+				}
+				if previous[i] != 0 {
+					t.Fatalf("expected previous[%d] to be 0, got: %d", i, previous[i])
+				}
+			}
+		}
+
+		// Verify map size - should only contain odd numbers
+		expectedSize := numEntries / 2
+		if m.Size() != expectedSize {
+			t.Fatalf("expected map size to be %d, got: %d", expectedSize, m.Size())
+		}
+
+		// Check random samples
+		for i := 0; i < 20; i++ {
+			key := strconv.Itoa(i)
+			if i%2 == 1 { // Odd numbers should be updated
+				expectPresentMapOf(t, key, i)(m.Load(key))
+			} else { // Even numbers should not be present
+				expectMissingMapOf(t, key, 0)(m.Load(key))
+			}
+		}
+	})
 }

@@ -55,6 +55,11 @@ const (
 	minParallelResizeThreshold = 1024
 	// minimum number of buckets each goroutine handles during parallel resizing
 	minBucketsPerGoroutine = 32
+	// minimum number of items for parallel processing,
+	// below this threshold serial processing is used
+	minParallelBatchItems = 64
+	// minimum number of items each goroutine processes, used to control parallelism degree
+	minItemsPerGoroutine = 32
 )
 
 // MapOf is compatible with sync.Map.
@@ -230,6 +235,17 @@ func newMapOfTable(minTableLen int, enablePadding bool) *mapOfTable {
 	return t
 }
 
+var (
+	jsonMarshal   func(v any) ([]byte, error)
+	jsonUnmarshal func(data []byte, v any) error
+)
+
+// SetDefaultJsonMarshal sets the default JSON serialization and deserialization functions.
+// If not set, the standard library is used by default.
+func SetDefaultJsonMarshal(marshal func(v any) ([]byte, error), unmarshal func(data []byte, v any) error) {
+	jsonMarshal, jsonUnmarshal = marshal, unmarshal
+}
+
 // Init Initialization the MapOf, Allows custom key hasher (keyHash) and value equality (valEqual) functions for compare-and-swap operations
 // This function is not thread-safe, Even if this Init is not called, the Map will still be initialized automatically.
 //
@@ -336,7 +352,8 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	bidx := uintptr(len(table.buckets)-1) & h1(hash)
 	rootb := &table.buckets[bidx]
 
-	if !atomicReads {
+	if //goland:noinspection GoBoolExpressions
+	!atomicReads {
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
 			for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
@@ -457,25 +474,25 @@ func (m *MapOf[K, V]) mockSyncMap(
 	loadOrStore bool,
 ) (result V, ok bool) {
 	return m.processEntry(table, hash, key,
-		func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-			if e != nil {
+		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			if loaded != nil {
 				if loadOrStore {
-					return e, e.Value, true
+					return loaded, loaded.Value, true
 				}
-				if cmpValue != nil && !m.valEqual(unsafe.Pointer(&e.Value), noescape(unsafe.Pointer(cmpValue))) {
-					return e, e.Value, false
+				if cmpValue != nil && !m.valEqual(unsafe.Pointer(&loaded.Value), noescape(unsafe.Pointer(cmpValue))) {
+					return loaded, loaded.Value, false
 				}
 				if newValue == nil {
 					// Delete
-					return nil, e.Value, true
+					return nil, loaded.Value, true
 				}
 				// Update
 				newe := &EntryOf[K, V]{Value: *newValue}
-				return newe, e.Value, true
+				return newe, loaded.Value, true
 			}
 
 			if cmpValue != nil || newValue == nil {
-				return e, *new(V), false
+				return loaded, *new(V), false
 			}
 			// Insert
 			newe := &EntryOf[K, V]{Value: *newValue}
@@ -495,9 +512,9 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
 	return m.processEntry(table, hash, key,
-		func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-			if e != nil {
-				return &EntryOf[K, V]{Value: value}, e.Value, true
+		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			if loaded != nil {
+				return &EntryOf[K, V]{Value: value}, loaded.Value, true
 			}
 			return &EntryOf[K, V]{Value: value}, value, false
 		},
@@ -511,9 +528,9 @@ func (m *MapOf[K, V]) LoadOrCompute(key K, valueFn func() V) (actual V, loaded b
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
 		return m.processEntry(table, hash, key,
-			func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-				if e != nil {
-					return e, e.Value, true
+			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+				if loaded != nil {
+					return loaded, loaded.Value, true
 				}
 				newValue := valueFn()
 				return &EntryOf[K, V]{Value: newValue}, newValue, false
@@ -526,9 +543,9 @@ func (m *MapOf[K, V]) LoadOrCompute(key K, valueFn func() V) (actual V, loaded b
 		return e.Value, true
 	}
 	return m.processEntry(table, hash, key,
-		func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-			if e != nil {
-				return e, e.Value, true
+		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			if loaded != nil {
+				return loaded, loaded.Value, true
 			}
 			newValue := valueFn()
 			return &EntryOf[K, V]{Value: newValue}, newValue, false
@@ -547,9 +564,9 @@ func (m *MapOf[K, V]) LoadOrTryCompute(
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
 		return m.processEntry(table, hash, key,
-			func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-				if e != nil {
-					return e, e.Value, true
+			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+				if loaded != nil {
+					return loaded, loaded.Value, true
 				}
 				newValue, cancel := valueFn()
 				if cancel {
@@ -565,9 +582,9 @@ func (m *MapOf[K, V]) LoadOrTryCompute(
 		return e.Value, true
 	}
 	return m.processEntry(table, hash, key,
-		func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-			if e != nil {
-				return e, e.Value, true
+		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			if loaded != nil {
+				return loaded, loaded.Value, true
 			}
 			newValue, cancel := valueFn()
 			if cancel {
@@ -590,11 +607,11 @@ func (m *MapOf[K, V]) Compute(
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
 	return m.processEntry(table, hash, key,
-		func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-			if e != nil {
-				newValue, del := valueFn(e.Value, true)
+		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			if loaded != nil {
+				newValue, del := valueFn(loaded.Value, true)
 				if del {
-					return nil, e.Value, false
+					return nil, loaded.Value, false
 				}
 				return &EntryOf[K, V]{Value: newValue}, newValue, true
 			}
@@ -639,9 +656,9 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
 		return m.processEntry(table, hash, key,
-			func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-				if e != nil {
-					return e, e.Value, true
+			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+				if loaded != nil {
+					return loaded, loaded.Value, true
 				}
 				return fn()
 			},
@@ -653,9 +670,9 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 		return e.Value, true
 	}
 	return m.processEntry(table, hash, key,
-		func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-			if e != nil {
-				return e, e.Value, true
+		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			if loaded != nil {
+				return loaded, loaded.Value, true
 			}
 			return fn()
 		},
@@ -673,7 +690,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 //	key: The key to process
 //
 //	fn: Processing function that receives the current entry and returns the result:
-//	  - Input parameter e *EntryOf[K, V]: Current entry, nil means key doesn't exist;
+//	  - Input parameter loaded *EntryOf[K, V]: Current entry, nil means key doesn't exist;
 //	  - Return value *EntryOf[K, V]:
 //		nil means delete the entry,
 //		same as input means no modification,
@@ -695,7 +712,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 //   - Do not perform expensive computations or I/O operations inside fn.
 func (m *MapOf[K, V]) ProcessEntry(
 	key K,
-	fn func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (result V, ok bool) {
 
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
@@ -713,7 +730,8 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key K) *EntryOf
 	bidx := uintptr(len(table.buckets)-1) & h1(hash)
 	rootb := &table.buckets[bidx]
 
-	if !atomicReads {
+	if //goland:noinspection GoBoolExpressions
+	!atomicReads {
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
 			for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
@@ -746,7 +764,7 @@ func (m *MapOf[K, V]) processEntry(
 	table *mapOfTable,
 	hash uintptr,
 	key K,
-	fn func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (V, bool) {
 
 	for {
@@ -1039,8 +1057,9 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	if table == nil {
 		return
 	}
-	
-	if !atomicReads {
+
+	if //goland:noinspection GoBoolExpressions
+	!atomicReads {
 		for i := range table.buckets {
 			rootb := &table.buckets[i]
 			for b := rootb; b != nil; b = (*bucketOf)(b.next) {
@@ -1129,19 +1148,465 @@ func (m *MapOf[K, V]) String() string {
 
 // MarshalJSON JSON serialization
 func (m *MapOf[K, V]) MarshalJSON() ([]byte, error) {
+	if jsonMarshal != nil {
+		return jsonMarshal(m.ToMap())
+	}
 	return json.Marshal(m.ToMap())
 }
 
 // UnmarshalJSON JSON deserialization
 func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 	var a map[K]V
-	if err := json.Unmarshal(data, &a); err != nil {
-		return err
+	if jsonUnmarshal != nil {
+		if err := jsonUnmarshal(data, &a); err != nil {
+			return err
+		}
+	} else {
+		if err := json.Unmarshal(data, &a); err != nil {
+			return err
+		}
 	}
+
 	for k, v := range a {
 		m.Store(k, v)
 	}
 	return nil
+}
+
+// batchProcess is the core generic function for batch operations
+// It processes a group of keys or key-value pairs and applies the specified processing function to each item
+//
+// Parameters:
+//   - table: current hash table
+//   - itemCount: number of items to be processed
+//   - growFactor: capacity change coefficient,
+//     0: no estimation for new items,
+//     >0: estimate new items as itemCount * growFactor,
+//     <0: check if table shrinking is needed after operation
+//   - processor: function to process each item
+//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
+func (m *MapOf[K, V]) batchProcess(
+	table *mapOfTable,
+	itemCount int,
+	growFactor float64,
+	processor func(table *mapOfTable, start, end int),
+	parallelism int,
+) {
+	if table == nil {
+		table = m.initSlow()
+	}
+
+	// Calculate estimated new items based on growFactor
+	var newItemsEstimate int
+	checkShrink := false
+
+	if growFactor > 0 {
+		// Estimate new items
+		newItemsEstimate = int(float64(itemCount) * growFactor)
+
+		// Pre-growth check
+		if newItemsEstimate > 0 {
+			growThreshold := int64(float64(len(table.buckets)) * entriesPerMapOfBucket * mapLoadFactor)
+			if table.sumSize()+int64(newItemsEstimate) > growThreshold {
+				table, _ = m.resize(table, mapGrowHint)
+			}
+		}
+	} else if growFactor < 0 {
+		// Negative value indicates checking for shrinking after operation
+		checkShrink = true
+	}
+
+	// Determine whether to use parallel processing
+	if parallelism != 0 && itemCount >= minParallelBatchItems {
+		// Calculate optimal parallelism
+		numCPU := runtime.NumCPU()
+
+		// If user specified negative parallelism, use CPU core count
+		if parallelism < 0 {
+			parallelism = numCPU
+		}
+
+		// Calculate reasonable parallelism based on data volume and minimum items per goroutine
+		// Ensure each goroutine processes at least minItemsPerGoroutine items
+		optimalParallelism := min(parallelism, itemCount/minItemsPerGoroutine)
+
+		// Ensure parallelism is at least 1
+		if optimalParallelism > 1 {
+			// Calculate data volume for each goroutine
+			chunkSize := (itemCount + optimalParallelism - 1) / optimalParallelism
+
+			var wg sync.WaitGroup
+			for i := 0; i < optimalParallelism; i++ {
+				start := i * chunkSize
+				end := min((i+1)*chunkSize, itemCount)
+				if start >= end {
+					break
+				}
+
+				wg.Add(1)
+				go func(start, end int) {
+					defer wg.Done()
+					processor(table, start, end)
+				}(start, end)
+			}
+
+			wg.Wait()
+			return
+		}
+	}
+
+	// Serial processing
+	processor(table, 0, itemCount)
+
+	// Check if table shrinking is needed
+	if checkShrink && !m.growOnly {
+		tableLen := len(table.buckets)
+		if m.minTableLen < tableLen &&
+			table.sumSize() <= int64((tableLen*entriesPerMapOfBucket)/mapShrinkFraction) {
+			m.resize(table, mapShrinkHint)
+		}
+	}
+}
+
+// batchProcessEntries is a generic function for processing key-value pair slices
+// It applies the processFn to each entry in the slice with appropriate parallelism
+func (m *MapOf[K, V]) batchProcessEntries(
+	entries []EntryOf[K, V],
+	growFactor float64,
+	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	parallelism int,
+) ([]V, []bool) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	values := make([]V, len(entries))
+	status := make([]bool, len(entries))
+
+	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
+
+	m.batchProcess(table, len(entries), growFactor, func(table *mapOfTable, start, end int) {
+		for i := start; i < end; i++ {
+			hash := m.keyHash(noescape(unsafe.Pointer(&entries[i].Key)), table.seed)
+			values[i], status[i] = m.processEntry(table, hash, entries[i].Key,
+				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+					return processFn(&entries[i], loaded)
+				},
+			)
+		}
+	}, parallelism)
+
+	return values, status
+}
+
+// batchProcessKeys is a generic function for processing key slices
+// It applies the processFn to each key in the slice with appropriate parallelism
+func (m *MapOf[K, V]) batchProcessKeys(
+	keys []K,
+	growFactor float64,
+	processFn func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	parallelism int,
+) ([]V, []bool) {
+	if len(keys) == 0 {
+		return nil, nil
+	}
+
+	values := make([]V, len(keys))
+	status := make([]bool, len(keys))
+
+	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
+
+	m.batchProcess(table, len(keys), growFactor, func(table *mapOfTable, start, end int) {
+		for i := start; i < end; i++ {
+			hash := m.keyHash(noescape(unsafe.Pointer(&keys[i])), table.seed)
+			values[i], status[i] = m.processEntry(table, hash, keys[i],
+				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+					return processFn(keys[i], loaded)
+				},
+			)
+		}
+	}, parallelism)
+
+	return values, status
+}
+
+// BatchUpsert batch updates or inserts multiple key-value pairs, returning previous values
+//
+// Parameters:
+//   - entries: slice of key-value pairs to upsert
+//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
+//
+// Returns:
+//   - previous: slice of previous values for each key
+//   - loaded: slice of booleans indicating whether each key existed before
+func (m *MapOf[K, V]) BatchUpsert(entries []EntryOf[K, V], parallelism int) (previous []V, loaded []bool) {
+	return m.batchProcessEntries(
+		entries, 1.0,
+		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			if loaded != nil {
+				return &EntryOf[K, V]{Value: entry.Value}, loaded.Value, true
+			}
+			return &EntryOf[K, V]{Value: entry.Value}, *new(V), false
+		},
+		parallelism,
+	)
+}
+
+// BatchInsert batch inserts multiple key-value pairs, not modifying existing keys
+//
+// Parameters:
+//   - entries: slice of key-value pairs to insert
+//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
+//
+// Returns:
+//   - actual: slice of actual values for each key (either existing or newly inserted)
+//   - loaded: slice of booleans indicating whether each key existed before
+func (m *MapOf[K, V]) BatchInsert(entries []EntryOf[K, V], parallelism int) (actual []V, loaded []bool) {
+	return m.batchProcessEntries(
+		entries, 1.0,
+		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			if loaded != nil {
+				return loaded, loaded.Value, true
+			}
+			return &EntryOf[K, V]{Value: entry.Value}, entry.Value, false
+		},
+		parallelism,
+	)
+}
+
+// BatchDelete batch deletes multiple keys, returning previous values
+//
+// Parameters:
+//   - keys: slice of keys to delete
+//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
+//
+// Returns:
+//   - previous: slice of previous values for each key
+//   - loaded: slice of booleans indicating whether each key existed before
+func (m *MapOf[K, V]) BatchDelete(keys []K, parallelism int) (previous []V, loaded []bool) {
+	return m.batchProcessKeys(
+		keys, -1.0,
+		func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			if loaded != nil {
+				return nil, loaded.Value, true
+			}
+			return nil, *new(V), false
+		},
+		parallelism,
+	)
+}
+
+// BatchUpdate batch updates multiple existing keys, returning previous values
+//
+// Parameters:
+//   - entries: slice of key-value pairs to update
+//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
+//
+// Returns:
+//   - previous: slice of previous values for each key
+//   - loaded: slice of booleans indicating whether each key existed before
+func (m *MapOf[K, V]) BatchUpdate(entries []EntryOf[K, V], parallelism int) (previous []V, loaded []bool) {
+	return m.batchProcessEntries(
+		entries, 0,
+		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			if loaded != nil {
+				return &EntryOf[K, V]{Value: entry.Value}, loaded.Value, true
+			}
+			return nil, *new(V), false
+		},
+		parallelism,
+	)
+}
+
+// BatchProcessKeys batch processes multiple keys with a custom function
+//
+// Parameters:
+//   - keys: slice of keys to process
+//   - growFactor: capacity change coefficient (see batchProcess)
+//   - processFn: function that receives key and current value (if exists), returns new value, result value, and success status
+//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
+//
+// Returns:
+//   - results []V: slice of result values from processFn
+//   - success []bool: slice of success status values from processFn
+func (m *MapOf[K, V]) BatchProcessKeys(
+	keys []K,
+	growFactor float64,
+	processFn func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	parallelism int,
+) (results []V, success []bool) {
+	return m.batchProcessKeys(keys, growFactor, processFn, parallelism)
+}
+
+// BatchProcessEntries batch processes multiple key-value pairs with a custom function
+//
+// Parameters:
+//   - entries: slice of key-value pairs to process
+//   - growFactor: capacity change coefficient (see batchProcess)
+//   - processFn: function that receives entry and current value (if exists), returns new value, result value, and success status
+//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
+//
+// Returns:
+//   - results []V: slice of result values from processFn
+//   - success []bool: slice of success status values from processFn
+func (m *MapOf[K, V]) BatchProcessEntries(
+	entries []EntryOf[K, V],
+	growFactor float64,
+	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	parallelism int,
+) (results []V, success []bool) {
+	return m.batchProcessEntries(entries, growFactor, processFn, parallelism)
+}
+
+// FromMap imports key-value pairs from a standard Go map
+//
+// Parameters:
+//   - source: standard Go map to import from
+func (m *MapOf[K, V]) FromMap(source map[K]V) {
+	if len(source) == 0 {
+		return
+	}
+
+	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
+
+	m.batchProcess(table, len(source), 1.0,
+		func(table *mapOfTable, _, _ int) {
+			// Directly iterate and process all key-value pairs
+			for k, v := range source {
+				hash := m.keyHash(noescape(unsafe.Pointer(&k)), table.seed)
+				m.processEntry(table, hash, k,
+					func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+						return &EntryOf[K, V]{Value: v}, v, e != nil
+					},
+				)
+			}
+		}, 0)
+}
+
+// FilterAndTransform filters and transforms elements in the map
+//
+// Parameters:
+//   - filterFn: returns true to keep the element, false to remove it
+//   - transformFn: transforms values of kept elements, returns new value and whether update is needed
+//     if nil, only filtering is performed
+func (m *MapOf[K, V]) FilterAndTransform(
+	filterFn func(key K, value V) bool,
+	transformFn func(key K, value V) (V, bool),
+) {
+	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
+	if table == nil {
+		return
+	}
+
+	// Process elements directly during iteration to avoid extra memory allocation
+	var toProcess []EntryOf[K, V]
+	var toDelete []K
+
+	m.Range(func(key K, value V) bool {
+		if !filterFn(key, value) {
+			toDelete = append(toDelete, key)
+		} else if transformFn != nil {
+			newValue, needUpdate := transformFn(key, value)
+			if needUpdate {
+				toProcess = append(toProcess, EntryOf[K, V]{Key: key, Value: newValue})
+			}
+		}
+		return true
+	})
+
+	// Batch delete elements that don't meet the condition
+	if len(toDelete) > 0 {
+		m.BatchDelete(toDelete, 0)
+	}
+
+	// Batch update elements that meet the condition
+	if len(toProcess) > 0 {
+		m.BatchUpsert(toProcess, 0)
+	}
+}
+
+// Merge merges another MapOf into the current one
+//
+// Parameters:
+//   - other: the MapOf to merge from
+//   - conflictFn: conflict resolution function called when a key exists in both maps
+//     if nil, values from other map override current map values
+func (m *MapOf[K, V]) Merge(
+	other *MapOf[K, V],
+	conflictFn func(key K, thisVal, otherVal V) V,
+) {
+	if other == nil || other.IsZero() {
+		return
+	}
+
+	// Default conflict handler: use value from other map
+	if conflictFn == nil {
+		conflictFn = func(_ K, _, otherVal V) V {
+			return otherVal
+		}
+	}
+
+	// Pre-fetch target table to avoid multiple checks in loop
+	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
+	otherSize := other.Size()
+
+	m.batchProcess(table, otherSize, 1.0,
+		func(table *mapOfTable, _, _ int) {
+			other.Range(func(key K, otherVal V) bool {
+				hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+				m.processEntry(table, hash, key,
+					func(Loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+						if Loaded == nil {
+							// Key doesn't exist in current Map, add directly
+							return &EntryOf[K, V]{Value: otherVal}, otherVal, false
+						}
+						// Key exists in both Maps, use conflict handler
+						newVal := conflictFn(key, Loaded.Value, otherVal)
+						return &EntryOf[K, V]{Value: newVal}, newVal, true
+					},
+				)
+				return true
+			})
+		}, 0)
+}
+
+// Clone creates a complete copy of the current MapOf
+// Returns a new MapOf containing the same key-value pairs
+func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
+	if m.IsZero() {
+		return NewMapOf[K, V]()
+	}
+
+	// Create a new MapOf with the same configuration as the original
+	clone := &MapOf[K, V]{
+		keyHash:       m.keyHash,
+		valEqual:      m.valEqual,
+		minTableLen:   m.minTableLen,
+		growOnly:      m.growOnly,
+		enablePadding: m.enablePadding,
+	}
+
+	// Pre-fetch size to optimize initial capacity
+	size := m.Size()
+	if size > 0 {
+		table := newMapOfTable(clone.minTableLen, clone.enablePadding)
+		clone.table = unsafe.Pointer(table)
+		clone.batchProcess(table, size, 1.0,
+			func(table *mapOfTable, _, _ int) {
+				// Directly iterate and process all key-value pairs
+				m.Range(func(key K, value V) bool {
+					hash := clone.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+					clone.processEntry(table, hash, key,
+						func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+							return &EntryOf[K, V]{Value: value}, value, e != nil
+						},
+					)
+					return true
+				})
+			}, 0)
+	}
+
+	return clone
 }
 
 func (table *mapOfTable) addSize(bucketIdx uintptr, delta int) {
