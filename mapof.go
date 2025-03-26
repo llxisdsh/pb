@@ -1274,15 +1274,16 @@ func (m *MapOf[K, V]) batchProcess(
 
 		// Pre-growth check
 		if newItemsEstimate > 0 {
-			growThreshold := int64(float64(len(table.buckets)) * entriesPerMapOfBucket * mapLoadFactor)
-			sizeHint := table.sumSize() + newItemsEstimate
-			if sizeHint > growThreshold {
-				// Retry the resize until it succeeds
-				var ok bool
-				for {
-					if table, ok = m.resize(table, mapGrowHint, int(sizeHint)); ok {
-						break
-					}
+			// Retry the resize until it succeeds
+			var ok bool
+			for {
+				growThreshold := int64(float64(len(table.buckets)) * entriesPerMapOfBucket * mapLoadFactor)
+				sizeHint := table.sumSize() + newItemsEstimate
+				if sizeHint <= growThreshold {
+					break
+				}
+				if table, ok = m.resize(table, mapGrowHint, int(sizeHint)); ok {
+					break
 				}
 			}
 		}
