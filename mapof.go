@@ -179,7 +179,6 @@ type EntryOf[K comparable, V any] struct {
 //
 //   - WithPresize option for initial capacity,
 //   - WithGrowOnly option to disable shrinking,
-//   - WithPadding option enables padding for fields such as size to avoid false sharing,
 func NewMapOf[K comparable, V any](
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
@@ -196,7 +195,6 @@ func NewMapOf[K comparable, V any](
 //     using the Compare series of functions will cause a panic
 //   - WithPresize option for initial capacity,
 //   - WithGrowOnly option to disable shrinking,
-//   - WithPadding option enables padding for fields such as size to avoid false sharing,
 func NewMapOfWithHasher[K comparable, V any](
 	keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
@@ -207,7 +205,7 @@ func NewMapOfWithHasher[K comparable, V any](
 	return m
 }
 
-func newMapOfTable(minTableLen int, enablePadding bool) *mapOfTable {
+func newMapOfTable(minTableLen int, usePaddingCounter bool) *mapOfTable {
 	buckets := make([]bucketOf, minTableLen)
 	for i := range buckets {
 		buckets[i].meta = defaultMeta
@@ -221,7 +219,7 @@ func newMapOfTable(minTableLen int, enablePadding bool) *mapOfTable {
 	}
 
 	var counter []counterStripe
-	if enablePadding {
+	if enablePadding || usePaddingCounter {
 		paddedCounter := make([]counterStripeWithPadding, counterLen)
 		counter = unsafe.Slice((*counterStripe)(unsafe.Pointer(&paddedCounter[0])), counterLen)
 	} else {
@@ -257,7 +255,6 @@ func SetDefaultJsonMarshal(marshal func(v any) ([]byte, error), unmarshal func(d
 //     using the Compare series of functions will cause a panic
 //   - WithPresize option for initial capacity,
 //   - WithGrowOnly option to disable shrinking,
-//   - WithPadding option enables padding for fields such as size to avoid false sharing,
 func (m *MapOf[K, V]) Init(keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
 	options ...func(*MapConfig)) {
@@ -287,17 +284,21 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 		}
 	}
 
-	tableLen := defaultMinMapTableLen
-	if c.sizeHint > defaultMinMapTableLen*entriesPerMapOfBucket {
-		tableLen = int(nextPowOf2(uint32((float64(c.sizeHint) / entriesPerMapOfBucket) / mapLoadFactor)))
-	}
-	m.minTableLen = tableLen
+	m.minTableLen = calcTableLen(c.sizeHint)
 	m.growOnly = c.growOnly
 	m.enablePadding = c.enablePadding
 
-	table := newMapOfTable(tableLen, m.enablePadding)
+	table := newMapOfTable(m.minTableLen, m.enablePadding)
 	m.table = unsafe.Pointer(table)
 	return table
+}
+
+func calcTableLen(sizeHint int) int {
+	tableLen := defaultMinMapTableLen
+	if sizeHint > defaultMinMapTableLen*entriesPerMapOfBucket {
+		tableLen = nextPowOf2(int((float64(sizeHint) / entriesPerMapOfBucket) / mapLoadFactor))
+	}
+	return tableLen
 }
 
 // initSlow will be called by multiple threads, so it needs to be synchronized with a "lock"
@@ -875,7 +876,7 @@ func (m *MapOf[K, V]) processEntry(
 
 		// Check if expansion is needed
 		growThreshold := int64(float64(len(table.buckets)) * entriesPerMapOfBucket * mapLoadFactor)
-		if table.sumSize() > growThreshold {
+		if table.sumSize() >= growThreshold { // table.sumSize()+1 > growThreshold
 			rootb.mu.Unlock()
 			table, _ = m.resize(table, mapGrowHint)
 			hash = m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
@@ -893,8 +894,20 @@ func (m *MapOf[K, V]) processEntry(
 	}
 }
 
-// Returns the current latest table and whether it was created by current thread
-func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) (*mapOfTable, bool) {
+// resize Returns the current latest table and whether it was created by current thread
+//
+// Parameters:
+//   - knownTable: The table that was previously obtained.
+//   - hint: The type of resize.
+//   - sizeHint: if provided, specifies the target size for the growth.
+//
+// Returns:
+//   - *mapOfTable: Always returns the latest table.
+//   - bool: The return value false indicates that another thread has already performed the resize.
+func (m *MapOf[K, V]) resize(
+	knownTable *mapOfTable,
+	hint mapResizeHint,
+	sizeHint ...int) (*mapOfTable, bool) {
 	// Create a new WaitGroup for the current resize operation
 	wg := new(sync.WaitGroup)
 	wg.Add(1)
@@ -921,8 +934,13 @@ func (m *MapOf[K, V]) resize(knownTable *mapOfTable, hint mapResizeHint) (*mapOf
 
 	var newTableLen int
 	if hint == mapGrowHint {
-		// Grow the table with factor of 2.
-		newTableLen = tableLen << 1
+		if len(sizeHint) == 0 {
+			// Grow the table with factor of 2.
+			newTableLen = tableLen << 1
+		} else {
+			// Grow the table to sizeHint.
+			newTableLen = calcTableLen(sizeHint[0])
+		}
 		atomic.AddInt64(&m.totalGrowths, 1)
 	} else if hint == mapShrinkHint {
 		// Shrink the table with factor of 2.
@@ -1072,15 +1090,13 @@ func (m *MapOf[K, V]) RangeValues(yield func(value V) bool) {
 
 // RangeEntry is used to iterate over all entries.
 //
-// By default, it performs lock-free iteration.
-// When used build option `mapof_atomicreads`, it locks each bucket, copies it out, and then iterates over the copy.
-//
 // Notes:
 //   - Never modify the Key or Value in an Entry under any circumstances.
 //   - Range always uses the current table, which may not reflect the most up-to-date situation.
 //     Like `sync.Map`, reads only satisfy eventual consistency.
 //   - Using the build option `mapof_atomicreads` enables atomic reads,
 //     boosting consistency but slowing performance slightly. See its description for details.
+//     By default, it performs lock-free iteration.
 func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -1236,9 +1252,8 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 //   - table: current hash table
 //   - itemCount: number of items to be processed
 //   - growFactor: capacity change coefficient,
-//     =0: no estimation for new items,
-//     >0: estimate new items as itemCount * growFactor,
-//     <0: check if table shrinking is needed after operation
+//     > 0: estimate new items as itemCount * growFactor,
+//     <=0: no estimation for new items,
 //   - processor: function to process each item
 //   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
 func (m *MapOf[K, V]) batchProcess(
@@ -1253,23 +1268,24 @@ func (m *MapOf[K, V]) batchProcess(
 	}
 
 	// Calculate estimated new items based on growFactor
-	var newItemsEstimate int
-	checkShrink := false
-
 	if growFactor > 0 {
 		// Estimate new items
-		newItemsEstimate = int(float64(itemCount) * growFactor)
+		newItemsEstimate := int64(float64(itemCount) * growFactor)
 
 		// Pre-growth check
 		if newItemsEstimate > 0 {
 			growThreshold := int64(float64(len(table.buckets)) * entriesPerMapOfBucket * mapLoadFactor)
-			if table.sumSize()+int64(newItemsEstimate) > growThreshold {
-				table, _ = m.resize(table, mapGrowHint)
+			sizeHint := table.sumSize() + newItemsEstimate
+			if sizeHint > growThreshold {
+				// Retry the resize until it succeeds
+				var ok bool
+				for {
+					if table, ok = m.resize(table, mapGrowHint, int(sizeHint)); ok {
+						break
+					}
+				}
 			}
 		}
-	} else if growFactor < 0 {
-		// Negative value indicates checking for shrinking after operation
-		checkShrink = true
 	}
 
 	// Determine whether to use parallel processing
@@ -1313,15 +1329,6 @@ func (m *MapOf[K, V]) batchProcess(
 
 	// Serial processing
 	processor(table, 0, itemCount)
-
-	// Check if table shrinking is needed
-	if checkShrink && !m.growOnly {
-		tableLen := len(table.buckets)
-		if m.minTableLen < tableLen &&
-			table.sumSize() <= int64((tableLen*entriesPerMapOfBucket)/mapShrinkFraction) {
-			m.resize(table, mapShrinkHint)
-		}
-	}
 }
 
 // batchProcessEntries is a generic function for processing key-value pair slices
@@ -1441,7 +1448,7 @@ func (m *MapOf[K, V]) BatchInsert(entries []EntryOf[K, V], parallelism int) (act
 //   - loaded: slice of booleans indicating whether each key existed before
 func (m *MapOf[K, V]) BatchDelete(keys []K, parallelism int) (previous []V, loaded []bool) {
 	return m.batchProcessKeys(
-		keys, -1.0,
+		keys, 0,
 		func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return nil, loaded.Value, true
@@ -1775,6 +1782,8 @@ func WithGrowOnly() func(*MapConfig) {
 
 // WithPadding configures whether a new MapOf instance enables padding to avoid false sharing.
 // Enabling padding may improve performance in high-concurrency environments but will increase memory usage.
+//
+// Deprecated: use the build option `mapof_enablepadding` instead.
 func WithPadding() func(*MapConfig) {
 	return func(c *MapConfig) {
 		c.enablePadding = true
@@ -1849,22 +1858,36 @@ func h2(h uintptr) uint8 {
 	return uint8(h & 0x7f)
 }
 
-// nextPowOf2 computes the next highest power of 2 of 32-bit v.
-// Source: https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
-func nextPowOf2(v uint32) uint32 {
-	if v == 0 {
+// nextPowOf2 calculates the smallest power of 2 that is greater than or equal to n.
+// Compatible with both 32-bit and 64-bit systems.
+func nextPowOf2(n int) int {
+	if n <= 0 {
 		return 1
 	}
+
+	if bits.UintSize == 32 {
+		v := uint32(n)
+		v--
+		v |= v >> 1
+		v |= v >> 2
+		v |= v >> 4
+		v |= v >> 8
+		v |= v >> 16
+		v++
+		return int(v)
+	}
+
+	v := uint64(n)
 	v--
 	v |= v >> 1
 	v |= v >> 2
 	v |= v >> 4
 	v |= v >> 8
 	v |= v >> 16
+	v |= v >> 32
 	v++
-	return v
+	return int(v)
 }
-
 func broadcast(b uint8) uint64 {
 	return 0x101010101010101 * uint64(b)
 }
