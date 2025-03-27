@@ -11,21 +11,31 @@ import (
 	"sync"
 	"sync/atomic"
 	"unsafe"
+
+	"golang.org/x/sys/cpu"
 )
 
 const (
-	// number of MapOf entries per bucket; 5 entries lead to size of 64B
-	// (one cache line) on 64-bit machines
-	entriesPerMapOfBucket        = 5
-	defaultMeta           uint64 = 0x8080808080808080
-	metaMask              uint64 = 0xffffffffff
-	defaultMetaMasked     uint64 = defaultMeta & metaMask
-	emptyMetaSlot         uint8  = 0x80
 	// cacheLineSize is used in paddings to prevent false sharing;
 	// 64B are used instead of 128B as a compromise between
 	// memory footprint and performance; 128B usage may give ~30%
 	// improvement on NUMA machines.
-	cacheLineSize = 64
+	cacheLineSize = unsafe.Sizeof(cpu.CacheLinePad{})
+
+	// number of MapOf entries per bucket.
+	// Automatically calculate the number of entries supported to fit within a cache line,
+	// but do not exceed 8, which is the upper limit supported by the meta field
+	entriesPerMapOfBucket = min(8, (int(cacheLineSize)-int(unsafe.Sizeof(struct {
+		meta uint64
+		// entries [entriesPerMapOfBucket]unsafe.Pointer
+		next unsafe.Pointer
+		mu   sync.Mutex
+	}{})))/int(unsafe.Sizeof(uintptr(0))))
+
+	defaultMeta       uint64 = 0x8080808080808080
+	metaMask          uint64 = 0xffffffffff
+	defaultMetaMasked uint64 = defaultMeta & metaMask
+	emptyMetaSlot     uint8  = 0x80
 )
 
 type mapResizeHint int
@@ -47,10 +57,6 @@ const (
 	// minimal table size, i.e. number of buckets; thus, minimal map
 	// capacity can be calculated as entriesPerMapBucket*defaultMinMapTableLen
 	defaultMinMapTableLen = 32
-	// minimum counter stripes to use
-	minMapCounterLen = 8
-	// maximum counter stripes to use; stands for around 4KB of memory
-	maxMapCounterLen = 32
 	// minimum table size threshold for parallel resizing
 	minParallelResizeThreshold = 1024
 	// minimum number of buckets each goroutine handles during parallel resizing
@@ -205,17 +211,23 @@ func NewMapOfWithHasher[K comparable, V any](
 	return m
 }
 
-func newMapOfTable(minTableLen int, usePaddingCounter bool) *mapOfTable {
-	buckets := make([]bucketOf, minTableLen)
+func newMapOfTable(tableLen int, usePaddingCounter bool) *mapOfTable {
+	buckets := make([]bucketOf, tableLen)
 	for i := range buckets {
 		buckets[i].meta = defaultMeta
 	}
 
-	counterLen := minTableLen >> 10
-	if counterLen < minMapCounterLen {
-		counterLen = minMapCounterLen
-	} else if counterLen > maxMapCounterLen {
-		counterLen = maxMapCounterLen
+	counterLen := 1
+	if tableLen > defaultMinMapTableLen {
+		// Calculate based on the logarithmic proportion of table size and CPU core count
+		numCPU := runtime.GOMAXPROCS(0)
+		logSize := bits.Len(uint(tableLen))
+
+		// Use logarithmic proportion to ensure that the number of counter shards grows smoothly with the table size
+		counterLen += (logSize - bits.Len(uint(defaultMinMapTableLen))) / 2
+
+		// Consider the CPU core count, but do not exceed twice its value
+		counterLen = min(counterLen*2, numCPU*2)
 	}
 
 	var counter []counterStripe
@@ -239,9 +251,9 @@ var (
 	jsonUnmarshal func(data []byte, v any) error
 )
 
-// SetDefaultJsonMarshal sets the default JSON serialization and deserialization functions.
+// SetDefaultJSONMarshal sets the default JSON serialization and deserialization functions.
 // If not set, the standard library is used by default.
-func SetDefaultJsonMarshal(marshal func(v any) ([]byte, error), unmarshal func(data []byte, v any) error) {
+func SetDefaultJSONMarshal(marshal func(v any) ([]byte, error), unmarshal func(data []byte, v any) error) {
 	jsonMarshal, jsonUnmarshal = marshal, unmarshal
 }
 
@@ -296,12 +308,12 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 func calcTableLen(sizeHint int) int {
 	tableLen := defaultMinMapTableLen
 	if sizeHint > defaultMinMapTableLen*entriesPerMapOfBucket {
-		tableLen = nextPowOf2(int((float64(sizeHint) / entriesPerMapOfBucket) / mapLoadFactor))
+		tableLen = nextPowOf2(int((float64(sizeHint) / float64(entriesPerMapOfBucket)) / mapLoadFactor))
 	}
 	return tableLen
 }
 
-// initSlow will be called by multiple threads, so it needs to be synchronized with a "lock"
+// initSlow will be called by multiple goroutines, so it needs to be synchronized with a "lock"
 //
 //go:noinline
 func (m *MapOf[K, V]) initSlow() *mapOfTable {
@@ -311,7 +323,7 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
 	if !atomic.CompareAndSwapPointer(&m.resizeWg, nil, unsafe.Pointer(wg)) {
-		// Another thread is initializing, wait for it to complete
+		// Another goroutine is initializing, wait for it to complete
 		wg = (*sync.WaitGroup)(atomic.LoadPointer(&m.resizeWg))
 		if wg != nil {
 			wg.Wait()
@@ -475,7 +487,7 @@ func (m *MapOf[K, V]) mockSyncMap(
 	cmpValue *V,
 	newValue *V,
 	loadOrStore bool,
-) (result V, ok bool) {
+) (value V, status bool) {
 	return m.processEntry(table, hash, key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -639,12 +651,12 @@ func (m *MapOf[K, V]) Compute(
 //
 //	valueFn: Function called when the key doesn't exist, returns:
 //	 - *EntryOf[K, V]: New entry, nil means don't store any value
-//	 - V: Result value to return to the caller
+//	 - V: value to return to the caller
 //	 - bool: Whether the operation succeeded
 //
 // Returns:
-//   - result V: Existing value if key exists; otherwise the value returned by valueFn
-//   - success bool: true if key exists; otherwise the bool value returned by valueFn
+//   - value V: Existing value if key exists; otherwise the value returned by valueFn
+//   - loaded bool: true if key exists; otherwise the bool value returned by valueFn
 //
 // Notes:
 //   - The fn function is executed while holding an internal lock.
@@ -653,7 +665,7 @@ func (m *MapOf[K, V]) Compute(
 func (m *MapOf[K, V]) LoadOrProcessEntry(
 	key K,
 	valueFn func() (*EntryOf[K, V], V, bool),
-) (result V, success bool) {
+) (value V, loaded bool) {
 
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -693,22 +705,22 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 //
 //	key: The key to process
 //
-//	fn: Processing function that receives the current entry and returns the result:
-//	  - Input parameter loaded *EntryOf[K, V]: Current entry, nil means key doesn't exist;
-//	  - Return value *EntryOf[K, V]:
-//		nil means delete the entry,
-//		same as input means no modification,
-//	 	new entry means update the value;
-//	  - Return value V: Returned as ProcessEntry's result;
-//	  - Return value bool: Returned as ProcessEntry's status;
+//	fn: Processing function that receives the current entry and returns:
+//	  - Input: loaded *EntryOf[K, V] - Current entry (nil if key doesn't exist)
+//	  - Return *EntryOf[K, V]:
+//		nil to delete the entry,
+//		same as input for no modification,
+//	 	new entry to update the value
+//	  - Return V: Value to be returned as ProcessEntry's value
+//	  - Return bool: Status to be returned as ProcessEntry's status indicator
 //
 // Returns:
-//   - result V: First return value from fn
-//   - success bool: Second return value from fn
+//   - value V: First return value from fn
+//   - status bool: Second return value from fn
 //
 // Notes:
 //   - The input parameter loaded is immutable and should not be modified directly
-//   - This method internally ensures thread safety and consistency
+//   - This method internally ensures goroutine safety and consistency
 //   - If you need to modify a value, return a new EntryOf instance
 //   - The fn function is executed while holding an internal lock.
 //     Keep the execution time short to avoid blocking other operations.
@@ -717,7 +729,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 func (m *MapOf[K, V]) ProcessEntry(
 	key K,
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
-) (result V, success bool) {
+) (value V, status bool) {
 
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -793,8 +805,8 @@ func (m *MapOf[K, V]) processEntry(
 
 		// Check if the table has changed.
 		// This is the second check, checking if the table has been replaced by another
-		// thread after acquiring the bucket lock
-		// This is necessary because another thread may have completed a resize operation
+		// goroutine after acquiring the bucket lock
+		// This is necessary because another goroutine may have completed a resize operation
 		// between the first check and acquiring the bucket lock
 		if newTable := (*mapOfTable)(atomic.LoadPointer(&m.table)); table != newTable {
 			rootb.mu.Unlock()
@@ -826,7 +838,7 @@ func (m *MapOf[K, V]) processEntry(
 				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
 					if e.Key == key {
 
-						newe, result, ok := fn(e)
+						newe, value, status := fn(e)
 
 						if newe == nil {
 							// Delete
@@ -843,7 +855,7 @@ func (m *MapOf[K, V]) processEntry(
 									m.resize(table, mapShrinkHint)
 								}
 							}
-							return result, ok
+							return value, status
 						}
 						if newe != e {
 							// Update
@@ -851,16 +863,16 @@ func (m *MapOf[K, V]) processEntry(
 							atomic.StorePointer(&b.entries[idx], unsafe.Pointer(newe))
 						}
 						rootb.mu.Unlock()
-						return result, ok
+						return value, status
 					}
 				}
 			}
 		}
 
-		newe, result, ok := fn(nil)
+		newe, value, status := fn(nil)
 		if newe == nil {
 			rootb.mu.Unlock()
-			return result, ok
+			return value, status
 		}
 		// Insert
 		newe.Key = key
@@ -871,11 +883,11 @@ func (m *MapOf[K, V]) processEntry(
 			atomic.StorePointer(&emptyb.entries[emptyidx], unsafe.Pointer(newe))
 			rootb.mu.Unlock()
 			table.addSize(bidx, 1)
-			return result, ok
+			return value, status
 		}
 
 		// Check if expansion is needed
-		growThreshold := int64(float64(len(table.buckets)) * entriesPerMapOfBucket * mapLoadFactor)
+		growThreshold := int64(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
 		if table.sumSize() >= growThreshold { // table.sumSize()+1 > growThreshold
 			rootb.mu.Unlock()
 			table, _ = m.resize(table, mapGrowHint)
@@ -890,20 +902,20 @@ func (m *MapOf[K, V]) processEntry(
 		}))
 		rootb.mu.Unlock()
 		table.addSize(bidx, 1)
-		return result, ok
+		return value, status
 	}
 }
 
-// resize Returns the current latest table and whether it was created by current thread
+// resize returns the current table and indicates whether it was created by the calling goroutine
 //
 // Parameters:
-//   - knownTable: The table that was previously obtained.
-//   - hint: The type of resize.
-//   - sizeHint: if provided, specifies the target size for the growth.
+//   - knownTable: The previously obtained table reference.
+//   - hint: The type of resize operation to perform.
+//   - sizeHint: If provided, specifies the target size for growth.
 //
 // Returns:
-//   - *mapOfTable: Always returns the latest table.
-//   - bool: The return value false indicates that another thread has already performed the resize.
+//   - *mapOfTable: The most up-to-date table reference.
+//   - bool: True if this goroutine performed the resize, false if another goroutine already did it.
 func (m *MapOf[K, V]) resize(
 	knownTable *mapOfTable,
 	hint mapResizeHint,
@@ -951,16 +963,8 @@ func (m *MapOf[K, V]) resize(
 	}
 	newTable := newMapOfTable(newTableLen, m.enablePadding)
 	if hint != mapClearHint {
-		// Parallel copying is only performed if the table size is at least minParallelResizeThreshold
-		// and there are multiple CPUs.
-		// The degree of parallelism is min(number of CPUs, table size / minBucketsPerGoroutine),
-		// ensuring that each goroutine handles at least minBucketsPerGoroutine buckets.
-		numCPU := runtime.NumCPU()
-		chunks := 1
-		if numCPU > 1 && tableLen >= minParallelResizeThreshold {
-			chunks = min(numCPU, tableLen/minBucketsPerGoroutine)
-		}
-
+		// Calculate the parallel count
+		chunks := calcParallelism(tableLen, minParallelResizeThreshold, minBucketsPerGoroutine)
 		if chunks > 1 {
 			var copyWg sync.WaitGroup
 			// Simply evenly distributed
@@ -993,6 +997,32 @@ func (m *MapOf[K, V]) resize(
 	return newTable, true
 }
 
+// calcParallelism calculates the number of goroutines for parallel processing.
+// Parameters:
+//   - items: Number of items to process.
+//   - threshold: Minimum threshold to enable parallel processing.
+//   - minItemsPerGoroutine: Minimum number of items each goroutine should process.
+//
+// Returns:
+//   - Suggested degree of parallelism (number of goroutines).
+func calcParallelism(items, threshold, minItemsPerGoroutine int) int {
+	// If the items is too small, use single-threaded processing.
+	if items < threshold {
+		return 1
+	}
+
+	// If there is only one processor, use single-threaded processing.
+	numCPU := runtime.GOMAXPROCS(0)
+	if numCPU <= 1 {
+		return 1
+	}
+
+	// Use a logarithmic function to smoothly increase the degree of parallelism
+	logFactor := 1 + bits.Len(uint(items)) - bits.Len(uint(threshold))
+	chunks := min(numCPU*logFactor/2, items/minItemsPerGoroutine)
+	return max(1, chunks) // Ensure there is at least 1 chunk
+}
+
 func copyBucketOf[K comparable, V any](
 	srcBucket *bucketOf,
 	destTable *mapOfTable,
@@ -1003,16 +1033,16 @@ func copyBucketOf[K comparable, V any](
 	for {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
 			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
-				// It is also possible to store the hash value in the Entry during processEntry,
-				// saving the need to recalculate it here, which can speed up the resize process.
-				// However, for keys of simple int type, this would actually slow down the load operation.
-				// Therefore, it is better to recalculate the hash value.
+				// We could store the hash value in the Entry during processEntry to avoid
+				// recalculating it here, which would speed up the resize process.
+				// However, for simple integer keys, this approach would actually slow down
+				// the load operation. Therefore, recalculating the hash value is the better approach.
 				hash := hasher(noescape(unsafe.Pointer(&e.Key)), destTable.seed)
 				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
 				destb := &destTable.buckets[bidx]
 
 				// Locking the buckets of the target table is necessary during parallel copying,
-				// when copying in a single thread, it's not necessary, but due to the spinning of the mutex,
+				// when copying in a single goroutine, it's not necessary, but due to the spinning of the mutex,
 				// it remains extremely fast.
 				destb.mu.Lock()
 				appendToBucketOf(b.entries[i], destb, h2(hash))
@@ -1088,15 +1118,15 @@ func (m *MapOf[K, V]) RangeValues(yield func(value V) bool) {
 	})
 }
 
-// RangeEntry is used to iterate over all entries.
+// RangeEntry iterates over all entries in the map.
 //
 // Notes:
 //   - Never modify the Key or Value in an Entry under any circumstances.
-//   - Range always uses the current table, which may not reflect the most up-to-date situation.
-//     Like `sync.Map`, reads only satisfy eventual consistency.
-//   - Using the build option `mapof_atomicreads` enables atomic reads,
-//     boosting consistency but slowing performance slightly. See its description for details.
-//     By default, it performs lock-free iteration.
+//   - Range operates on the current table snapshot, which may not reflect the most up-to-date state.
+//     Similar to `sync.Map`, this provides eventual consistency for reads.
+//   - The build option `mapof_atomicreads` enables atomic reads for stronger consistency
+//     at a slight performance cost. See its description for details.
+//     By default, lock-free iteration is used for maximum performance.
 func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -1245,17 +1275,20 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// batchProcess is the core generic function for batch operations
-// It processes a group of keys or key-value pairs and applies the specified processing function to each item
+// batchProcess is the core generic function for all batch operations.
+// It processes a group of keys or key-value pairs by applying the specified processing function to each item.
 //
 // Parameters:
-//   - table: current hash table
-//   - itemCount: number of items to be processed
-//   - growFactor: capacity change coefficient,
-//     > 0: estimate new items as itemCount * growFactor,
-//     <=0: no estimation for new items,
-//   - processor: function to process each item
-//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
+//   - table: The current hash table.
+//   - itemCount: The number of items to be processed.
+//   - growFactor: Capacity change coefficient:
+//     >0: Estimates new items as itemCount * growFactor.
+//     <=0: No estimation for new items.
+//   - processor: The function to process each item.
+//   - parallelism: Controls the degree of parallelism:
+//     0: Serial processing.
+//     <0: Automatic determination based on workload.
+//     >0: Specific number of goroutines to use.
 func (m *MapOf[K, V]) batchProcess(
 	table *mapOfTable,
 	itemCount int,
@@ -1277,7 +1310,7 @@ func (m *MapOf[K, V]) batchProcess(
 			// Retry the resize until it succeeds
 			var ok bool
 			for {
-				growThreshold := int64(float64(len(table.buckets)) * entriesPerMapOfBucket * mapLoadFactor)
+				growThreshold := int64(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
 				sizeHint := table.sumSize() + newItemsEstimate
 				if sizeHint <= growThreshold {
 					break
@@ -1289,43 +1322,33 @@ func (m *MapOf[K, V]) batchProcess(
 		}
 	}
 
-	// Determine whether to use parallel processing
-	if parallelism != 0 && itemCount >= minParallelBatchItems {
-		// Calculate optimal parallelism
-		numCPU := runtime.NumCPU()
+	// Calculate the parallel count
+	chunks := parallelism
+	if parallelism < 0 {
+		chunks = calcParallelism(itemCount, minParallelBatchItems, minItemsPerGoroutine)
+	}
 
-		// If user specified negative parallelism, use CPU core count
-		if parallelism < 0 {
-			parallelism = numCPU
-		}
+	if chunks > 1 {
+		// Calculate data volume for each goroutine
+		chunkSize := (itemCount + chunks - 1) / chunks
 
-		// Calculate reasonable parallelism based on data volume and minimum items per goroutine
-		// Ensure each goroutine processes at least minItemsPerGoroutine items
-		optimalParallelism := min(parallelism, itemCount/minItemsPerGoroutine)
-
-		// Ensure parallelism is at least 1
-		if optimalParallelism > 1 {
-			// Calculate data volume for each goroutine
-			chunkSize := (itemCount + optimalParallelism - 1) / optimalParallelism
-
-			var wg sync.WaitGroup
-			for i := 0; i < optimalParallelism; i++ {
-				start := i * chunkSize
-				end := min((i+1)*chunkSize, itemCount)
-				if start >= end {
-					break
-				}
-
-				wg.Add(1)
-				go func(start, end int) {
-					defer wg.Done()
-					processor(table, start, end)
-				}(start, end)
+		var wg sync.WaitGroup
+		for i := 0; i < chunks; i++ {
+			start := i * chunkSize
+			end := min((i+1)*chunkSize, itemCount)
+			if start >= end {
+				break
 			}
 
-			wg.Wait()
-			return
+			wg.Add(1)
+			go func(start, end int) {
+				defer wg.Done()
+				processor(table, start, end)
+			}(start, end)
 		}
+
+		wg.Wait()
+		return
 	}
 
 	// Serial processing
@@ -1398,12 +1421,11 @@ func (m *MapOf[K, V]) batchProcessKeys(
 //
 // Parameters:
 //   - entries: slice of key-value pairs to upsert
-//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
 //
 // Returns:
 //   - previous: slice of previous values for each key
 //   - loaded: slice of booleans indicating whether each key existed before
-func (m *MapOf[K, V]) BatchUpsert(entries []EntryOf[K, V], parallelism int) (previous []V, loaded []bool) {
+func (m *MapOf[K, V]) BatchUpsert(entries []EntryOf[K, V]) (previous []V, loaded []bool) {
 	return m.batchProcessEntries(
 		entries, 1.0,
 		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
@@ -1412,7 +1434,7 @@ func (m *MapOf[K, V]) BatchUpsert(entries []EntryOf[K, V], parallelism int) (pre
 			}
 			return &EntryOf[K, V]{Value: entry.Value}, *new(V), false
 		},
-		parallelism,
+		-1,
 	)
 }
 
@@ -1420,12 +1442,11 @@ func (m *MapOf[K, V]) BatchUpsert(entries []EntryOf[K, V], parallelism int) (pre
 //
 // Parameters:
 //   - entries: slice of key-value pairs to insert
-//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
 //
 // Returns:
 //   - actual: slice of actual values for each key (either existing or newly inserted)
 //   - loaded: slice of booleans indicating whether each key existed before
-func (m *MapOf[K, V]) BatchInsert(entries []EntryOf[K, V], parallelism int) (actual []V, loaded []bool) {
+func (m *MapOf[K, V]) BatchInsert(entries []EntryOf[K, V]) (actual []V, loaded []bool) {
 	return m.batchProcessEntries(
 		entries, 1.0,
 		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
@@ -1434,7 +1455,7 @@ func (m *MapOf[K, V]) BatchInsert(entries []EntryOf[K, V], parallelism int) (act
 			}
 			return &EntryOf[K, V]{Value: entry.Value}, entry.Value, false
 		},
-		parallelism,
+		-1,
 	)
 }
 
@@ -1442,12 +1463,11 @@ func (m *MapOf[K, V]) BatchInsert(entries []EntryOf[K, V], parallelism int) (act
 //
 // Parameters:
 //   - keys: slice of keys to delete
-//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
 //
 // Returns:
 //   - previous: slice of previous values for each key
 //   - loaded: slice of booleans indicating whether each key existed before
-func (m *MapOf[K, V]) BatchDelete(keys []K, parallelism int) (previous []V, loaded []bool) {
+func (m *MapOf[K, V]) BatchDelete(keys []K) (previous []V, loaded []bool) {
 	return m.batchProcessKeys(
 		keys, 0,
 		func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
@@ -1456,7 +1476,7 @@ func (m *MapOf[K, V]) BatchDelete(keys []K, parallelism int) (previous []V, load
 			}
 			return nil, *new(V), false
 		},
-		parallelism,
+		-1,
 	)
 }
 
@@ -1464,12 +1484,11 @@ func (m *MapOf[K, V]) BatchDelete(keys []K, parallelism int) (previous []V, load
 //
 // Parameters:
 //   - entries: slice of key-value pairs to update
-//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
 //
 // Returns:
 //   - previous: slice of previous values for each key
 //   - loaded: slice of booleans indicating whether each key existed before
-func (m *MapOf[K, V]) BatchUpdate(entries []EntryOf[K, V], parallelism int) (previous []V, loaded []bool) {
+func (m *MapOf[K, V]) BatchUpdate(entries []EntryOf[K, V]) (previous []V, loaded []bool) {
 	return m.batchProcessEntries(
 		entries, 0,
 		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
@@ -1478,7 +1497,7 @@ func (m *MapOf[K, V]) BatchUpdate(entries []EntryOf[K, V], parallelism int) (pre
 			}
 			return nil, *new(V), false
 		},
-		parallelism,
+		-1,
 	)
 }
 
@@ -1487,18 +1506,18 @@ func (m *MapOf[K, V]) BatchUpdate(entries []EntryOf[K, V], parallelism int) (pre
 // Parameters:
 //   - keys: slice of keys to process
 //   - growFactor: capacity change coefficient (see batchProcess)
-//   - processFn: function that receives key and current value (if exists), returns new value, result value, and success status
-//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
+//   - processFn: function that receives key and current value (if exists), returns new value, result value, and status
+//   - parallelism: degree of parallelism (see batchProcess)
 //
 // Returns:
-//   - results []V: slice of result values from processFn
-//   - success []bool: slice of success status values from processFn
+//   - values []V: slice of values from processFn
+//   - status []bool: slice of status values from processFn
 func (m *MapOf[K, V]) BatchProcessKeys(
 	keys []K,
 	growFactor float64,
 	processFn func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 	parallelism int,
-) (results []V, success []bool) {
+) (values []V, status []bool) {
 	return m.batchProcessKeys(keys, growFactor, processFn, parallelism)
 }
 
@@ -1507,18 +1526,18 @@ func (m *MapOf[K, V]) BatchProcessKeys(
 // Parameters:
 //   - entries: slice of key-value pairs to process
 //   - growFactor: capacity change coefficient (see batchProcess)
-//   - processFn: function that receives entry and current value (if exists), returns new value, result value, and success status
-//   - parallelism: degree of parallelism, 0 for serial processing, negative for using CPU core count
+//   - processFn: function that receives entry and current value (if exists), returns new value, result value, and status
+//   - parallelism: degree of parallelism (see batchProcess)
 //
 // Returns:
-//   - results []V: slice of result values from processFn
-//   - success []bool: slice of success status values from processFn
+//   - values []V: slice of values from processFn
+//   - status []bool: slice of status values from processFn
 func (m *MapOf[K, V]) BatchProcessEntries(
 	entries []EntryOf[K, V],
 	growFactor float64,
 	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 	parallelism int,
-) (results []V, success []bool) {
+) (values []V, status []bool) {
 	return m.batchProcessEntries(entries, growFactor, processFn, parallelism)
 }
 
@@ -1581,12 +1600,12 @@ func (m *MapOf[K, V]) FilterAndTransform(
 
 	// Batch delete elements that don't meet the condition
 	if len(toDelete) > 0 {
-		m.BatchDelete(toDelete, 0)
+		m.BatchDelete(toDelete)
 	}
 
 	// Batch update elements that meet the condition
 	if len(toProcess) > 0 {
-		m.BatchUpsert(toProcess, 0)
+		m.BatchUpsert(toProcess)
 	}
 }
 
@@ -1706,8 +1725,8 @@ func (table *mapOfTable) isZero() bool {
 // Stats returns statistics for the MapOf. Just like other map
 // methods, this one is thread-safe. Yet it's an O(N) operation,
 // so it should be used only for diagnostics or debugging purposes.
-func (m *MapOf[K, V]) Stats() MapStats {
-	stats := MapStats{
+func (m *MapOf[K, V]) Stats() *MapStats {
+	stats := &MapStats{
 		TotalGrowths: atomic.LoadInt64(&m.totalGrowths),
 		TotalShrinks: atomic.LoadInt64(&m.totalShrinks),
 		MinEntries:   math.MaxInt32,

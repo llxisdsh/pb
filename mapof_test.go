@@ -1886,7 +1886,7 @@ func TestNewMapOfPresized(t *testing.T) {
 
 func TestNewMapOfPresized_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	const minTableLen = 1024
-	const numEntries = int(minTableLen * EntriesPerMapOfBucket * MapLoadFactor)
+	const numEntries = int(minTableLen * float64(entriesPerMapOfBucket) * MapLoadFactor)
 	m := NewMapOf[int, int](WithPresize(numEntries))
 	for i := 0; i < 2*numEntries; i++ {
 		m.Store(i, i)
@@ -2006,9 +2006,10 @@ func TestMapOfResize_CounterLenLimit(t *testing.T) {
 	if stats.Size != numEntries {
 		t.Fatalf("size was too small: %d", stats.Size)
 	}
-	if stats.CounterLen != MaxMapCounterLen {
+	maxCounterLen := runtime.GOMAXPROCS(0) * 2
+	if stats.CounterLen > maxCounterLen {
 		t.Fatalf("number of counter stripes was too large: %d, expected: %d",
-			stats.CounterLen, MaxMapCounterLen)
+			stats.CounterLen, maxCounterLen)
 	}
 }
 
@@ -2410,7 +2411,7 @@ func TestMapOfStats(t *testing.T) {
 	if stats.Counter != 0 {
 		t.Fatalf("unexpected counter: %d", stats.Counter)
 	}
-	if stats.CounterLen != 8 {
+	if stats.CounterLen != 1 {
 		t.Fatalf("unexpected counter length: %d", stats.CounterLen)
 	}
 
@@ -2437,7 +2438,7 @@ func TestMapOfStats(t *testing.T) {
 	if stats.Counter != 200 {
 		t.Fatalf("unexpected counter: %d", stats.Counter)
 	}
-	if stats.CounterLen != 8 {
+	if stats.CounterLen != 2 {
 		t.Fatalf("unexpected counter length: %d", stats.CounterLen)
 	}
 }
@@ -2702,7 +2703,6 @@ const (
 	DefaultMinMapTableLen   = defaultMinMapTableLen
 	DefaultMinMapTableCap   = defaultMinMapTableLen * entriesPerMapBucket
 	DefaultMinMapOfTableCap = defaultMinMapTableLen * entriesPerMapOfBucket
-	MaxMapCounterLen        = maxMapCounterLen
 )
 
 var benchmarkKeys []string
@@ -3137,7 +3137,7 @@ func TestMapOfBatchUpsert(t *testing.T) {
 		m := NewMapOf[string, int]()
 		entries := []EntryOf[string, int]{}
 
-		previous, loaded := m.BatchUpsert(entries, 0)
+		previous, loaded := m.BatchUpsert(entries)
 
 		if len(previous) != 0 {
 			t.Fatalf("expected empty previous values slice, got length: %d", len(previous))
@@ -3156,7 +3156,7 @@ func TestMapOfBatchUpsert(t *testing.T) {
 			{Key: "c", Value: 3},
 		}
 
-		previous, loaded := m.BatchUpsert(entries, 0)
+		previous, loaded := m.BatchUpsert(entries)
 
 		// Check return values
 		if len(previous) != 3 {
@@ -3198,7 +3198,7 @@ func TestMapOfBatchUpsert(t *testing.T) {
 			{Key: "c", Value: 3}, // Will insert
 		}
 
-		previous, loaded := m.BatchUpsert(entries, 0)
+		previous, loaded := m.BatchUpsert(entries)
 
 		// Check return values
 		if len(previous) != 3 {
@@ -3241,7 +3241,7 @@ func TestMapOfBatchUpsert(t *testing.T) {
 		}
 
 		// Use parallel processing (negative value uses CPU count)
-		previous, loaded := m.BatchUpsert(entries, -1)
+		previous, loaded := m.BatchUpsert(entries)
 
 		// Check return values
 		if len(previous) != numEntries {
@@ -3278,7 +3278,7 @@ func TestMapOfBatchInsert(t *testing.T) {
 		m := NewMapOf[string, int]()
 		entries := []EntryOf[string, int]{}
 
-		actual, loaded := m.BatchInsert(entries, 0)
+		actual, loaded := m.BatchInsert(entries)
 
 		if len(actual) != 0 {
 			t.Fatalf("expected empty actual values slice, got length: %d", len(actual))
@@ -3297,7 +3297,7 @@ func TestMapOfBatchInsert(t *testing.T) {
 			{Key: "c", Value: 3},
 		}
 
-		actual, loaded := m.BatchInsert(entries, 0)
+		actual, loaded := m.BatchInsert(entries)
 
 		// Check return values
 		if len(actual) != 3 {
@@ -3339,7 +3339,7 @@ func TestMapOfBatchInsert(t *testing.T) {
 			{Key: "c", Value: 3}, // Will insert
 		}
 
-		actual, loaded := m.BatchInsert(entries, 0)
+		actual, loaded := m.BatchInsert(entries)
 
 		// Check return values
 		if len(actual) != 3 {
@@ -3382,7 +3382,7 @@ func TestMapOfBatchInsert(t *testing.T) {
 		}
 
 		// Use parallel processing (negative value uses CPU count)
-		actual, loaded := m.BatchInsert(entries, -1)
+		actual, loaded := m.BatchInsert(entries)
 
 		// Check return values
 		if len(actual) != numEntries {
@@ -3422,7 +3422,7 @@ func TestMapOfBatchDelete(t *testing.T) {
 		m := NewMapOf[string, int]()
 		keys := []string{}
 
-		previous, loaded := m.BatchDelete(keys, 0)
+		previous, loaded := m.BatchDelete(keys)
 
 		if len(previous) != 0 {
 			t.Fatalf("expected empty previous values slice, got length: %d", len(previous))
@@ -3437,7 +3437,7 @@ func TestMapOfBatchDelete(t *testing.T) {
 		m := NewMapOf[string, int]()
 		keys := []string{"a", "b", "c"}
 
-		previous, loaded := m.BatchDelete(keys, 0)
+		previous, loaded := m.BatchDelete(keys)
 
 		// Check return values
 		if len(previous) != 3 {
@@ -3474,7 +3474,7 @@ func TestMapOfBatchDelete(t *testing.T) {
 
 		keys := []string{"a", "c", "e"} // a,c exist; e doesn't
 
-		previous, loaded := m.BatchDelete(keys, 0)
+		previous, loaded := m.BatchDelete(keys)
 
 		// Check return values
 		if len(previous) != 3 {
@@ -3524,7 +3524,7 @@ func TestMapOfBatchDelete(t *testing.T) {
 		}
 
 		// Use parallel processing (negative value uses CPU count)
-		previous, loaded := m.BatchDelete(keys, -1)
+		previous, loaded := m.BatchDelete(keys)
 
 		// Check return values
 		if len(previous) != numEntries/2 {
@@ -3569,7 +3569,7 @@ func TestMapOfBatchUpdate(t *testing.T) {
 		m := NewMapOf[string, int]()
 		entries := []EntryOf[string, int]{}
 
-		previous, loaded := m.BatchUpdate(entries, 0)
+		previous, loaded := m.BatchUpdate(entries)
 
 		if len(previous) != 0 {
 			t.Fatalf("expected empty previous values slice, got length: %d", len(previous))
@@ -3588,7 +3588,7 @@ func TestMapOfBatchUpdate(t *testing.T) {
 			{Key: "c", Value: 3},
 		}
 
-		previous, loaded := m.BatchUpdate(entries, 0)
+		previous, loaded := m.BatchUpdate(entries)
 
 		// Check return values
 		if len(previous) != 3 {
@@ -3629,7 +3629,7 @@ func TestMapOfBatchUpdate(t *testing.T) {
 			{Key: "d", Value: 4}, // Will update
 		}
 
-		previous, loaded := m.BatchUpdate(entries, 0)
+		previous, loaded := m.BatchUpdate(entries)
 
 		// Check return values
 		if len(previous) != 4 {
@@ -3679,7 +3679,7 @@ func TestMapOfBatchUpdate(t *testing.T) {
 		}
 
 		// Use parallel processing (negative value uses CPU count)
-		previous, loaded := m.BatchUpdate(entries, -1)
+		previous, loaded := m.BatchUpdate(entries)
 
 		// Check return values
 		if len(previous) != numEntries {
