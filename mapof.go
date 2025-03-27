@@ -215,18 +215,7 @@ func newMapOfTable(tableLen int, usePaddingCounter bool) *mapOfTable {
 		buckets[i].meta = defaultMeta
 	}
 
-	counterLen := 1
-	if tableLen > defaultMinMapTableLen {
-		// Calculate based on the logarithmic proportion of table size and CPU core count
-		numCPU := runtime.GOMAXPROCS(0)
-		logSize := bits.Len(uint(tableLen))
-
-		// Use logarithmic proportion to ensure that the number of counter shards grows smoothly with the table size
-		counterLen += (logSize - bits.Len(uint(defaultMinMapTableLen))) / 2
-
-		// Consider the CPU core count, but do not exceed twice its value
-		counterLen = min(counterLen*2, numCPU*2)
-	}
+	counterLen := calcSizeLen(tableLen)
 
 	var counter []counterStripe
 	if enablePadding || usePaddingCounter {
@@ -302,12 +291,20 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 	return table
 }
 
+// calcTableLen computes the bucket count for the table
+// return value must be a power of 2
 func calcTableLen(sizeHint int) int {
 	tableLen := defaultMinMapTableLen
 	if sizeHint > defaultMinMapTableLen*entriesPerMapOfBucket {
 		tableLen = nextPowOf2(int((float64(sizeHint) / float64(entriesPerMapOfBucket)) / mapLoadFactor))
 	}
 	return tableLen
+}
+
+// calcSizeLen computes the size count for the table
+// return value must be a power of 2
+func calcSizeLen(tableLen int) int {
+	return nextPowOf2(min(runtime.GOMAXPROCS(0), max(1, tableLen>>10)))
 }
 
 // initSlow will be called by multiple goroutines, so it needs to be synchronized with a "lock"

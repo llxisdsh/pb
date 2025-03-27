@@ -181,6 +181,18 @@ func TestMapOfMisc(t *testing.T) {
 		}
 	}
 }
+func TestMapOfCalcLen(t *testing.T) {
+	var tableLen, sizeLen, lastTableLen, lastSizeLen int
+	t.Log("runtime.GOMAXPROCS(0),", runtime.GOMAXPROCS(0))
+	for i := 0; i < 1000000; i++ {
+		tableLen = calcTableLen(i)
+		sizeLen = calcSizeLen(i)
+		if tableLen != lastTableLen || sizeLen != lastSizeLen {
+			t.Log(i, tableLen, sizeLen)
+			lastTableLen, lastSizeLen = tableLen, sizeLen
+		}
+	}
+}
 
 // // NewBadMapOf creates a new MapOf for the provided key and value
 // // but with an intentionally bad hash function.
@@ -2438,7 +2450,7 @@ func TestMapOfStats(t *testing.T) {
 	if stats.Counter != 200 {
 		t.Fatalf("unexpected counter: %d", stats.Counter)
 	}
-	if stats.CounterLen != 2 {
+	if stats.CounterLen != 1 {
 		t.Fatalf("unexpected counter length: %d", stats.CounterLen)
 	}
 }
