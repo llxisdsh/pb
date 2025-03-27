@@ -63,7 +63,7 @@ const (
 	minBucketsPerGoroutine = 32
 	// minimum number of items for parallel processing,
 	// below this threshold serial processing is used
-	minParallelBatchItems = 64
+	minParallelBatchItems = 256
 	// minimum number of items each goroutine processes, used to control parallelism degree
 	minItemsPerGoroutine = 32
 )
@@ -182,7 +182,6 @@ type EntryOf[K comparable, V any] struct {
 // NewMapOf creates a new MapOf instance. Direct initialization is also supported.
 //
 // Parameters:
-//
 //   - WithPresize option for initial capacity,
 //   - WithGrowOnly option to disable shrinking,
 func NewMapOf[K comparable, V any](
@@ -195,7 +194,6 @@ func NewMapOf[K comparable, V any](
 // Allows custom key hashing (keyHash) and value equality (valEqual) functions for compare-and-swap operations
 //
 // Parameters:
-//
 //   - keyHash: nil uses the built-in hasher
 //   - valEqual: nil uses the built-in comparison, but if the value is not of a comparable type,
 //     using the Compare series of functions will cause a panic
@@ -261,7 +259,6 @@ func SetDefaultJSONMarshal(marshal func(v any) ([]byte, error), unmarshal func(d
 // This function is not thread-safe, Even if this Init is not called, the Map will still be initialized automatically.
 //
 // Parameters:
-//
 //   - keyHash: nil uses the built-in hasher
 //   - valEqual: nil uses the built-in comparison, but if the value is not of a comparable type,
 //     using the Compare series of functions will cause a panic
@@ -646,13 +643,11 @@ func (m *MapOf[K, V]) Compute(
 // If the key doesn't exist, the provided function fn is called to compute a new value.
 //
 // Parameters:
-//
-//	key: The key to look up or process
-//
-//	valueFn: Function called when the key doesn't exist, returns:
-//	 - *EntryOf[K, V]: New entry, nil means don't store any value
-//	 - V: value to return to the caller
-//	 - bool: Whether the operation succeeded
+//   - key: The key to look up or process
+//   - valueFn: Function called when the key doesn't exist, returns:
+//     *EntryOf[K, V]: New entry, nil means don't store any value,
+//     V: value to return to the caller,
+//     bool: Whether the operation succeeded
 //
 // Returns:
 //   - value V: Existing value if key exists; otherwise the value returned by valueFn
@@ -702,17 +697,12 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 // deletion, or insertion of entries.
 //
 // Parameters:
-//
-//	key: The key to process
-//
-//	fn: Processing function that receives the current entry and returns:
-//	  - Input: loaded *EntryOf[K, V] - Current entry (nil if key doesn't exist)
-//	  - Return *EntryOf[K, V]:
-//		nil to delete the entry,
-//		same as input for no modification,
-//	 	new entry to update the value
-//	  - Return V: Value to be returned as ProcessEntry's value
-//	  - Return bool: Status to be returned as ProcessEntry's status indicator
+//   - key: The key to process
+//   - fn: Processing function that receives the current entry and returns:
+//     Input: loaded *EntryOf[K, V] - Current entry (nil if key doesn't exist);
+//     Return *EntryOf[K, V]:  nil to delete, new entry to store; ==loaded for no modification,
+//     Return V: Value to be returned as ProcessEntry's value;
+//     Return bool: Status to be returned as ProcessEntry's status indicator
 //
 // Returns:
 //   - value V: First return value from fn
@@ -916,6 +906,8 @@ func (m *MapOf[K, V]) processEntry(
 // Returns:
 //   - *mapOfTable: The most up-to-date table reference.
 //   - bool: True if this goroutine performed the resize, false if another goroutine already did it.
+//
+//go:noinline
 func (m *MapOf[K, V]) resize(
 	knownTable *mapOfTable,
 	hint mapResizeHint,
@@ -974,7 +966,7 @@ func (m *MapOf[K, V]) resize(
 				copyWg.Add(1)
 				go func(start, end int) {
 					for i := start; i < end && i < tableLen; i++ {
-						copied := copyBucketOf[K, V](&table.buckets[i], newTable, m.keyHash)
+						copied := copyBucketOfParallel[K, V](&table.buckets[i], newTable, m.keyHash)
 						if copied > 0 {
 							newTable.addSize(uintptr(i), copied)
 						}
@@ -998,6 +990,7 @@ func (m *MapOf[K, V]) resize(
 }
 
 // calcParallelism calculates the number of goroutines for parallel processing.
+//
 // Parameters:
 //   - items: Number of items to process.
 //   - threshold: Minimum threshold to enable parallel processing.
@@ -1023,6 +1016,7 @@ func calcParallelism(items, threshold, minItemsPerGoroutine int) int {
 	return max(1, chunks) // Ensure there is at least 1 chunk
 }
 
+// copyBucketOf unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
 func copyBucketOf[K comparable, V any](
 	srcBucket *bucketOf,
 	destTable *mapOfTable,
@@ -1040,7 +1034,31 @@ func copyBucketOf[K comparable, V any](
 				hash := hasher(noescape(unsafe.Pointer(&e.Key)), destTable.seed)
 				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
 				destb := &destTable.buckets[bidx]
+				appendToBucketOf(b.entries[i], destb, h2(hash))
+				copied++
+			}
+		}
+		b = (*bucketOf)(b.next)
+		if b == nil {
+			srcBucket.mu.Unlock()
+			return
+		}
+	}
+}
 
+func copyBucketOfParallel[K comparable, V any](
+	srcBucket *bucketOf,
+	destTable *mapOfTable,
+	hasher hashFunc,
+) (copied int) {
+	b := srcBucket
+	srcBucket.mu.Lock()
+	for {
+		for i := 0; i < entriesPerMapOfBucket; i++ {
+			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+				hash := hasher(noescape(unsafe.Pointer(&e.Key)), destTable.seed)
+				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
+				destb := &destTable.buckets[bidx]
 				// Locking the buckets of the target table is necessary during parallel copying,
 				// when copying in a single goroutine, it's not necessary, but due to the spinning of the mutex,
 				// it remains extremely fast.
@@ -1355,20 +1373,29 @@ func (m *MapOf[K, V]) batchProcess(
 	processor(table, 0, itemCount)
 }
 
-// batchProcessEntries is a generic function for processing key-value pair slices
-// It applies the processFn to each entry in the slice with appropriate parallelism
-func (m *MapOf[K, V]) batchProcessEntries(
+// BatchProcessEntries batch processes multiple key-value pairs with a custom function
+//
+// Parameters:
+//   - entries: slice of key-value pairs to process
+//   - growFactor: capacity change coefficient (see batchProcess)
+//   - processFn: function that receives entry and current value (if exists), returns new value, result value, and status
+//   - parallelism: degree of parallelism (see batchProcess)
+//
+// Returns:
+//   - values []V: slice of values from processFn
+//   - status []bool: slice of status values from processFn
+func (m *MapOf[K, V]) BatchProcessEntries(
 	entries []EntryOf[K, V],
 	growFactor float64,
 	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 	parallelism int,
-) ([]V, []bool) {
+) (values []V, status []bool) {
 	if len(entries) == 0 {
-		return nil, nil
+		return
 	}
 
-	values := make([]V, len(entries))
-	status := make([]bool, len(entries))
+	values = make([]V, len(entries))
+	status = make([]bool, len(entries))
 
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 
@@ -1383,23 +1410,32 @@ func (m *MapOf[K, V]) batchProcessEntries(
 		}
 	}, parallelism)
 
-	return values, status
+	return
 }
 
-// batchProcessKeys is a generic function for processing key slices
-// It applies the processFn to each key in the slice with appropriate parallelism
-func (m *MapOf[K, V]) batchProcessKeys(
+// BatchProcessKeys batch processes multiple keys with a custom function
+//
+// Parameters:
+//   - keys: slice of keys to process
+//   - growFactor: capacity change coefficient (see batchProcess)
+//   - processFn: function that receives key and current value (if exists), returns new value, result value, and status
+//   - parallelism: degree of parallelism (see batchProcess)
+//
+// Returns:
+//   - values []V: slice of values from processFn
+//   - status []bool: slice of status values from processFn
+func (m *MapOf[K, V]) BatchProcessKeys(
 	keys []K,
 	growFactor float64,
 	processFn func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 	parallelism int,
-) ([]V, []bool) {
+) (values []V, status []bool) {
 	if len(keys) == 0 {
-		return nil, nil
+		return
 	}
 
-	values := make([]V, len(keys))
-	status := make([]bool, len(keys))
+	values = make([]V, len(keys))
+	status = make([]bool, len(keys))
 
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 
@@ -1414,7 +1450,7 @@ func (m *MapOf[K, V]) batchProcessKeys(
 		}
 	}, parallelism)
 
-	return values, status
+	return
 }
 
 // BatchUpsert batch updates or inserts multiple key-value pairs, returning previous values
@@ -1426,7 +1462,7 @@ func (m *MapOf[K, V]) batchProcessKeys(
 //   - previous: slice of previous values for each key
 //   - loaded: slice of booleans indicating whether each key existed before
 func (m *MapOf[K, V]) BatchUpsert(entries []EntryOf[K, V]) (previous []V, loaded []bool) {
-	return m.batchProcessEntries(
+	return m.BatchProcessEntries(
 		entries, 1.0,
 		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1447,7 +1483,7 @@ func (m *MapOf[K, V]) BatchUpsert(entries []EntryOf[K, V]) (previous []V, loaded
 //   - actual: slice of actual values for each key (either existing or newly inserted)
 //   - loaded: slice of booleans indicating whether each key existed before
 func (m *MapOf[K, V]) BatchInsert(entries []EntryOf[K, V]) (actual []V, loaded []bool) {
-	return m.batchProcessEntries(
+	return m.BatchProcessEntries(
 		entries, 1.0,
 		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1468,7 +1504,7 @@ func (m *MapOf[K, V]) BatchInsert(entries []EntryOf[K, V]) (actual []V, loaded [
 //   - previous: slice of previous values for each key
 //   - loaded: slice of booleans indicating whether each key existed before
 func (m *MapOf[K, V]) BatchDelete(keys []K) (previous []V, loaded []bool) {
-	return m.batchProcessKeys(
+	return m.BatchProcessKeys(
 		keys, 0,
 		func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1489,7 +1525,7 @@ func (m *MapOf[K, V]) BatchDelete(keys []K) (previous []V, loaded []bool) {
 //   - previous: slice of previous values for each key
 //   - loaded: slice of booleans indicating whether each key existed before
 func (m *MapOf[K, V]) BatchUpdate(entries []EntryOf[K, V]) (previous []V, loaded []bool) {
-	return m.batchProcessEntries(
+	return m.BatchProcessEntries(
 		entries, 0,
 		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1499,46 +1535,6 @@ func (m *MapOf[K, V]) BatchUpdate(entries []EntryOf[K, V]) (previous []V, loaded
 		},
 		-1,
 	)
-}
-
-// BatchProcessKeys batch processes multiple keys with a custom function
-//
-// Parameters:
-//   - keys: slice of keys to process
-//   - growFactor: capacity change coefficient (see batchProcess)
-//   - processFn: function that receives key and current value (if exists), returns new value, result value, and status
-//   - parallelism: degree of parallelism (see batchProcess)
-//
-// Returns:
-//   - values []V: slice of values from processFn
-//   - status []bool: slice of status values from processFn
-func (m *MapOf[K, V]) BatchProcessKeys(
-	keys []K,
-	growFactor float64,
-	processFn func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
-	parallelism int,
-) (values []V, status []bool) {
-	return m.batchProcessKeys(keys, growFactor, processFn, parallelism)
-}
-
-// BatchProcessEntries batch processes multiple key-value pairs with a custom function
-//
-// Parameters:
-//   - entries: slice of key-value pairs to process
-//   - growFactor: capacity change coefficient (see batchProcess)
-//   - processFn: function that receives entry and current value (if exists), returns new value, result value, and status
-//   - parallelism: degree of parallelism (see batchProcess)
-//
-// Returns:
-//   - values []V: slice of values from processFn
-//   - status []bool: slice of status values from processFn
-func (m *MapOf[K, V]) BatchProcessEntries(
-	entries []EntryOf[K, V],
-	growFactor float64,
-	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
-	parallelism int,
-) (values []V, status []bool) {
-	return m.batchProcessEntries(entries, growFactor, processFn, parallelism)
 }
 
 // FromMap imports key-value pairs from a standard Go map
