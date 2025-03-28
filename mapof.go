@@ -121,15 +121,14 @@ const (
 type MapOf[K comparable, V any] struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(cacheLineSize - unsafe.Sizeof(struct {
-		table         unsafe.Pointer
-		resizeWg      unsafe.Pointer
-		totalGrowths  int64
-		totalShrinks  int64
-		keyHash       hashFunc
-		valEqual      equalFunc
-		minTableLen   int
-		growOnly      bool
-		enablePadding bool
+		table        unsafe.Pointer
+		resizeWg     unsafe.Pointer
+		totalGrowths int64
+		totalShrinks int64
+		keyHash      hashFunc
+		valEqual     equalFunc
+		minTableLen  int
+		growOnly     bool
 	}{})%cacheLineSize) % cacheLineSize]byte
 
 	table        unsafe.Pointer // *mapOfTable
