@@ -119,15 +119,14 @@ type MapOf[K comparable, V any] struct {
 		enablePadding bool
 	}{})%cacheLineSize) % cacheLineSize]byte
 
-	table         unsafe.Pointer // *mapOfTable
-	resizeWg      unsafe.Pointer // *sync.WaitGroup
-	totalGrowths  int64
-	totalShrinks  int64
-	keyHash       hashFunc
-	valEqual      equalFunc
-	minTableLen   int  // WithPresize
-	growOnly      bool // WithGrowOnly
-	enablePadding bool // WithPadding
+	table        unsafe.Pointer // *mapOfTable
+	resizeWg     unsafe.Pointer // *sync.WaitGroup
+	totalGrowths int64
+	totalShrinks int64
+	keyHash      hashFunc
+	valEqual     equalFunc
+	minTableLen  int  // WithPresize
+	growOnly     bool // WithGrowOnly
 }
 
 type mapOfTable struct {
@@ -144,16 +143,6 @@ type mapOfTable struct {
 	// occupies min(buckets_memory/1024, 64KB) of memory
 	size []counterStripe
 	seed uintptr
-}
-
-type counterStripe struct {
-	c int64
-}
-
-type counterStripeWithPadding struct {
-	c int64
-	//lint:ignore U1000 prevents false sharing
-	pad [cacheLineSize - 8]byte
 }
 
 type bucketOf struct {
@@ -207,7 +196,7 @@ func NewMapOfWithHasher[K comparable, V any](
 	return m
 }
 
-func newMapOfTable(tableLen int, usePaddingCounter bool) *mapOfTable {
+func newMapOfTable(tableLen int) *mapOfTable {
 	buckets := make([]bucketOf, tableLen)
 	for i := range buckets {
 		buckets[i].meta = defaultMeta
@@ -215,17 +204,9 @@ func newMapOfTable(tableLen int, usePaddingCounter bool) *mapOfTable {
 
 	counterLen := calcSizeLen(tableLen)
 
-	var counter []counterStripe
-	if enablePadding || usePaddingCounter {
-		paddedCounter := make([]counterStripeWithPadding, counterLen)
-		counter = unsafe.Slice((*counterStripe)(unsafe.Pointer(&paddedCounter[0])), counterLen)
-	} else {
-		counter = make([]counterStripe, counterLen)
-	}
-
 	t := &mapOfTable{
 		buckets: buckets,
-		size:    counter,
+		size:    make([]counterStripe, counterLen),
 		seed:    uintptr(rand.Uint64()),
 	}
 	return t
@@ -286,9 +267,8 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 
 	m.minTableLen = calcTableLen(c.sizeHint)
 	m.growOnly = c.growOnly
-	m.enablePadding = c.enablePadding
 
-	table := newMapOfTable(m.minTableLen, m.enablePadding)
+	table := newMapOfTable(m.minTableLen)
 	m.table = unsafe.Pointer(table)
 	return table
 }
@@ -952,7 +932,7 @@ func (m *MapOf[K, V]) resize(
 	} else {
 		newTableLen = m.minTableLen
 	}
-	newTable := newMapOfTable(newTableLen, m.enablePadding)
+	newTable := newMapOfTable(newTableLen)
 	if hint != mapClearHint {
 		// Calculate the parallel count
 		chunks := calcParallelism(tableLen, minParallelResizeThreshold, minBucketsPerGoroutine)
@@ -1711,17 +1691,16 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 
 	// Create a new MapOf with the same configuration as the original
 	clone := &MapOf[K, V]{
-		keyHash:       m.keyHash,
-		valEqual:      m.valEqual,
-		minTableLen:   m.minTableLen,
-		growOnly:      m.growOnly,
-		enablePadding: m.enablePadding,
+		keyHash:     m.keyHash,
+		valEqual:    m.valEqual,
+		minTableLen: m.minTableLen,
+		growOnly:    m.growOnly,
 	}
 
 	// Pre-fetch size to optimize initial capacity
 	size := m.Size()
 	if size > 0 {
-		table := newMapOfTable(clone.minTableLen, clone.enablePadding)
+		table := newMapOfTable(clone.minTableLen)
 		clone.table = unsafe.Pointer(table)
 		clone.batchProcess(table, size, 1.0,
 			func(table *mapOfTable, _, _ int) {
@@ -1819,9 +1798,8 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 
 // MapConfig defines configurable MapOf options.
 type MapConfig struct {
-	sizeHint      int
-	growOnly      bool
-	enablePadding bool
+	sizeHint int
+	growOnly bool
 }
 
 // WithPresize configures new MapOf instance with capacity enough
@@ -1843,16 +1821,6 @@ func WithPresize(sizeHint int) func(*MapConfig) {
 func WithGrowOnly() func(*MapConfig) {
 	return func(c *MapConfig) {
 		c.growOnly = true
-	}
-}
-
-// WithPadding configures whether a new MapOf instance enables padding to avoid false sharing.
-// Enabling padding may improve performance in high-concurrency environments but will increase memory usage.
-//
-// Deprecated: use the build option `mapof_enablepadding` instead.
-func WithPadding() func(*MapConfig) {
-	return func(c *MapConfig) {
-		c.enablePadding = true
 	}
 }
 

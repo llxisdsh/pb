@@ -54,22 +54,29 @@ type structKey struct {
 }
 
 func TestMap_BucketOfStructSize(t *testing.T) {
-	size := unsafe.Sizeof(bucketOf{})
+
+	size := unsafe.Sizeof(counterStripe{})
+	t.Log("counterStripe size:", size)
+	if enablePadding && size != cacheLineSize {
+		t.Fatalf("counterStripe doesn't meet cacheLineSize: %d", size)
+	}
+
+	size = unsafe.Sizeof(bucketOf{})
 	t.Log("bucketOf size:", size)
-	if size%cacheLineSize != 0 {
-		t.Fatalf("size of 64B (one cache line) is expected bucketOf, got: %d", size)
+	if size != cacheLineSize {
+		t.Fatalf("bucketOf doesn't meet cacheLineSize: %d", size)
 	}
 
 	size = unsafe.Sizeof(mapOfTable{})
 	t.Log("mapOfTable size:", size)
-	if size%cacheLineSize != 0 {
-		t.Fatalf("size of 64B (one cache line) is expected mapOfTable, got: %d", size)
+	if size != cacheLineSize {
+		t.Fatalf("mapOfTable doesn't meet cacheLineSize: %d", size)
 	}
 
 	size = unsafe.Sizeof(MapOf[string, int]{})
 	t.Log("MapOf size:", size)
-	if size%cacheLineSize != 0 {
-		t.Fatalf("size of 64B (one cache line) is expected MapOf, got: %d", size)
+	if size != cacheLineSize {
+		t.Fatalf("MapOf doesn't meet cacheLineSize: %d", size)
 	}
 
 	structType := reflect.TypeOf(bucketOf{})
@@ -1916,14 +1923,6 @@ func TestNewMapOfPresized_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	stats = m.Stats()
 	if stats.RootBuckets != minTableLen {
 		t.Fatalf("table length was different from the minimum: %d", stats.RootBuckets)
-	}
-}
-
-func TestNewMapOfWithPadding(t *testing.T) {
-	const minTableLen = 128
-	m := NewMapOf[int, int](WithPadding())
-	for i := 0; i < minTableLen*EntriesPerMapOfBucket; i++ {
-		m.LoadOrStore(i, i)
 	}
 }
 
