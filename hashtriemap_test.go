@@ -147,7 +147,7 @@ func NewTruncHashTrieMap[K, V comparable]() *HashTrieMap[K, V] {
 	//m.keyHash = func(k K, n uintptr) uintptr {
 	//	return hasher(k, n) & ((uintptr(1) << 4) - 1)
 	//}
-	hasher, _ := defaultHasherByBuiltIn[K, V]()
+	hasher, _ := defaultHasherUsingBuiltIn[K, V]()
 	m.keyHash = func(pointer unsafe.Pointer, u uintptr) uintptr {
 		return hasher(pointer, u) & ((uintptr(1) << 4) - 1)
 	}

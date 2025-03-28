@@ -16,19 +16,19 @@ import (
 )
 
 const (
-	// cacheLineSize is used in paddings to prevent false sharing.
-	// Use `golang.org/x/sys/cpu` to calculate automatically.
+	// cacheLineSize is used in structure padding to prevent false sharing.
+	// It's automatically calculated using the `golang.org/x/sys/cpu` package.
 	cacheLineSize = unsafe.Sizeof(cpu.CacheLinePad{})
 
-	// entriesPerMapOfBucket is number of MapOf entries per bucket.
-	// Automatically calculate the number of entries supported to fit within a cache line,
-	// but do not exceed 8, which is the upper limit supported by the meta field
+	// entriesPerMapOfBucket defines the number of MapOf entries per bucket.
+	// This value is automatically calculated to fit within a cache line,
+	// but will not exceed 8, which is the upper limit supported by the meta field.
 	entriesPerMapOfBucket = min(8, (int(cacheLineSize)-int(unsafe.Sizeof(struct {
 		meta uint64
 		// entries [entriesPerMapOfBucket]unsafe.Pointer
 		next unsafe.Pointer
 		mu   sync.Mutex
-	}{})))/int(unsafe.Sizeof(uintptr(0))))
+	}{})))/int(unsafe.Sizeof(unsafe.Pointer(nil))))
 
 	defaultMeta       uint64 = 0x8080808080808080
 	metaMask          uint64 = 0xffffffffff
@@ -45,42 +45,55 @@ const (
 )
 
 const (
-	// threshold fraction of table occupation to start a table shrinking
-	// when deleting the last entry in a bucket chain
+	// mapShrinkFraction defines the threshold fraction of table occupation that triggers
+	// table shrinking when deleting the last entry in a bucket chain.
 	mapShrinkFraction = 128
-	// map findEntry factor to trigger a table resize during insertion;
-	// a map holds up to mapLoadFactor*entriesPerMapBucket*mapTableLen
-	// key-value pairs (this is a soft limit)
+	// mapLoadFactor defines the threshold that triggers a table resize during insertion.
+	// A map can hold up to mapLoadFactor*entriesPerMapOfBucket*tableLen key-value pairs
+	// (this is a soft limit).
 	mapLoadFactor = 0.75
-	// minimal table size, i.e. number of buckets; thus, minimal map
-	// capacity can be calculated as entriesPerMapBucket*defaultMinMapTableLen
+	// defaultMinMapTableLen defines the minimum table size (number of buckets).
+	// The minimum map capacity can be calculated as entriesPerMapOfBucket*defaultMinMapTableLen.
 	defaultMinMapTableLen = 32
-	// minimum table size threshold for parallel resizing
+	// minParallelResizeThreshold defines the minimum table size required to trigger parallel resizing.
+	// Tables smaller than this threshold will use single-threaded resizing for better efficiency.
 	minParallelResizeThreshold = 1024
-	// minimum number of buckets each goroutine handles during parallel resizing
+	// minBucketsPerGoroutine defines the minimum number of buckets each goroutine handles
+	// during parallel resizing operations to ensure efficient workload distribution.
 	minBucketsPerGoroutine = 32
-	// minimum number of items for parallel processing,
-	// below this threshold serial processing is used
+	// minParallelBatchItems defines the minimum number of items required for parallel batch processing.
+	// Below this threshold, serial processing is used to avoid the overhead of goroutine creation.
 	minParallelBatchItems = 256
-	// minimum number of items each goroutine processes, used to control parallelism degree
+	// minItemsPerGoroutine defines the minimum number of items each goroutine processes
+	// during batch operations, used to control the degree of parallelism.
 	minItemsPerGoroutine = 32
 )
 
-// MapOf is compatible with sync.Map.
-// Demonstrates 10x higher performance than `sync.Map in go 1.24` under large datasets
+// MapOf is a high-performance concurrent map implementation that offers significant
+// performance improvements over sync.Map in many common scenarios.
+//
+// Benchmarks show that MapOf can achieve several times better read performance
+// compared to sync.Map in read-heavy workloads, while also providing competitive
+// write performance. The actual performance gain varies depending on workload
+// characteristics, key types, and concurrency patterns.
+//
+// MapOf is particularly well-suited for scenarios with:
+//   - High read-to-write ratios
+//   - Frequent lookups of existing keys
+//   - Need for atomic operations on values
 //
 // Key features of pb.MapOf:
-//   - Uses cache-line aligned for all structures
-//   - Implements zero-value usability
-//   - Lazy initialization
-//   - Defaults to the Go built-in hash, customizable on creation or initialization.
-//   - Provides complete sync.Map and compatibility
+//   - Uses cache-line aligned structures to prevent false sharing
+//   - Implements zero-value usability for convenient initialization
+//   - Provides lazy initialization for better performance
+//   - Defaults to Go's built-in hash function, customizable on creation or initialization
+//   - Offers complete sync.Map API compatibility
 //   - Specially optimized for read operations
-//   - Supports parallel resizing
-//   - Offers rich functional extensions, as well as LoadOrCompute, ProcessEntry, Size, IsZero,
-//     Clone, Batch processing functions, etc.
-//   - All tests passed
-//   - Extremely fast, see benchmark tests below
+//   - Supports parallel resizing for better scalability
+//   - Includes rich functional extensions such as LoadOrCompute, ProcessEntry, Size, IsZero,
+//     Clone, and batch processing functions
+//   - Thoroughly tested with comprehensive test coverage
+//   - Delivers exceptional performance (see benchmark results below)
 //
 // pb.MapOf is built upon xsync.MapOf. We extend our thanks to the authors of
 // [xsync](https://github.com/puzpuzpuz/xsync) and reproduce its introduction below:
@@ -129,6 +142,7 @@ type MapOf[K comparable, V any] struct {
 	growOnly     bool // WithGrowOnly
 }
 
+// mapOfTable represents the internal hash table structure.
 type mapOfTable struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(cacheLineSize - unsafe.Sizeof(struct {
@@ -140,11 +154,12 @@ type mapOfTable struct {
 	buckets []bucketOf
 	// striped counter for number of table entries;
 	// used to determine if a table shrinking is needed
-	// occupies min(buckets_memory/1024, 64KB) of memory
+	// occupies min(buckets_memory/1024, 64KB) of memory on enablepadding=true
 	size []counterStripe
 	seed uintptr
 }
 
+// bucketOf represents a single bucket in the hash table.
 type bucketOf struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(cacheLineSize - unsafe.Sizeof(struct {
@@ -154,10 +169,10 @@ type bucketOf struct {
 		mu      sync.Mutex
 	}{})%cacheLineSize) % cacheLineSize]byte
 
-	meta    uint64
-	entries [entriesPerMapOfBucket]unsafe.Pointer // *EntryOf
-	next    unsafe.Pointer                        // *bucketOf
-	mu      sync.Mutex
+	meta    uint64                                // Metadata for fast entry lookups using SWAR techniques
+	entries [entriesPerMapOfBucket]unsafe.Pointer // Pointers to *EntryOf instances
+	next    unsafe.Pointer                        // Pointer to the next bucket (*bucketOf) in the chain
+	mu      sync.Mutex                            // Lock for bucket modifications
 }
 
 // EntryOf is an immutable map entry.
@@ -169,8 +184,8 @@ type EntryOf[K comparable, V any] struct {
 // NewMapOf creates a new MapOf instance. Direct initialization is also supported.
 //
 // Parameters:
-//   - WithPresize option for initial capacity,
-//   - WithGrowOnly option to disable shrinking,
+//   - WithPresize option for initial capacity
+//   - WithGrowOnly option to disable shrinking
 func NewMapOf[K comparable, V any](
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
@@ -184,8 +199,8 @@ func NewMapOf[K comparable, V any](
 //   - keyHash: nil uses the built-in hasher
 //   - valEqual: nil uses the built-in comparison, but if the value is not of a comparable type,
 //     using the Compare series of functions will cause a panic
-//   - WithPresize option for initial capacity,
-//   - WithGrowOnly option to disable shrinking,
+//   - WithPresize option for initial capacity
+//   - WithGrowOnly option to disable shrinking
 func NewMapOfWithHasher[K comparable, V any](
 	keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
@@ -230,8 +245,8 @@ func SetDefaultJSONMarshal(marshal func(v any) ([]byte, error), unmarshal func(d
 //   - keyHash: nil uses the built-in hasher
 //   - valEqual: nil uses the built-in comparison, but if the value is not of a comparable type,
 //     using the Compare series of functions will cause a panic
-//   - WithPresize option for initial capacity,
-//   - WithGrowOnly option to disable shrinking,
+//   - WithPresize option for initial capacity
+//   - WithGrowOnly option to disable shrinking
 //
 // Notes:
 //   - This function is not thread-safe and can only be used before the MapOf is utilized.
@@ -253,7 +268,7 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 	for _, o := range options {
 		o(c)
 	}
-	m.keyHash, m.valEqual = defaultHasherByBuiltIn[K, V]()
+	m.keyHash, m.valEqual = defaultHasherUsingBuiltIn[K, V]()
 	if keyHash != nil {
 		m.keyHash = func(pointer unsafe.Pointer, u uintptr) uintptr {
 			return keyHash(*(*K)(pointer), u)
@@ -289,7 +304,8 @@ func calcSizeLen(tableLen int) int {
 	return nextPowOf2(min(runtime.GOMAXPROCS(0), max(1, tableLen>>10)))
 }
 
-// initSlow will be called by multiple goroutines, so it needs to be synchronized with a "lock"
+// initSlow may be called concurrently by multiple goroutines, so it requires
+// synchronization with a "lock" mechanism.
 //
 //go:noinline
 func (m *MapOf[K, V]) initSlow() *mapOfTable {
@@ -325,11 +341,11 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	return table
 }
 
-// Load compatible with `sync.Map`
+// Load retrieves a value for a key, compatible with `sync.Map`.
 //
 // Notes:
-// Using the build option `mapof_atomicreads` enables atomic reads,
-// boosting consistency but slowing performance slightly. See its description for details.
+// The build option `mapof_atomicreads` enables atomic reads,
+// which enhances consistency at a slight performance cost. See its description for details.
 func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -373,7 +389,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	return
 }
 
-// Store compatible with `sync.Map`
+// Store inserts or updates a key-value pair, compatible with `sync.Map`.
 func (m *MapOf[K, V]) Store(key K, value V) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -383,7 +399,7 @@ func (m *MapOf[K, V]) Store(key K, value V) {
 	m.mockSyncMap(table, hash, key, nil, &value, false)
 }
 
-// Swap compatible with `sync.Map`
+// Swap stores a key-value pair and returns the previous value if any, compatible with `sync.Map`.
 func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -393,7 +409,8 @@ func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 	return m.mockSyncMap(table, hash, key, nil, &value, false)
 }
 
-// LoadOrStore compatible with `sync.Map`
+// LoadOrStore retrieves an existing value or stores a new one if the key doesn't exist,
+// compatible with `sync.Map`.
 func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -408,7 +425,7 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	return m.mockSyncMap(table, hash, key, nil, &value, true)
 }
 
-// Delete compatible with `sync.Map`
+// Delete removes a key-value pair, compatible with `sync.Map`.
 func (m *MapOf[K, V]) Delete(key K) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -418,7 +435,8 @@ func (m *MapOf[K, V]) Delete(key K) {
 	m.mockSyncMap(table, hash, key, nil, nil, false)
 }
 
-// LoadAndDelete compatible with `sync.Map`
+// LoadAndDelete retrieves the value for a key and deletes it from the map,
+// compatible with `sync.Map`.
 func (m *MapOf[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -428,7 +446,8 @@ func (m *MapOf[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 	return m.mockSyncMap(table, hash, key, nil, nil, false)
 }
 
-// CompareAndSwap compatible with `sync.Map`
+// CompareAndSwap atomically replaces an existing value with a new value
+// if the existing value matches the expected value, compatible with `sync.Map`.
 func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -442,7 +461,8 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 	return
 }
 
-// CompareAndDelete compatible with `sync.Map`
+// CompareAndDelete atomically deletes an existing entry
+// if its value matches the expected value, compatible with `sync.Map`.
 func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -495,7 +515,11 @@ func (m *MapOf[K, V]) mockSyncMap(
 	)
 }
 
-// LoadAndStore compatible with `xsync.MapOf`.
+// LoadAndStore loads the existing value for a key if present,
+// otherwise stores the given value. Returns the actual value and
+// a boolean indicating whether the key was present.
+//
+// Compatible with `xsync.MapOf`.
 func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -512,7 +536,11 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 	)
 }
 
+// LoadOrCompute loads the existing value for a key if present,
+// otherwise computes and stores a new value using the provided function.
 // LoadOrCompute compatible with `xsync.MapOf`.
+//
+// Compatible with `xsync.MapOf`.
 // Alias: LoadOrStoreFn
 func (m *MapOf[K, V]) LoadOrCompute(key K, valueFn func() V) (actual V, loaded bool) {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
@@ -545,7 +573,11 @@ func (m *MapOf[K, V]) LoadOrCompute(key K, valueFn func() V) (actual V, loaded b
 	)
 }
 
-// LoadOrTryCompute compatible with `xsync.MapOf`.
+// LoadOrTryCompute loads the existing value for a key if present,
+// otherwise attempts to compute a new value using the provided function.
+// The function can signal that it doesn't want to store a value by returning cancel=true.
+//
+// Compatible with `xsync.MapOf`.
 func (m *MapOf[K, V]) LoadOrTryCompute(
 	key K,
 	valueFn func() (newValue V, cancel bool),
@@ -587,7 +619,12 @@ func (m *MapOf[K, V]) LoadOrTryCompute(
 	)
 }
 
-// Compute compatible with `xsync.MapOf`.
+// Compute either inserts a new value for a key or updates an existing value.
+// The provided function receives the current value (if any) and decides what to do:
+// - Return a new value to store
+// - Return delete=true to remove the entry
+//
+// Compatible with `xsync.MapOf`.
 func (m *MapOf[K, V]) Compute(
 	key K,
 	valueFn func(oldValue V, loaded bool) (newValue V, delete bool),
@@ -623,10 +660,10 @@ func (m *MapOf[K, V]) Compute(
 //
 // Parameters:
 //   - key: The key to look up or process
-//   - valueFn: Function called when the key doesn't exist, returns:
-//     *EntryOf[K, V]: New entry, nil means don't store any value,
-//     V: value to return to the caller,
-//     bool: Whether the operation succeeded
+//   - valueFn: Only called when the value does not exist, return values are described below:
+//     return *EntryOf[K, V]: New entry, nil means don't store any value.
+//     return V: value to return to the caller.
+//     return bool: Whether the operation succeeded.
 //
 // Returns:
 //   - value V: Existing value if key exists; otherwise the value returned by valueFn
@@ -677,11 +714,11 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 //
 // Parameters:
 //   - key: The key to process
-//   - fn: Processing function that receives the current entry and returns:
-//     Input: loaded *EntryOf[K, V] - Current entry (nil if key doesn't exist);
-//     Return *EntryOf[K, V]:  nil to delete, new entry to store; ==loaded for no modification,
-//     Return V: Value to be returned as ProcessEntry's value;
-//     Return bool: Status to be returned as ProcessEntry's status indicator
+//   - fn: Called regardless of value existence; parameters and return values are described below:
+//     loaded *EntryOf[K, V]: current entry (nil if key doesn't exist),
+//     return *EntryOf[K, V]:  nil to delete, new entry to store; ==loaded for no modification,
+//     return V: value to be returned as ProcessEntry's value;
+//     return bool: status to be returned as ProcessEntry's status indicator
 //
 // Returns:
 //   - value V: First return value from fn
@@ -995,7 +1032,6 @@ func calcParallelism(items, threshold, minItemsPerGoroutine int) int {
 	return max(1, chunks) // Ensure there is at least 1 chunk
 }
 
-// copyBucketOf unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
 func copyBucketOf[K comparable, V any](
 	srcBucket *bucketOf,
 	destTable *mapOfTable,
@@ -1025,6 +1061,7 @@ func copyBucketOf[K comparable, V any](
 	}
 }
 
+// copyBucketOfParallel unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
 func copyBucketOfParallel[K comparable, V any](
 	srcBucket *bucketOf,
 	destTable *mapOfTable,
@@ -1055,6 +1092,12 @@ func copyBucketOfParallel[K comparable, V any](
 	}
 }
 
+// appendToBucketOf appends an entry pointer to a bucket chain.
+//
+// Parameters:
+//   - entryPtr: Pointer to the entry to be appended.
+//   - b: Pointer to the bucket where the entry should be appended.
+//   - h2: The h2 hash value for the entry.
 func appendToBucketOf(
 	entryPtr unsafe.Pointer,
 	b *bucketOf,
@@ -1185,7 +1228,10 @@ func (m *MapOf[K, V]) Clear() {
 	}
 }
 
-// Size compatible with `xsync.MapOf`
+// Size returns the number of key-value pairs in the map.
+// This is an O(1) operation.
+//
+// Compatible with `xsync.MapOf`.
 func (m *MapOf[K, V]) Size() int {
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
@@ -1203,7 +1249,7 @@ func (m *MapOf[K, V]) IsZero() bool {
 	return table.isZero()
 }
 
-// ToMap Collect all entries and return a map[K]V
+// ToMap collect all entries and return a map[K]V
 func (m *MapOf[K, V]) ToMap() map[K]V {
 	a := make(map[K]V, m.Size())
 	m.RangeEntry(func(e *EntryOf[K, V]) bool {
@@ -1213,7 +1259,7 @@ func (m *MapOf[K, V]) ToMap() map[K]V {
 	return a
 }
 
-// ToMapWithLimit Collect up to limit entries into a map[K]V, limit < 0 is no limit
+// ToMapWithLimit collect up to limit entries into a map[K]V, limit < 0 is no limit
 func (m *MapOf[K, V]) ToMapWithLimit(limit int) map[K]V {
 	if limit == 0 {
 		return map[K]V{}
@@ -1240,7 +1286,7 @@ func (m *MapOf[K, V]) HasKey(key K) bool {
 	return m.findEntry(table, hash, key) != nil
 }
 
-// String Implement the formatting output interface fmt.Stringer
+// String implement the formatting output interface fmt.Stringer
 func (m *MapOf[K, V]) String() string {
 	return strings.Replace(fmt.Sprint(m.ToMapWithLimit(1024)), "map[", "MapOf[", 1)
 }
@@ -1352,21 +1398,21 @@ func (m *MapOf[K, V]) batchProcess(
 	processor(table, 0, itemCount)
 }
 
-// BatchProcessImmutableEntries batch processes multiple key-value pairs with a custom function
+// BatchProcessImmutableEntries batch processes multiple immutable key-value pairs with a custom function.
 //
 // Parameters:
-//   - immutableEntries: slice of immutable key-value pairs to process.
-//   - growFactor: capacity change coefficient (see batchProcess)
-//   - processFn: function that receives entry and current value (if exists), returns new value, result value, and status
-//   - parallelism: degree of parallelism (see batchProcess)
+//   - immutableEntries: Slice of immutable key-value pairs to process.
+//   - growFactor: Capacity change coefficient (see batchProcess).
+//   - processFn: Function that receives entry and current value (if exists), returns new value, result value, and status.
+//   - parallelism: Degree of parallelism (see batchProcess).
 //
 // Returns:
-//   - values []V: slice of values from processFn
-//   - status []bool: slice of status values from processFn
+//   - values []V: Slice of values from processFn.
+//   - status []bool: Slice of status values from processFn.
 //
-// Nodes:
-//   - immutableEntries will be stored directly, as the name suggests,
-//     the key-value of the elements should not be changed.
+// Notes:
+//   - immutableEntries will be stored directly; as the name suggests,
+//     the key-value pairs of the elements should not be changed.
 func (m *MapOf[K, V]) BatchProcessImmutableEntries(
 	immutableEntries []*EntryOf[K, V],
 	growFactor float64,
@@ -1408,7 +1454,7 @@ func (m *MapOf[K, V]) BatchProcessImmutableEntries(
 //   - values []V: slice of values from processFn
 //   - status []bool: slice of status values from processFn
 //
-// Nodes:
+// Notes:
 //   - The processFn should not directly return `entry`,
 //     as this would prevent the entire `entries` from being garbage collected in a timely manner.
 func (m *MapOf[K, V]) BatchProcessEntries(
@@ -1638,7 +1684,7 @@ func (m *MapOf[K, V]) FilterAndTransform(
 	}
 }
 
-// Merge merges another MapOf into the current one
+// Merge integrates another MapOf into the current one
 //
 // Parameters:
 //   - other: the MapOf to merge from
@@ -1682,8 +1728,14 @@ func (m *MapOf[K, V]) Merge(
 		}, 0)
 }
 
-// Clone creates a complete copy of the current MapOf
-// Returns a new MapOf containing the same key-value pairs
+// Clone creates a deep copy of the map.
+//
+// Returns:
+//   - A new MapOf instance with the same key-value pairs.
+//
+// Notes:
+//   - The clone operation is not atomic with respect to concurrent modifications.
+//   - The returned map will have the same configuration as the original.
 func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 	if m.IsZero() {
 		return &MapOf[K, V]{}
@@ -1720,16 +1772,20 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 	return clone
 }
 
+// addSize atomically adds delta to the size counter for the given bucket index.
 func (table *mapOfTable) addSize(bucketIdx uintptr, delta int) {
 	cidx := uintptr(len(table.size)-1) & bucketIdx
 	atomic.AddInt64(&table.size[cidx].c, int64(delta))
 }
 
+// addSizePlain adds delta to the size counter without atomic operations.
+// This method should only be used when thread safety is guaranteed by the caller.
 func (table *mapOfTable) addSizePlain(bucketIdx uintptr, delta int) {
 	cidx := uintptr(len(table.size)-1) & bucketIdx
 	table.size[cidx].c += int64(delta)
 }
 
+// sumSize calculates the total number of entries in the table by summing all counter stripes.
 func (table *mapOfTable) sumSize() int64 {
 	sum := int64(0)
 	for i := range table.size {
@@ -1738,6 +1794,7 @@ func (table *mapOfTable) sumSize() int64 {
 	return sum
 }
 
+// isZero checks if the table is empty by verifying all counter stripes are zero.
 func (table *mapOfTable) isZero() bool {
 	for i := range table.size {
 		if atomic.LoadInt64(&table.size[i].c) != 0 {
@@ -1884,12 +1941,46 @@ func (s *MapStats) ToString() string {
 	return sb.String()
 }
 
+// h1 extracts the bucket index from a hash value.
 func h1(h uintptr) uintptr {
 	return h >> 7
 }
 
+// h2 extracts the byte-level hash for in-bucket lookups.
 func h2(h uintptr) uint8 {
 	return uint8(h & 0x7f)
+}
+
+// broadcast replicates a byte value across all bytes of a uint64.
+func broadcast(b uint8) uint64 {
+	return 0x101010101010101 * uint64(b)
+}
+
+// firstMarkedByteIndex finds the index of the first marked byte in a uint64.
+// It uses the trailing zeros count to determine the position of the first set bit,
+// then converts that bit position to a byte index (dividing by 8).
+//
+// Parameters:
+//   - w: A uint64 value with bits set to mark specific bytes
+//
+// Returns:
+//   - The index (0-7) of the first marked byte in the uint64
+func firstMarkedByteIndex(w uint64) int {
+	return bits.TrailingZeros64(w) >> 3
+}
+
+// markZeroBytes implements SWAR (SIMD Within A Register) byte search.
+// It may produce false positives (e.g., for 0x0100), so results should be verified.
+// Returns a uint64 with the most significant bit of each byte set if that byte is zero.
+func markZeroBytes(w uint64) uint64 {
+	return (w - 0x0101010101010101) & (^w) & 0x8080808080808080
+}
+
+// setByte sets the byte at index idx in the uint64 w to the value b.
+// Returns the modified uint64 value.
+func setByte(w uint64, b uint8, idx int) uint64 {
+	shift := idx << 3
+	return (w &^ (0xff << shift)) | (uint64(b) << shift)
 }
 
 // nextPowOf2 calculates the smallest power of 2 that is greater than or equal to n.
@@ -1922,27 +2013,6 @@ func nextPowOf2(n int) int {
 	v++
 	return int(v)
 }
-func broadcast(b uint8) uint64 {
-	return 0x101010101010101 * uint64(b)
-}
-
-func firstMarkedByteIndex(w uint64) int {
-	return bits.TrailingZeros64(w) >> 3
-}
-
-// SWAR byte search: may produce false positives, e.g. for 0x0100,
-// so make sure to double-check bytes found by this function.
-func markZeroBytes(w uint64) uint64 {
-	return (w - 0x0101010101010101) & (^w) & 0x8080808080808080
-}
-
-func setByte(w uint64, b uint8, idx int) uint64 {
-	shift := idx << 3
-	return (w &^ (0xff << shift)) | (uint64(b) << shift)
-}
-
-type hashFunc func(unsafe.Pointer, uintptr) uintptr
-type equalFunc func(unsafe.Pointer, unsafe.Pointer) bool
 
 // noescape hides a pointer from escape analysis.  noescape is
 // the identity function but escape analysis doesn't think the
@@ -1959,7 +2029,19 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 	return unsafe.Pointer(x ^ 0)
 }
 
-func defaultHasherByBuiltIn[K comparable, V any]() (keyHash hashFunc, valEqual equalFunc) {
+type hashFunc func(unsafe.Pointer, uintptr) uintptr
+type equalFunc func(unsafe.Pointer, unsafe.Pointer) bool
+
+// defaultHasherUsingBuiltIn obtains Go's built-in hash and equality functions
+// for the specified types using reflection.
+//
+// This approach provides direct access to the type-specific functions without
+// the overhead of switch statements, resulting in better performance.
+//
+// Notes:
+//   - This implementation relies on Go's internal type representation
+//   - It should be verified for compatibility with each Go version upgrade
+func defaultHasherUsingBuiltIn[K comparable, V any]() (keyHash hashFunc, valEqual equalFunc) {
 	var m map[K]V
 	mapType := iTypeOf(m).MapType()
 	return mapType.Hasher, mapType.Elem.Equal

@@ -223,7 +223,7 @@ func NewTruncMapOf[K, V comparable]() *MapOf[K, V] {
 	// Stub out the good hash function with a terrible one.
 	// Everything should still work as expected.
 	var m MapOf[K, V]
-	hasher, _ := defaultHasherByBuiltIn[K, V]()
+	hasher, _ := defaultHasherUsingBuiltIn[K, V]()
 	m.keyHash = func(pointer unsafe.Pointer, u uintptr) uintptr {
 		return hasher(pointer, u) & ((uintptr(1) << 4) - 1)
 	}

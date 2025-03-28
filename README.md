@@ -1,22 +1,31 @@
 
 # pb.MapOf
 
-MapOf is compatible with sync.Map.
-Demonstrates 10x higher performance than `sync.Map in go 1.24` under large datasets
+MapOf is a high-performance concurrent map implementation that offers significant
+performance improvements over sync.Map in many common scenarios.
+
+Benchmarks show that MapOf can achieve several times better read performance
+compared to sync.Map in read-heavy workloads, while also providing competitive
+write performance. The actual performance gain varies depending on workload
+characteristics, key types, and concurrency patterns.
+
+MapOf is particularly well-suited for scenarios with:
+  - High read-to-write ratios
+  - Frequent lookups of existing keys
+  - Need for atomic operations on values
 
 Key features of pb.MapOf:
-
-- Uses cache-line aligned for all structures
-- Implements zero-value usability
-- Lazy initialization
-- Defaults to the Go built-in hash, customizable on creation or initialization.
-- Provides complete sync.Map and compatibility
-- Specially optimized for read operations
-- Supports parallel resizing
-- Offers rich functional extensions, as well as LoadOrCompute, ProcessEntry, Size, IsZero, 
-  Clone, Batch processing functions, etc.
-- All tests passed
-- Extremely fast, see benchmark tests below
+  - Uses cache-line aligned structures to prevent false sharing
+  - Implements zero-value usability for convenient initialization
+  - Provides lazy initialization for better performance
+  - Defaults to Go's built-in hash function, customizable on creation or initialization
+  - Offers complete sync.Map API compatibility
+  - Specially optimized for read operations
+  - Supports parallel resizing for better scalability
+  - Includes rich functional extensions such as LoadOrCompute, ProcessEntry, Size, IsZero,
+   Clone, and batch processing functions
+  - Thoroughly tested with comprehensive test coverage
+  - Delivers exceptional performance (see benchmark results below)
 
 pb.MapOf is built upon xsync.MapOf. We extend our thanks to the authors of [xsync](https://github.com/puzpuzpuz/xsync) and reproduce its introduction below:
 ```

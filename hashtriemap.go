@@ -50,7 +50,7 @@ func (ht *HashTrieMap[K, V]) initSlow() *indirect[K, V] {
 		ht.initMu.Unlock()
 		return i
 	}
-	ht.keyHash, ht.valEqual = defaultHasherByBuiltIn[K, V]()
+	ht.keyHash, ht.valEqual = defaultHasherUsingBuiltIn[K, V]()
 	ht.seed = uintptr(rand.Uint64())
 	i = newIndirectNode[K, V](nil)
 	ht.root.Store(i)
