@@ -11,7 +11,7 @@ const enablePadding = true
 
 // counterStripe represents a striped counter to reduce contention.
 type counterStripe struct {
-	c int64 // Counter value, accessed atomically
+	c uintptr // Counter value, accessed atomically
 	//lint:ignore U1000 prevents false sharing
 	pad [cacheLineSize - 8]byte
 }

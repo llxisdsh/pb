@@ -123,8 +123,8 @@ type MapOf[K comparable, V any] struct {
 	pad [(cacheLineSize - unsafe.Sizeof(struct {
 		table        unsafe.Pointer
 		resizeWg     unsafe.Pointer
-		totalGrowths int64
-		totalShrinks int64
+		totalGrowths uintptr
+		totalShrinks uintptr
 		keyHash      hashFunc
 		valEqual     equalFunc
 		minTableLen  int
@@ -133,8 +133,8 @@ type MapOf[K comparable, V any] struct {
 
 	table        unsafe.Pointer // *mapOfTable
 	resizeWg     unsafe.Pointer // *sync.WaitGroup
-	totalGrowths int64
-	totalShrinks int64
+	totalGrowths uintptr
+	totalShrinks uintptr
 	keyHash      hashFunc
 	valEqual     equalFunc
 	minTableLen  int  // WithPresize
@@ -856,7 +856,7 @@ func (m *MapOf[K, V]) processEntry(
 								tableLen := len(table.buckets)
 								if !m.growOnly &&
 									m.minTableLen < tableLen &&
-									table.sumSize() <= int64((tableLen*entriesPerMapOfBucket)/mapShrinkFraction) {
+									table.sumSize() <= (tableLen*entriesPerMapOfBucket)/mapShrinkFraction {
 									m.resize(table, mapShrinkHint)
 								}
 							}
@@ -892,7 +892,7 @@ func (m *MapOf[K, V]) processEntry(
 		}
 
 		// Check if expansion is needed
-		growThreshold := int64(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
+		growThreshold := int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
 		if table.sumSize() >= growThreshold { // table.sumSize()+1 > growThreshold
 			rootb.mu.Unlock()
 			table, _ = m.resize(table, mapGrowHint)
@@ -960,11 +960,11 @@ func (m *MapOf[K, V]) resize(
 			// Grow the table to sizeHint.
 			newTableLen = calcTableLen(sizeHint[0])
 		}
-		atomic.AddInt64(&m.totalGrowths, 1)
+		atomic.AddUintptr(&m.totalGrowths, 1)
 	} else if hint == mapShrinkHint {
 		// Shrink the table with factor of 2.
 		newTableLen = tableLen >> 1
-		atomic.AddInt64(&m.totalShrinks, 1)
+		atomic.AddUintptr(&m.totalShrinks, 1)
 	} else {
 		newTableLen = m.minTableLen
 	}
@@ -1236,7 +1236,7 @@ func (m *MapOf[K, V]) Size() int {
 	if table == nil {
 		return 0
 	}
-	return int(table.sumSize())
+	return table.sumSize()
 }
 
 // IsZero checks zero values, faster than Size().
@@ -1345,14 +1345,14 @@ func (m *MapOf[K, V]) batchProcess(
 	// Calculate estimated new items based on growFactor
 	if growFactor > 0 {
 		// Estimate new items
-		newItemsEstimate := int64(float64(itemCount) * growFactor)
+		newItemsEstimate := int(float64(itemCount) * growFactor)
 
 		// Pre-growth check
 		if newItemsEstimate > 0 {
 			// Retry the resize until it succeeds
 			var ok bool
 			for {
-				growThreshold := int64(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
+				growThreshold := int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
 				sizeHint := table.sumSize() + newItemsEstimate
 				if sizeHint <= growThreshold {
 					break
@@ -1774,21 +1774,21 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 // addSize atomically adds delta to the size counter for the given bucket index.
 func (table *mapOfTable) addSize(bucketIdx uintptr, delta int) {
 	cidx := uintptr(len(table.size)-1) & bucketIdx
-	atomic.AddInt64(&table.size[cidx].c, int64(delta))
+	atomic.AddUintptr(&table.size[cidx].c, uintptr(delta))
 }
 
 // addSizePlain adds delta to the size counter without atomic operations.
 // This method should only be used when thread safety is guaranteed by the caller.
 func (table *mapOfTable) addSizePlain(bucketIdx uintptr, delta int) {
 	cidx := uintptr(len(table.size)-1) & bucketIdx
-	table.size[cidx].c += int64(delta)
+	table.size[cidx].c += uintptr(delta)
 }
 
 // sumSize calculates the total number of entries in the table by summing all counter stripes.
-func (table *mapOfTable) sumSize() int64 {
-	sum := int64(0)
+func (table *mapOfTable) sumSize() int {
+	var sum int
 	for i := range table.size {
-		sum += atomic.LoadInt64(&table.size[i].c)
+		sum += int(atomic.LoadUintptr(&table.size[i].c))
 	}
 	return sum
 }
@@ -1796,7 +1796,7 @@ func (table *mapOfTable) sumSize() int64 {
 // isZero checks if the table is empty by verifying all counter stripes are zero.
 func (table *mapOfTable) isZero() bool {
 	for i := range table.size {
-		if atomic.LoadInt64(&table.size[i].c) != 0 {
+		if atomic.LoadUintptr(&table.size[i].c) != 0 {
 			return false
 		}
 	}
@@ -1808,16 +1808,16 @@ func (table *mapOfTable) isZero() bool {
 // so it should be used only for diagnostics or debugging purposes.
 func (m *MapOf[K, V]) Stats() *MapStats {
 	stats := &MapStats{
-		TotalGrowths: atomic.LoadInt64(&m.totalGrowths),
-		TotalShrinks: atomic.LoadInt64(&m.totalShrinks),
-		MinEntries:   math.MaxInt32,
+		TotalGrowths: atomic.LoadUintptr(&m.totalGrowths),
+		TotalShrinks: atomic.LoadUintptr(&m.totalShrinks),
+		MinEntries:   math.MaxInt,
 	}
 	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
 	if table == nil {
 		return stats
 	}
 	stats.RootBuckets = len(table.buckets)
-	stats.Counter = int(table.sumSize())
+	stats.Counter = table.sumSize()
 	stats.CounterLen = len(table.size)
 	for i := range table.buckets {
 		nentries := 0
@@ -1916,9 +1916,9 @@ type MapStats struct {
 	// buckets, i.e. a root bucket and its chained buckets.
 	MaxEntries int
 	// TotalGrowths is the number of times the hash table grew.
-	TotalGrowths int64
+	TotalGrowths uintptr
 	// TotalGrowths is the number of times the hash table shrinked.
-	TotalShrinks int64
+	TotalShrinks uintptr
 }
 
 // ToString returns string representation of map stats.

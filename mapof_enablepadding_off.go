@@ -11,5 +11,5 @@ const enablePadding = false
 
 // counterStripe represents a striped counter to reduce contention.
 type counterStripe struct {
-	c int64 // Counter value, accessed atomically
+	c uintptr // Counter value, accessed atomically
 }
