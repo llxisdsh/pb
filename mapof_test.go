@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"reflect"
 	"runtime"
+	"sort"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -118,6 +119,542 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 			fieldName, fieldType, fieldOffset, fieldSize)
 	}
 
+}
+
+// TestMapOfStoreLoadLatency tests the latency between Store and Load operations
+func TestMapOfStoreLoadLatency(t *testing.T) {
+	const (
+		iterations   = 100000 // Number of samples
+		warmupRounds = 1000   // Warmup iterations
+	)
+
+	// Define percentiles to report
+	reportPercentiles := []float64{50, 90, 99, 99.9, 99.99, 100}
+
+	m := NewMapOf[string, int64]()
+
+	// Channels for synchronization
+	var wg sync.WaitGroup
+	startCh := make(chan struct{})
+	readyCh := make(chan struct{}, 1) // Buffered to prevent blocking
+	doneCh := make(chan struct{})
+
+	// Record latency data
+	latencies := make([]time.Duration, 0, iterations)
+	var successCount, failureCount int64
+
+	// Reader goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		// Wait for start signal
+		<-startCh
+
+		var lastValue int64
+		for {
+			select {
+			case <-doneCh:
+				return
+			case <-readyCh:
+				// Record start time
+				startTime := time.Now()
+				success := false
+
+				// Try to read until success or timeout
+				timeout := time.After(10 * time.Millisecond)
+				for !success {
+					select {
+					case <-timeout:
+						// Timeout, record failure
+						atomic.AddInt64(&failureCount, 1)
+						success = true // Exit loop
+					default:
+						value, ok := m.Load("test-key")
+						if ok && value > lastValue {
+							// Read success and value updated
+							latency := time.Since(startTime)
+							latencies = append(latencies, latency)
+							lastValue = value
+							atomic.AddInt64(&successCount, 1)
+							success = true
+						}
+					}
+				}
+			}
+		}
+	}()
+
+	// Writer goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer close(doneCh)
+
+		// Send start signal
+		close(startCh)
+
+		// Warmup phase
+		for i := 0; i < warmupRounds; i++ {
+			m.Store("test-key", int64(i))
+			readyCh <- struct{}{}
+		}
+
+		// Actual test
+		for i := warmupRounds; i < warmupRounds+iterations; i++ {
+			// Write new value
+			m.Store("test-key", int64(i))
+
+			// Notify reader goroutine
+			readyCh <- struct{}{}
+		}
+	}()
+
+	// Wait for test completion
+	wg.Wait()
+
+	// Analyze results
+	if len(latencies) == 0 {
+		t.Fatal("No latency data collected")
+	}
+
+	// Sort latency data for percentile calculation
+	sort.Slice(latencies, func(i, j int) bool {
+		return latencies[i] < latencies[j]
+	})
+
+	// Calculate statistics
+	var sum time.Duration
+	for _, latency := range latencies {
+		sum += latency
+	}
+	avgLatency := sum / time.Duration(len(latencies))
+
+	// Calculate standard deviation
+	var variance float64
+	for _, latency := range latencies {
+		diff := float64(latency - avgLatency)
+		variance += diff * diff
+	}
+	variance /= float64(len(latencies))
+	stdDev := time.Duration(math.Sqrt(variance))
+
+	// Output results
+	t.Logf("Store-Load Latency Statistics (samples: %d):", len(latencies))
+	t.Logf("  Success rate: %.2f%% (%d/%d)",
+		float64(successCount)*100/float64(successCount+failureCount),
+		successCount, successCount+failureCount)
+	t.Logf("  Average latency: %v", avgLatency)
+	t.Logf("  Standard deviation: %v", stdDev)
+	t.Logf("  Min latency: %v", latencies[0])
+	t.Logf("  Max latency: %v", latencies[len(latencies)-1])
+
+	// Output percentiles
+	for _, p := range reportPercentiles {
+		idx := int(float64(len(latencies)-1) * p / 100)
+		t.Logf("  %v percentile: %v", p, latencies[idx])
+	}
+
+	// Output latency distribution
+	buckets := []time.Duration{
+		1 * time.Nanosecond,
+		10 * time.Nanosecond,
+		100 * time.Nanosecond,
+		1 * time.Microsecond,
+		10 * time.Microsecond,
+		100 * time.Microsecond,
+		1 * time.Millisecond,
+		10 * time.Millisecond,
+	}
+
+	counts := make([]int, len(buckets)+1)
+	for _, latency := range latencies {
+		i := 0
+		for ; i < len(buckets); i++ {
+			if latency < buckets[i] {
+				break
+			}
+		}
+		counts[i]++
+	}
+
+	t.Log("Latency distribution:")
+	for i := 0; i < len(buckets); i++ {
+		var rangeStr string
+		if i == 0 {
+			rangeStr = fmt.Sprintf("< %v", buckets[i])
+		} else {
+			rangeStr = fmt.Sprintf("%v - %v", buckets[i-1], buckets[i])
+		}
+		percentage := float64(counts[i]) * 100 / float64(len(latencies))
+		t.Logf("  %s: %d (%.2f%%)", rangeStr, counts[i], percentage)
+	}
+
+	if counts[len(counts)-1] > 0 {
+		percentage := float64(counts[len(counts)-1]) * 100 / float64(len(latencies))
+		t.Logf("  >= %v: %d (%.2f%%)", buckets[len(buckets)-1], counts[len(counts)-1], percentage)
+	}
+}
+
+// TestMapOfStoreLoadMultiThreadLatency tests Store-Load latency in a multi-threaded environment
+func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping multi-thread latency test in short mode")
+	}
+
+	const (
+		iterations   = 10000 // Iterations per writer thread
+		writerCount  = 4     // Number of writer threads
+		readerCount  = 16    // Number of reader threads
+		keyCount     = 100   // Number of keys
+		warmupRounds = 1000  // Warmup iterations
+	)
+
+	// Define percentiles to report
+	percentiles := []float64{50, 90, 99, 99.9, 99.99, 100}
+
+	m := NewMapOf[int, int64]()
+
+	// Synchronization variables
+	var wg sync.WaitGroup
+	startCh := make(chan struct{})
+	doneCh := make(chan struct{})
+
+	// Record latency data
+	var latencyLock sync.Mutex
+	latencies := make([]time.Duration, 0, writerCount*iterations)
+
+	// Track latest values for each key
+	latestValues := make([]atomic.Int64, keyCount)
+
+	// Start reader threads
+	for r := 0; r < readerCount; r++ {
+		wg.Add(1)
+		go func(readerID int) {
+			defer wg.Done()
+
+			// Wait for start signal
+			<-startCh
+
+			localLatestValues := make([]int64, keyCount)
+
+			for {
+				select {
+				case <-doneCh:
+					return
+				default:
+					// Select a key based on reader ID
+					keyIdx := readerID % keyCount
+
+					// Read value
+					value, ok := m.Load(keyIdx)
+					if ok && value > localLatestValues[keyIdx] {
+						// Update local record of latest value
+						localLatestValues[keyIdx] = value
+					}
+				}
+			}
+		}(r)
+	}
+
+	// Start writer threads
+	for w := 0; w < writerCount; w++ {
+		wg.Add(1)
+		go func(writerID int) {
+			defer wg.Done()
+
+			// Wait for start signal
+			<-startCh
+
+			// Determine key range for this writer
+			keysPerWriter := keyCount / writerCount
+			startKey := writerID * keysPerWriter
+			endKey := (writerID + 1) * keysPerWriter
+			if writerID == writerCount-1 {
+				endKey = keyCount // Last thread handles remaining keys
+			}
+
+			// Warmup phase
+			for i := 0; i < warmupRounds; i++ {
+				for key := startKey; key < endKey; key++ {
+					newValue := int64(i + 1)
+					m.Store(key, newValue)
+					latestValues[key].Store(newValue)
+				}
+			}
+
+			// Actual test
+			for i := 0; i < iterations; i++ {
+				for key := startKey; key < endKey; key++ {
+					// Write new value
+					startTime := time.Now()
+					newValue := latestValues[key].Load() + 1
+					m.Store(key, newValue)
+
+					// Update latest value record
+					latestValues[key].Store(newValue)
+
+					// Record latency
+					latency := time.Since(startTime)
+					latencyLock.Lock()
+					latencies = append(latencies, latency)
+					latencyLock.Unlock()
+				}
+			}
+		}(w)
+	}
+
+	// Start test
+	close(startCh)
+
+	// Wait for a reasonable time then end test
+	time.Sleep(time.Duration(iterations/100) * time.Millisecond)
+	close(doneCh)
+
+	// Wait for all threads to complete
+	wg.Wait()
+
+	// Analyze results
+	latencyLock.Lock()
+	defer latencyLock.Unlock()
+
+	if len(latencies) == 0 {
+		t.Fatal("No latency data collected")
+	}
+
+	// Sort latency data for percentile calculation
+	sort.Slice(latencies, func(i, j int) bool {
+		return latencies[i] < latencies[j]
+	})
+
+	// Calculate statistics
+	var sum time.Duration
+	for _, latency := range latencies {
+		sum += latency
+	}
+	avgLatency := sum / time.Duration(len(latencies))
+
+	// Calculate standard deviation
+	var variance float64
+	for _, latency := range latencies {
+		diff := float64(latency - avgLatency)
+		variance += diff * diff
+	}
+	variance /= float64(len(latencies))
+	stdDev := time.Duration(math.Sqrt(variance))
+
+	// Output results
+	t.Logf("Multi-thread Store-Load Latency Statistics (samples: %d):", len(latencies))
+	t.Logf("  Average latency: %v", avgLatency)
+	t.Logf("  Standard deviation: %v", stdDev)
+	t.Logf("  Min latency: %v", latencies[0])
+	t.Logf("  Max latency: %v", latencies[len(latencies)-1])
+
+	// Output percentiles
+	for _, p := range percentiles {
+		idx := int(float64(len(latencies)-1) * p / 100)
+		t.Logf("  %v percentile: %v", p, latencies[idx])
+	}
+}
+
+// TestMapOfSimpleConcurrentReadWrite test 1 goroutine for store and 1 goroutine for load
+func TestMapOfSimpleConcurrentReadWrite(t *testing.T) {
+	const iterations = 1000
+
+	m := NewMapOf[string, int]()
+
+	writeDone := make(chan int)
+	readDone := make(chan struct{})
+
+	var failures int
+
+	// start reader goroutine
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < iterations; i++ {
+			// wait for writer to complete and send the written value
+			expectedValue := <-writeDone
+
+			// read and verify value
+			value, ok := m.Load("test-key")
+			if !ok {
+				t.Logf("Iteration %d: key not found", i)
+				failures++
+			} else if value != expectedValue {
+				t.Logf("Iteration %d: read value %d, expected %d", i, value, expectedValue)
+				failures++
+			}
+
+			// notify writer to continue
+			readDone <- struct{}{}
+		}
+	}()
+
+	// start writer goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < iterations; i++ {
+			// write value
+			m.Store("test-key", i)
+
+			// notify reader and pass expected value
+			writeDone <- i
+
+			// wait for reader to complete
+			<-readDone
+		}
+	}()
+
+	// wait for all goroutines to complete
+	wg.Wait()
+
+	if failures > 0 {
+		t.Errorf("Found %d read failures", failures)
+	} else {
+		t.Logf("All %d reads successful", iterations)
+	}
+}
+
+// TestMapOfMultiKeyConcurrentReadWrite tests concurrent read/write with multiple keys
+func TestMapOfMultiKeyConcurrentReadWrite(t *testing.T) {
+	const (
+		iterations = 1000
+		keyCount   = 100
+	)
+
+	m := NewMapOf[int, int]()
+
+	// channels for goroutine communication
+	writeDone := make(chan struct{})
+	readDone := make(chan struct{})
+
+	// track test results
+	var failures int
+
+	// start writer goroutine
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < iterations; i++ {
+			// write a batch of key-value pairs
+			for k := 0; k < keyCount; k++ {
+				m.Store(k, i)
+			}
+
+			// notify reader to start reading
+			writeDone <- struct{}{}
+
+			// wait for reader to complete
+			<-readDone
+		}
+	}()
+
+	// start reader goroutine
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		for i := 0; i < iterations; i++ {
+			// wait for writer to complete
+			<-writeDone
+
+			// read and verify all key-value pairs
+			for k := 0; k < keyCount; k++ {
+				value, ok := m.Load(k)
+				if !ok {
+					t.Logf("Iteration %d: key %d not found", i, k)
+					failures++
+				} else if value != i {
+					t.Logf("Iteration %d: key %d has value %d, expected %d", i, k, value, i)
+					failures++
+				}
+			}
+
+			// notify writer to continue
+			readDone <- struct{}{}
+		}
+	}()
+
+	// wait for all goroutines to complete
+	wg.Wait()
+
+	if failures > 0 {
+		t.Errorf("Found %d read failures", failures)
+	} else {
+		t.Logf("All %d reads successful", iterations*keyCount)
+	}
+}
+
+// TestMapOfConcurrentReadWriteStress performs intensive concurrent stress testing
+func TestMapOfConcurrentReadWriteStress(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping stress test")
+	}
+
+	const (
+		writerCount = 4
+		readerCount = 16
+		keyCount    = 1000
+		iterations  = 10000
+	)
+
+	m := NewMapOf[int, int]()
+	var wg sync.WaitGroup
+
+	// start writer goroutines
+	for w := 0; w < writerCount; w++ {
+		wg.Add(1)
+		go func(writerID int) {
+			defer wg.Done()
+
+			for i := 0; i < iterations; i++ {
+				key := (writerID*iterations + i) % keyCount
+				m.Store(key, writerID*10000+i)
+			}
+		}(w)
+	}
+
+	// start reader goroutines
+	readErrors := make(chan string, readerCount*iterations)
+	for r := 0; r < readerCount; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			for i := 0; i < iterations; i++ {
+				for k := 0; k < keyCount; k++ {
+					_, _ = m.Load(k) // we only care about crashes or deadlocks
+				}
+				//time.Sleep(time.Microsecond) // slightly slow down reading
+			}
+		}()
+	}
+
+	// wait for all goroutines to complete
+	wg.Wait()
+	close(readErrors)
+
+	// check for errors
+	errorCount := 0
+	for err := range readErrors {
+		t.Log(err)
+		errorCount++
+		if errorCount >= 10 {
+			t.Log("Too many errors, stopping display...")
+			break
+		}
+	}
+
+	if errorCount > 0 {
+		t.Errorf("Found %d read errors", errorCount)
+	}
 }
 
 func TestMapOfMisc(t *testing.T) {
