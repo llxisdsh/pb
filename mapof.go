@@ -16,13 +16,11 @@ import (
 )
 
 const (
-	// cacheLineSize is used in paddings to prevent false sharing;
-	// 64B are used instead of 128B as a compromise between
-	// memory footprint and performance; 128B usage may give ~30%
-	// improvement on NUMA machines.
+	// cacheLineSize is used in paddings to prevent false sharing.
+	// Use `golang.org/x/sys/cpu` to calculate automatically.
 	cacheLineSize = unsafe.Sizeof(cpu.CacheLinePad{})
 
-	// number of MapOf entries per bucket.
+	// entriesPerMapOfBucket is number of MapOf entries per bucket.
 	// Automatically calculate the number of entries supported to fit within a cache line,
 	// but do not exceed 8, which is the upper limit supported by the meta field
 	entriesPerMapOfBucket = min(8, (int(cacheLineSize)-int(unsafe.Sizeof(struct {
@@ -205,7 +203,7 @@ func NewMapOfWithHasher[K comparable, V any](
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
 	m := &MapOf[K, V]{}
-	m.init(keyHash, valEqual, options...)
+	m.Init(keyHash, valEqual, options...)
 	return m
 }
 
@@ -244,8 +242,8 @@ func SetDefaultJSONMarshal(marshal func(v any) ([]byte, error), unmarshal func(d
 	jsonMarshal, jsonUnmarshal = marshal, unmarshal
 }
 
-// Init Initialization the MapOf, Allows custom key hasher (keyHash) and value equality (valEqual) functions for compare-and-swap operations
-// This function is not thread-safe, Even if this Init is not called, the Map will still be initialized automatically.
+// Init the MapOf, Allows custom key hasher (keyHash)
+// and value equality (valEqual) functions for compare-and-swap operations
 //
 // Parameters:
 //   - keyHash: nil uses the built-in hasher
@@ -253,14 +251,11 @@ func SetDefaultJSONMarshal(marshal func(v any) ([]byte, error), unmarshal func(d
 //     using the Compare series of functions will cause a panic
 //   - WithPresize option for initial capacity,
 //   - WithGrowOnly option to disable shrinking,
+//
+// Notes:
+//   - This function is not thread-safe and can only be used before the MapOf is utilized.
+//   - If this function is not called, MapOf will use the default configuration.
 func (m *MapOf[K, V]) Init(keyHash func(key K, seed uintptr) uintptr,
-	valEqual func(val, val2 V) bool,
-	options ...func(*MapConfig)) {
-
-	m.init(keyHash, valEqual, options...)
-}
-
-func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
 	options ...func(*MapConfig)) *mapOfTable {
 
@@ -336,7 +331,7 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	}
 
 	// Perform initialization
-	table = m.init(nil, nil)
+	table = m.Init(nil, nil)
 	atomic.StorePointer(&m.table, unsafe.Pointer(table))
 	atomic.StorePointer(&m.resizeWg, nil)
 	wg.Done()
@@ -1370,6 +1365,50 @@ func (m *MapOf[K, V]) batchProcess(
 	processor(table, 0, itemCount)
 }
 
+// BatchProcessImmutableEntries batch processes multiple key-value pairs with a custom function
+//
+// Parameters:
+//   - immutableEntries: slice of immutable key-value pairs to process.
+//   - growFactor: capacity change coefficient (see batchProcess)
+//   - processFn: function that receives entry and current value (if exists), returns new value, result value, and status
+//   - parallelism: degree of parallelism (see batchProcess)
+//
+// Returns:
+//   - values []V: slice of values from processFn
+//   - status []bool: slice of status values from processFn
+//
+// Nodes:
+//   - immutableEntries will be stored directly, as the name suggests,
+//     the key-value of the elements should not be changed.
+func (m *MapOf[K, V]) BatchProcessImmutableEntries(
+	immutableEntries []*EntryOf[K, V],
+	growFactor float64,
+	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	parallelism int,
+) (values []V, status []bool) {
+	if len(immutableEntries) == 0 {
+		return
+	}
+
+	values = make([]V, len(immutableEntries))
+	status = make([]bool, len(immutableEntries))
+
+	table := (*mapOfTable)(atomic.LoadPointer(&m.table))
+
+	m.batchProcess(table, len(immutableEntries), growFactor, func(table *mapOfTable, start, end int) {
+		for i := start; i < end; i++ {
+			hash := m.keyHash(noescape(unsafe.Pointer(&immutableEntries[i].Key)), table.seed)
+			values[i], status[i] = m.processEntry(table, hash, immutableEntries[i].Key,
+				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+					return processFn(immutableEntries[i], loaded)
+				},
+			)
+		}
+	}, parallelism)
+
+	return
+}
+
 // BatchProcessEntries batch processes multiple key-value pairs with a custom function
 //
 // Parameters:
@@ -1381,6 +1420,10 @@ func (m *MapOf[K, V]) batchProcess(
 // Returns:
 //   - values []V: slice of values from processFn
 //   - status []bool: slice of status values from processFn
+//
+// Nodes:
+//   - The processFn should not directly return `entry`,
+//     as this would prevent the entire `entries` from being garbage collected in a timely manner.
 func (m *MapOf[K, V]) BatchProcessEntries(
 	entries []EntryOf[K, V],
 	growFactor float64,
@@ -1563,7 +1606,7 @@ func (m *MapOf[K, V]) FromMap(source map[K]V) {
 //
 // Parameters:
 //   - filterFn: returns true to keep the element, false to remove it
-//   - transformFn: transforms values of kept elements, returns new value and whether update is needed
+//   - transformFn: transforms values of kept elements, returns new value and whether store is needed
 //     if nil, only filtering is performed
 func (m *MapOf[K, V]) FilterAndTransform(
 	filterFn func(key K, value V) bool,
@@ -1575,7 +1618,7 @@ func (m *MapOf[K, V]) FilterAndTransform(
 	}
 
 	// Process elements directly during iteration to avoid extra memory allocation
-	var toProcess []EntryOf[K, V]
+	var toUpsert []*EntryOf[K, V]
 	var toDelete []K
 
 	m.RangeEntry(func(e *EntryOf[K, V]) bool {
@@ -1583,9 +1626,9 @@ func (m *MapOf[K, V]) FilterAndTransform(
 		if !filterFn(key, value) {
 			toDelete = append(toDelete, key)
 		} else if transformFn != nil {
-			newValue, needUpdate := transformFn(key, value)
-			if needUpdate {
-				toProcess = append(toProcess, EntryOf[K, V]{Key: key, Value: newValue})
+			newValue, needUpsert := transformFn(key, value)
+			if needUpsert {
+				toUpsert = append(toUpsert, &EntryOf[K, V]{Key: key, Value: newValue})
 			}
 		}
 		return true
@@ -1597,8 +1640,14 @@ func (m *MapOf[K, V]) FilterAndTransform(
 	}
 
 	// Batch update elements that meet the condition
-	if len(toProcess) > 0 {
-		m.BatchUpsert(toProcess)
+	if len(toUpsert) > 0 {
+		m.BatchProcessImmutableEntries(
+			toUpsert, 1.0,
+			func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+				return entry, entry.Value, false
+			},
+			-1,
+		)
 	}
 }
 
@@ -1610,7 +1659,7 @@ func (m *MapOf[K, V]) FilterAndTransform(
 //     if nil, values from other map override current map values
 func (m *MapOf[K, V]) Merge(
 	other *MapOf[K, V],
-	conflictFn func(key K, thisVal, otherVal V) V,
+	conflictFn func(this, other *EntryOf[K, V]) *EntryOf[K, V],
 ) {
 	if other == nil || other.IsZero() {
 		return
@@ -1618,8 +1667,8 @@ func (m *MapOf[K, V]) Merge(
 
 	// Default conflict handler: use value from other map
 	if conflictFn == nil {
-		conflictFn = func(_ K, _, otherVal V) V {
-			return otherVal
+		conflictFn = func(_, other *EntryOf[K, V]) *EntryOf[K, V] {
+			return other
 		}
 	}
 
@@ -1629,18 +1678,16 @@ func (m *MapOf[K, V]) Merge(
 
 	m.batchProcess(table, otherSize, 1.0,
 		func(table *mapOfTable, _, _ int) {
-			other.RangeEntry(func(e *EntryOf[K, V]) bool {
-				key, otherVal := e.Key, e.Value
-				hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-				m.processEntry(table, hash, key,
-					func(Loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-						if Loaded == nil {
+			other.RangeEntry(func(other *EntryOf[K, V]) bool {
+				hash := m.keyHash(noescape(unsafe.Pointer(&other.Key)), table.seed)
+				m.processEntry(table, hash, other.Key,
+					func(this *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+						if this == nil {
 							// Key doesn't exist in current Map, add directly
-							return &EntryOf[K, V]{Value: otherVal}, otherVal, false
+							return other, other.Value, false
 						}
 						// Key exists in both Maps, use conflict handler
-						newVal := conflictFn(key, Loaded.Value, otherVal)
-						return &EntryOf[K, V]{Value: newVal}, newVal, true
+						return conflictFn(this, other), other.Value, true
 					},
 				)
 				return true
@@ -1673,11 +1720,10 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 			func(table *mapOfTable, _, _ int) {
 				// Directly iterate and process all key-value pairs
 				m.RangeEntry(func(e *EntryOf[K, V]) bool {
-					key, value := e.Key, e.Value
-					hash := clone.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-					clone.processEntry(table, hash, key,
-						func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-							return &EntryOf[K, V]{Value: value}, value, loaded != nil
+					hash := clone.keyHash(noescape(unsafe.Pointer(&e.Key)), table.seed)
+					clone.processEntry(table, hash, e.Key,
+						func(_ *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+							return e, e.Value, false
 						},
 					)
 					return true

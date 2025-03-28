@@ -2886,8 +2886,8 @@ func TestMapOfMerge(t *testing.T) {
 		m2.Store("d", 4)
 
 		// Custom conflict resolution: sum the values
-		m1.Merge(m2, func(key string, thisVal, otherVal int) int {
-			return thisVal + otherVal
+		m1.Merge(m2, func(this, other *EntryOf[string, int]) *EntryOf[string, int] {
+			return &EntryOf[string, int]{Value: this.Value + other.Value}
 		})
 
 		if m1.Size() != 4 {
