@@ -257,6 +257,13 @@ func SetDefaultJSONMarshal(marshal func(v any) ([]byte, error), unmarshal func(d
 //   - If this function is not called, MapOf will use the default configuration.
 func (m *MapOf[K, V]) Init(keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
+	options ...func(*MapConfig)) {
+
+	m.init(keyHash, valEqual, options...)
+}
+
+func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
+	valEqual func(val, val2 V) bool,
 	options ...func(*MapConfig)) *mapOfTable {
 
 	c := &MapConfig{
@@ -331,7 +338,7 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	}
 
 	// Perform initialization
-	table = m.Init(nil, nil)
+	table = m.init(nil, nil)
 	atomic.StorePointer(&m.table, unsafe.Pointer(table))
 	atomic.StorePointer(&m.resizeWg, nil)
 	wg.Done()
