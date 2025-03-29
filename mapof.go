@@ -848,8 +848,14 @@ func (m *MapOf[K, V]) processEntry(
 						if newe == nil {
 							// Delete
 							newmetaw := setByte(metaw, emptyMetaSlot, idx)
-							atomic.StoreUint64(&b.meta, newmetaw)
-							atomic.StorePointer(&b.entries[idx], nil)
+							if //goland:noinspection GoBoolExpressions
+							!atomicReads {
+								b.meta = newmetaw
+								b.entries[idx] = nil
+							} else {
+								atomic.StoreUint64(&b.meta, newmetaw)
+								atomic.StorePointer(&b.entries[idx], nil)
+							}
 							rootb.mu.Unlock()
 							table.addSize(bidx, -1)
 							if newmetaw == defaultMeta {
@@ -865,7 +871,12 @@ func (m *MapOf[K, V]) processEntry(
 						if newe != e {
 							// Update
 							newe.Key = e.Key
-							atomic.StorePointer(&b.entries[idx], unsafe.Pointer(newe))
+							if //goland:noinspection GoBoolExpressions
+							!atomicReads {
+								b.entries[idx] = unsafe.Pointer(newe)
+							} else {
+								atomic.StorePointer(&b.entries[idx], unsafe.Pointer(newe))
+							}
 						}
 						rootb.mu.Unlock()
 						return value, status
@@ -884,8 +895,14 @@ func (m *MapOf[K, V]) processEntry(
 
 		// Insert into empty slot
 		if emptyb != nil {
-			atomic.StoreUint64(&emptyb.meta, setByte(emptyb.meta, h2val, emptyidx))
-			atomic.StorePointer(&emptyb.entries[emptyidx], unsafe.Pointer(newe))
+			if //goland:noinspection GoBoolExpressions
+			!atomicReads {
+				emptyb.meta = setByte(emptyb.meta, h2val, emptyidx)
+				emptyb.entries[emptyidx] = unsafe.Pointer(newe)
+			} else {
+				atomic.StoreUint64(&emptyb.meta, setByte(emptyb.meta, h2val, emptyidx))
+				atomic.StorePointer(&emptyb.entries[emptyidx], unsafe.Pointer(newe))
+			}
 			rootb.mu.Unlock()
 			table.addSize(bidx, 1)
 			return value, status
@@ -901,10 +918,16 @@ func (m *MapOf[K, V]) processEntry(
 		}
 
 		// Create new bucket and insert
-		atomic.StorePointer(&lastBucket.next, unsafe.Pointer(&bucketOf{
+		newb := &bucketOf{
 			meta:    setByte(defaultMeta, h2val, 0),
 			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newe)},
-		}))
+		}
+		if //goland:noinspection GoBoolExpressions
+		!atomicReads {
+			lastBucket.next = unsafe.Pointer(newb)
+		} else {
+			atomic.StorePointer(&lastBucket.next, unsafe.Pointer(newb))
+		}
 		rootb.mu.Unlock()
 		table.addSize(bidx, 1)
 		return value, status
