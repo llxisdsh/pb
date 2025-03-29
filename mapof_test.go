@@ -58,17 +58,18 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 
 	size := unsafe.Sizeof(counterStripe{})
 	t.Log("counterStripe size:", size)
-	if enablePadding && size != cacheLineSize {
+	if //goland:noinspection GoBoolExpressions
+	enablePadding && size != cacheLineSize {
 		t.Fatalf("counterStripe doesn't meet cacheLineSize: %d", size)
 	}
 
-	size = unsafe.Sizeof(bucketOf{})
+	size = unsafe.Sizeof(bucketOf[string, int]{})
 	t.Log("bucketOf size:", size)
 	if size != cacheLineSize {
 		t.Fatalf("bucketOf doesn't meet cacheLineSize: %d", size)
 	}
 
-	size = unsafe.Sizeof(mapOfTable{})
+	size = unsafe.Sizeof(mapOfTable[string, int]{})
 	t.Log("mapOfTable size:", size)
 	if size != cacheLineSize {
 		t.Fatalf("mapOfTable doesn't meet cacheLineSize: %d", size)
@@ -80,7 +81,7 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 		t.Fatalf("MapOf doesn't meet cacheLineSize: %d", size)
 	}
 
-	structType := reflect.TypeOf(bucketOf{})
+	structType := reflect.TypeOf(bucketOf[string, int]{})
 	t.Logf("Struct bucketOf: %s", structType.Name())
 	for i := 0; i < structType.NumField(); i++ {
 		field := structType.Field(i)
@@ -93,7 +94,7 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 			fieldName, fieldType, fieldOffset, fieldSize)
 	}
 
-	structType = reflect.TypeOf(mapOfTable{})
+	structType = reflect.TypeOf(mapOfTable[string, int]{})
 	t.Logf("Struct mapOfTable: %s", structType.Name())
 	for i := 0; i < structType.NumField(); i++ {
 		field := structType.Field(i)
