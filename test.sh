@@ -16,7 +16,7 @@ kill_previous_processes() {
 
 # Build the target file
 build_target() {
-    go test mapof_test.go mapof.go mapof_cachelinesize_64.go mapof_enablepadding_off.go mapof_atomic_loads_off.go mapof_atomic_stores_off.go -c -o pb.test
+    go test mapof_test.go mapof.go mapof_opt_cachelinesize_64.go mapof_opt_enablepadding_off.go mapof_opt_atomic_loads_off.go mapof_opt_atomic_stores_off.go -c -o pb.test
     echo "Build completed: pb.test"
 }
 

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/bits"
 	rand1 "math/rand"
 	"math/rand/v2"
 	"reflect"
@@ -2019,10 +2020,26 @@ func TestMapOfWithHasher(t *testing.T) {
 }
 
 func murmur3Finalizer(i int, _ uintptr) uintptr {
-	h := uintptr(i)
-	h = (h ^ (h >> 33)) * 0xff51afd7ed558ccd
-	h = (h ^ (h >> 33)) * 0xc4ceb9fe1a85ec53
-	return h ^ (h >> 33)
+	if bits.UintSize == 32 {
+		h := uintptr(i)
+		h = (h ^ (h >> 16)) * 0x85ebca6b
+		h = (h ^ (h >> 13)) * 0xc2b2ae35
+		return h ^ (h >> 16)
+	}
+	h := uint32(i >> 32)
+	h = (h ^ (h >> 16)) * 0x85ebca6b
+	h = (h ^ (h >> 13)) * 0xc2b2ae35
+	h = h ^ (h >> 16)
+	l := uint32(i)
+	l = (l ^ (l >> 16)) * 0x85ebca6b
+	l = (l ^ (l >> 13)) * 0xc2b2ae35
+	l = l ^ (l >> 16)
+	return uintptr(h) << 32 & uintptr(l)
+	//}
+	//h := uintptr(i)
+	//h = (h ^ (h >> 33)) * 0xff51afd7ed558ccd
+	//h = (h ^ (h >> 33)) * 0xc4ceb9fe1a85ec53
+	//return h ^ (h >> 33)
 }
 
 func TestMapOfWithHasher_HashCodeCollisions(t *testing.T) {

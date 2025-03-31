@@ -18,9 +18,9 @@ const (
 	// This value is automatically calculated to fit within a cache line,
 	// but will not exceed 8, which is the upper limit supported by the meta field.
 	entriesPerMapOfBucket = min(8, (int(CacheLineSize)-int(unsafe.Sizeof(struct {
-		meta uint64
 		// entries [entriesPerMapOfBucket]unsafe.Pointer
 		next unsafe.Pointer
+		meta uint64
 		mu   sync.Mutex
 	}{})))/int(unsafe.Sizeof(unsafe.Pointer(nil))))
 
@@ -157,15 +157,14 @@ type mapOfTable struct {
 type bucketOf struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
-		meta    uint64
 		entries [entriesPerMapOfBucket]unsafe.Pointer
 		next    unsafe.Pointer
+		meta    uint64
 		mu      sync.Mutex
 	}{})%CacheLineSize) % CacheLineSize]byte
-
-	meta    uint64                                // Metadata for fast entry lookups using SWAR techniques
 	entries [entriesPerMapOfBucket]unsafe.Pointer // Pointers to *EntryOf instances
 	next    unsafe.Pointer                        // Pointer to the next bucket (*bucketOf) in the chain
+	meta    uint64                                // Metadata for fast entry lookups using SWAR techniques
 	mu      sync.Mutex                            // Lock for bucket modifications
 }
 
