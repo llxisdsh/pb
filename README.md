@@ -16,6 +16,15 @@ MapOf is particularly well-suited for scenarios with:
 
 Key features of pb.MapOf:
   - Uses cache-line aligned structures to prevent false sharing
+  - Automatic CPU Cache Line Size Adaptation
+    The library automatically adapts to the CPU's cache line size. 
+    You can also manually specify it using compile-time options like `mapof_opt_cachelinesize_64, 128, 256` etc.
+  - Counter Performance Optimization
+    For improved counter performance, use `mapof_opt_enablepadding` to force padding around counters, reducing false sharing.
+  - Memory Model Support
+    - Already optimized for strong memory models (e.g., x86 TSO, Apple Silicon).
+    - Weak memory model support (WIP): Enable `mapof_opt_atomic_loads` or `mapof_opt_atomic_stores` to strengthen load/store 
+      ordering on weakly-ordered architectures (e.g., traditional ARM).
   - Implements zero-value usability for convenient initialization
   - Provides lazy initialization for better performance
   - Defaults to Go's built-in hash function, customizable on creation or initialization
@@ -202,7 +211,6 @@ func TestMapOf(t *testing.T) {
         t.Log(k, v)
     }
 }
-
 ```
 
 # pb.HashTrieMap
