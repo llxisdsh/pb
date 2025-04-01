@@ -15,10 +15,10 @@ func loadUint64(addr *uint64) uint64 {
 	return *addr
 }
 
-func atomicLoadPointer(addr *unsafe.Pointer) unsafe.Pointer {
+func loadPointerStrict(addr *unsafe.Pointer) unsafe.Pointer {
 	return atomic.LoadPointer(addr)
 }
 
-func atomicLoadUint64(addr *uint64) uint64 {
+func loadUint64Strict(addr *uint64) uint64 {
 	return atomic.LoadUint64(addr)
 }

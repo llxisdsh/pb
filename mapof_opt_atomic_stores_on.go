@@ -15,10 +15,10 @@ func storeUint64(addr *uint64, val uint64) {
 	atomic.StoreUint64(addr, val)
 }
 
-func atomicStorePointer(addr *unsafe.Pointer, val unsafe.Pointer) {
+func storePointerStrict(addr *unsafe.Pointer, val unsafe.Pointer) {
 	atomic.StorePointer(addr, val)
 }
 
-func atomicStoreUint64(addr *uint64, val uint64) {
+func storeUint64Strict(addr *uint64, val uint64) {
 	atomic.StoreUint64(addr, val)
 }
