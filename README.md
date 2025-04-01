@@ -21,10 +21,13 @@ Key features of pb.MapOf:
     You can also manually specify it using compile-time options like `mapof_opt_cachelinesize_64, 128, 256` etc.
   - Counter Performance Optimization
     For improved counter performance, use `mapof_opt_enablepadding` to force padding around counters, reducing false sharing.
-  - Memory Model Support
+  - Compatibility
     - Already optimized for strong memory models (e.g., x86 TSO, Apple Silicon).
-    - Weak memory model support (WIP): Enable `mapof_opt_atomic_loads` or `mapof_opt_atomic_stores` to strengthen load/store 
-      ordering on weakly-ordered architectures (e.g., traditional ARM).
+    - Already optimized for Weak memory models.
+    - Tested/Validated CPUs with default configurations: 
+      AMD Ryzen Threadripper 3970X, ARM Neoverse-N2, Apple M3 Ultra, Qualcomm Snapdragon 636 (32bit)
+	- Enable `mapof_opt_atomic_loads` or `mapof_opt_atomic_stores` to strengthen load/store
+	  ordering on weakly-ordered architectures (e.g., traditional ARM).
   - Implements zero-value usability for convenient initialization
   - Provides lazy initialization for better performance
   - Defaults to Go's built-in hash function, customizable on creation or initialization
