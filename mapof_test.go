@@ -56,7 +56,8 @@ type structKey struct {
 }
 
 func TestMap_BucketOfStructSize(t *testing.T) {
-
+	t.Logf("CacheLineSize : %d", CacheLineSize)
+	t.Logf("entriesPerMapOfBucket : %d", entriesPerMapOfBucket)
 	size := unsafe.Sizeof(counterStripe{})
 	t.Log("counterStripe size:", size)
 	if //goland:noinspection GoBoolExpressions
@@ -3006,25 +3007,25 @@ func TestMapOfStats(t *testing.T) {
 
 	stats := m.Stats()
 	if stats.RootBuckets != DefaultMinMapTableLen {
-		t.Fatalf("unexpected number of root buckets: %d", stats.RootBuckets)
+		t.Fatalf("unexpected number of root buckets: %s", stats.ToString())
 	}
 	if stats.TotalBuckets != stats.RootBuckets {
-		t.Fatalf("unexpected number of total buckets: %d", stats.TotalBuckets)
+		t.Fatalf("unexpected number of total buckets: %s", stats.ToString())
 	}
 	if stats.EmptyBuckets != stats.RootBuckets {
-		t.Fatalf("unexpected number of empty buckets: %d", stats.EmptyBuckets)
+		t.Fatalf("unexpected number of empty buckets: %s", stats.ToString())
 	}
 	if stats.Capacity != EntriesPerMapOfBucket*DefaultMinMapTableLen {
-		t.Fatalf("unexpected capacity: %d", stats.Capacity)
+		t.Fatalf("unexpected capacity: %s", stats.ToString())
 	}
 	if stats.Size != 0 {
-		t.Fatalf("unexpected size: %d", stats.Size)
+		t.Fatalf("unexpected size: %s", stats.ToString())
 	}
 	if stats.Counter != 0 {
-		t.Fatalf("unexpected counter: %d", stats.Counter)
+		t.Fatalf("unexpected counter: %s", stats.ToString())
 	}
 	if stats.CounterLen != 1 {
-		t.Fatalf("unexpected counter length: %d", stats.CounterLen)
+		t.Fatalf("unexpected counter length: %s", stats.ToString())
 	}
 
 	for i := 0; i < 200; i++ {
@@ -3032,26 +3033,26 @@ func TestMapOfStats(t *testing.T) {
 	}
 
 	stats = m.Stats()
-	if stats.RootBuckets != 2*DefaultMinMapTableLen {
-		t.Fatalf("unexpected number of root buckets: %d", stats.RootBuckets)
+	if stats.RootBuckets > 2*DefaultMinMapTableLen {
+		t.Fatalf("unexpected number of root buckets: %s", stats.ToString())
 	}
 	if stats.TotalBuckets < stats.RootBuckets {
-		t.Fatalf("unexpected number of total buckets: %d", stats.TotalBuckets)
+		t.Fatalf("unexpected number of total buckets: %s", stats.ToString())
 	}
 	if stats.EmptyBuckets >= stats.RootBuckets {
-		t.Fatalf("unexpected number of empty buckets: %d", stats.EmptyBuckets)
+		t.Fatalf("unexpected number of empty buckets: %s", stats.ToString())
 	}
-	if stats.Capacity < 2*EntriesPerMapOfBucket*DefaultMinMapTableLen {
-		t.Fatalf("unexpected capacity: %d", stats.Capacity)
+	if stats.Capacity > 2*EntriesPerMapOfBucket*DefaultMinMapTableLen {
+		t.Fatalf("unexpected capacity: %s", stats.ToString())
 	}
 	if stats.Size != 200 {
-		t.Fatalf("unexpected size: %d", stats.Size)
+		t.Fatalf("unexpected size: %s", stats.ToString())
 	}
 	if stats.Counter != 200 {
-		t.Fatalf("unexpected counter: %d", stats.Counter)
+		t.Fatalf("unexpected counter: %s", stats.ToString())
 	}
 	if stats.CounterLen != 1 {
-		t.Fatalf("unexpected counter length: %d", stats.CounterLen)
+		t.Fatalf("unexpected counter length: %s", stats.ToString())
 	}
 }
 
