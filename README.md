@@ -26,8 +26,7 @@ Key features of pb.MapOf:
     - Already optimized for Weak memory models.
     - Tested/Validated CPUs with default configurations: 
       AMD Ryzen Threadripper 3970X, ARM Neoverse-N2, Apple M3 Ultra, Qualcomm Snapdragon 636 (32bit)
-	- Enable `mapof_opt_atomic_loads` or `mapof_opt_atomic_stores` to strengthen load/store
-	  ordering on weakly-ordered architectures (e.g., traditional ARM).
+	- Enable `mapof_opt_atomiclevel_1` or `mapof_opt_atomiclevel_2` for better performance on strong memory models.
   - Implements zero-value usability for convenient initialization
   - Provides lazy initialization for better performance
   - Defaults to Go's built-in hash function, customizable on creation or initialization

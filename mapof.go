@@ -133,6 +133,7 @@ type MapOf[K comparable, V any] struct {
 	valEqual     equalFunc
 	minTableLen  int  // WithPresize
 	growOnly     bool // WithGrowOnly
+	withParallel bool // WithParallel
 }
 
 // mapOfTable represents the internal hash table structure.
@@ -179,6 +180,7 @@ type EntryOf[K comparable, V any] struct {
 // Parameters:
 //   - WithPresize option for initial capacity
 //   - WithGrowOnly option to disable shrinking
+//   - WithParallel enables automatic parallel execution of the resize and batch functions.
 func NewMapOf[K comparable, V any](
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
@@ -194,6 +196,7 @@ func NewMapOf[K comparable, V any](
 //     using the Compare series of functions will cause a panic
 //   - WithPresize option for initial capacity
 //   - WithGrowOnly option to disable shrinking
+//   - WithParallel enables automatic parallel execution of the resize and batch functions.
 func NewMapOfWithHasher[K comparable, V any](
 	keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
@@ -240,6 +243,7 @@ func SetDefaultJSONMarshal(marshal func(v any) ([]byte, error), unmarshal func(d
 //     using the Compare series of functions will cause a panic
 //   - WithPresize option for initial capacity
 //   - WithGrowOnly option to disable shrinking
+//   - WithParallel enables automatic parallel execution of the resize and batch functions.
 //
 // Notes:
 //   - This function is not thread-safe and can only be used before the MapOf is utilized.
@@ -275,6 +279,7 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 
 	m.minTableLen = calcTableLen(c.sizeHint)
 	m.growOnly = c.growOnly
+	m.withParallel = c.withParallel
 
 	table := newMapOfTable(m.minTableLen)
 	m.table = unsafe.Pointer(table)
@@ -321,15 +326,15 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	// it might have been changed before that.
 	table := (*mapOfTable)(loadPointer(&m.table))
 	if table != nil {
-		storePointerStrict(&m.resizeWg, nil)
+		storePointer(&m.resizeWg, nil)
 		wg.Done()
 		return table
 	}
 
 	// Perform initialization
 	table = m.init(nil, nil)
-	storePointerStrict(&m.table, unsafe.Pointer(table))
-	storePointerStrict(&m.resizeWg, nil)
+	storePointer(&m.table, unsafe.Pointer(table))
+	storePointer(&m.resizeWg, nil)
 	wg.Done()
 	return table
 }
@@ -804,8 +809,8 @@ func (m *MapOf[K, V]) processEntry(
 						if newe == nil {
 							// Delete
 							newmetaw := setByte(metaw, emptyMetaSlot, idx)
-							storeUint64Strict(&b.meta, newmetaw)
-							storePointerStrict(&b.entries[idx], nil)
+							storeUint64(&b.meta, newmetaw)
+							storePointer(&b.entries[idx], nil)
 							rootb.mu.Unlock()
 							table.addSize(bidx, -1)
 							if newmetaw == defaultMeta {
@@ -821,7 +826,7 @@ func (m *MapOf[K, V]) processEntry(
 						if newe != e {
 							// Update
 							newe.Key = e.Key
-							storePointerStrict(&b.entries[idx], unsafe.Pointer(newe))
+							storePointer(&b.entries[idx], unsafe.Pointer(newe))
 						}
 						rootb.mu.Unlock()
 						return value, status
@@ -840,8 +845,8 @@ func (m *MapOf[K, V]) processEntry(
 
 		// Insert into empty slot
 		if emptyb != nil {
-			storeUint64Strict(&emptyb.meta, setByte(emptyb.meta, h2val, emptyidx))
-			storePointerStrict(&emptyb.entries[emptyidx], unsafe.Pointer(newe))
+			storeUint64(&emptyb.meta, setByte(emptyb.meta, h2val, emptyidx))
+			storePointer(&emptyb.entries[emptyidx], unsafe.Pointer(newe))
 			rootb.mu.Unlock()
 			table.addSize(bidx, 1)
 			return value, status
@@ -857,7 +862,7 @@ func (m *MapOf[K, V]) processEntry(
 		}
 
 		// Create new bucket and insert
-		storePointerStrict(&lastBucket.next, unsafe.Pointer(&bucketOf{
+		storePointer(&lastBucket.next, unsafe.Pointer(&bucketOf{
 			meta:    setByte(defaultMeta, h2val, 0),
 			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newe)},
 		}))
@@ -901,7 +906,7 @@ func (m *MapOf[K, V]) resize(
 	table := (*mapOfTable)(loadPointer(&m.table))
 	if table != knownTable {
 		// If the table has already been changed, return directly
-		storePointerStrict(&m.resizeWg, nil)
+		storePointer(&m.resizeWg, nil)
 		wg.Done()
 		return table, false
 	}
@@ -927,7 +932,10 @@ func (m *MapOf[K, V]) resize(
 	newTable := newMapOfTable(newTableLen)
 	if hint != mapClearHint {
 		// Calculate the parallel count
-		chunks := calcParallelism(tableLen, minParallelResizeThreshold, minBucketsPerGoroutine)
+		chunks := 1
+		if m.withParallel {
+			chunks = calcParallelism(tableLen, minParallelResizeThreshold, minBucketsPerGoroutine)
+		}
 		if chunks > 1 {
 			var copyWg sync.WaitGroup
 			// Simply evenly distributed
@@ -954,8 +962,8 @@ func (m *MapOf[K, V]) resize(
 			}
 		}
 	}
-	storePointerStrict(&m.table, unsafe.Pointer(newTable))
-	storePointerStrict(&m.resizeWg, nil)
+	storePointer(&m.table, unsafe.Pointer(newTable))
+	storePointer(&m.resizeWg, nil)
 	wg.Done()
 	return newTable, true
 }
@@ -1023,6 +1031,7 @@ func appendToBucketOf[K comparable, V any](
 	destb *bucketOf,
 	h2 uint8,
 ) {
+	// NewTable pointer has not been published, so atomic writes are not necessary.
 	for {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
 			if destb.entries[i] == nil {
@@ -1031,14 +1040,16 @@ func appendToBucketOf[K comparable, V any](
 				return
 			}
 		}
-		if destb.next == nil {
+
+		if next := (*bucketOf)(destb.next); next == nil {
 			destb.next = unsafe.Pointer(&bucketOf{
 				meta:    setByte(defaultMeta, h2, 0),
 				entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(e)},
 			})
 			return
+		} else {
+			destb = next
 		}
-		destb = (*bucketOf)(destb.next)
 	}
 }
 
@@ -1257,16 +1268,13 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 //     >0: Estimates new items as itemCount * growFactor.
 //     <=0: No estimation for new items.
 //   - processor: The function to process each item.
-//   - parallelism: Controls the degree of parallelism:
-//     0: Serial processing.
-//     <0: Automatic determination based on workload.
-//     >0: Specific number of goroutines to use.
+//   - withParallel: True is automatic determination based on workload.
 func (m *MapOf[K, V]) batchProcess(
 	table *mapOfTable,
 	itemCount int,
 	growFactor float64,
 	processor func(table *mapOfTable, start, end int),
-	parallelism int,
+	withParallel bool,
 ) {
 	if table == nil {
 		table = m.initSlow()
@@ -1295,11 +1303,10 @@ func (m *MapOf[K, V]) batchProcess(
 	}
 
 	// Calculate the parallel count
-	chunks := parallelism
-	if parallelism < 0 {
+	chunks := 1
+	if withParallel && m.withParallel {
 		chunks = calcParallelism(itemCount, minParallelBatchItems, minItemsPerGoroutine)
 	}
-
 	if chunks > 1 {
 		// Calculate data volume for each goroutine
 		chunkSize := (itemCount + chunks - 1) / chunks
@@ -1333,7 +1340,6 @@ func (m *MapOf[K, V]) batchProcess(
 //   - immutableEntries: Slice of immutable key-value pairs to process.
 //   - growFactor: Capacity change coefficient (see batchProcess).
 //   - processFn: Function that receives entry and current value (if exists), returns new value, result value, and status.
-//   - parallelism: Degree of parallelism (see batchProcess).
 //
 // Returns:
 //   - values []V: Slice of values from processFn.
@@ -1343,6 +1349,14 @@ func (m *MapOf[K, V]) batchProcess(
 //   - immutableEntries will be stored directly; as the name suggests,
 //     the key-value pairs of the elements should not be changed.
 func (m *MapOf[K, V]) BatchProcessImmutableEntries(
+	immutableEntries []*EntryOf[K, V],
+	growFactor float64,
+	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+) (values []V, status []bool) {
+	return m.batchProcessImmutableEntries(immutableEntries, growFactor, processFn, -1)
+}
+
+func (m *MapOf[K, V]) batchProcessImmutableEntries(
 	immutableEntries []*EntryOf[K, V],
 	growFactor float64,
 	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
@@ -1366,7 +1380,7 @@ func (m *MapOf[K, V]) BatchProcessImmutableEntries(
 				},
 			)
 		}
-	}, parallelism)
+	}, true)
 
 	return
 }
@@ -1377,7 +1391,6 @@ func (m *MapOf[K, V]) BatchProcessImmutableEntries(
 //   - entries: slice of key-value pairs to process
 //   - growFactor: capacity change coefficient (see batchProcess)
 //   - processFn: function that receives entry and current value (if exists), returns new value, result value, and status
-//   - parallelism: degree of parallelism (see batchProcess)
 //
 // Returns:
 //   - values []V: slice of values from processFn
@@ -1387,6 +1400,14 @@ func (m *MapOf[K, V]) BatchProcessImmutableEntries(
 //   - The processFn should not directly return `entry`,
 //     as this would prevent the entire `entries` from being garbage collected in a timely manner.
 func (m *MapOf[K, V]) BatchProcessEntries(
+	entries []EntryOf[K, V],
+	growFactor float64,
+	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+) (values []V, status []bool) {
+	return m.batchProcessEntries(entries, growFactor, processFn, -1)
+}
+
+func (m *MapOf[K, V]) batchProcessEntries(
 	entries []EntryOf[K, V],
 	growFactor float64,
 	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
@@ -1410,7 +1431,7 @@ func (m *MapOf[K, V]) BatchProcessEntries(
 				},
 			)
 		}
-	}, parallelism)
+	}, true)
 
 	return
 }
@@ -1421,12 +1442,19 @@ func (m *MapOf[K, V]) BatchProcessEntries(
 //   - keys: slice of keys to process
 //   - growFactor: capacity change coefficient (see batchProcess)
 //   - processFn: function that receives key and current value (if exists), returns new value, result value, and status
-//   - parallelism: degree of parallelism (see batchProcess)
 //
 // Returns:
 //   - values []V: slice of values from processFn
 //   - status []bool: slice of status values from processFn
 func (m *MapOf[K, V]) BatchProcessKeys(
+	keys []K,
+	growFactor float64,
+	processFn func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+) (values []V, status []bool) {
+	return m.batchProcessKeys(keys, growFactor, processFn, -1)
+}
+
+func (m *MapOf[K, V]) batchProcessKeys(
 	keys []K,
 	growFactor float64,
 	processFn func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
@@ -1450,7 +1478,7 @@ func (m *MapOf[K, V]) BatchProcessKeys(
 				},
 			)
 		}
-	}, parallelism)
+	}, true)
 
 	return
 }
@@ -1464,7 +1492,7 @@ func (m *MapOf[K, V]) BatchProcessKeys(
 //   - previous: slice of previous values for each key
 //   - loaded: slice of booleans indicating whether each key existed before
 func (m *MapOf[K, V]) BatchUpsert(entries []EntryOf[K, V]) (previous []V, loaded []bool) {
-	return m.BatchProcessEntries(
+	return m.batchProcessEntries(
 		entries, 1.0,
 		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1485,7 +1513,7 @@ func (m *MapOf[K, V]) BatchUpsert(entries []EntryOf[K, V]) (previous []V, loaded
 //   - actual: slice of actual values for each key (either existing or newly inserted)
 //   - loaded: slice of booleans indicating whether each key existed before
 func (m *MapOf[K, V]) BatchInsert(entries []EntryOf[K, V]) (actual []V, loaded []bool) {
-	return m.BatchProcessEntries(
+	return m.batchProcessEntries(
 		entries, 1.0,
 		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1506,7 +1534,7 @@ func (m *MapOf[K, V]) BatchInsert(entries []EntryOf[K, V]) (actual []V, loaded [
 //   - previous: slice of previous values for each key
 //   - loaded: slice of booleans indicating whether each key existed before
 func (m *MapOf[K, V]) BatchDelete(keys []K) (previous []V, loaded []bool) {
-	return m.BatchProcessKeys(
+	return m.batchProcessKeys(
 		keys, 0,
 		func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1527,7 +1555,7 @@ func (m *MapOf[K, V]) BatchDelete(keys []K) (previous []V, loaded []bool) {
 //   - previous: slice of previous values for each key
 //   - loaded: slice of booleans indicating whether each key existed before
 func (m *MapOf[K, V]) BatchUpdate(entries []EntryOf[K, V]) (previous []V, loaded []bool) {
-	return m.BatchProcessEntries(
+	return m.batchProcessEntries(
 		entries, 0,
 		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1561,7 +1589,7 @@ func (m *MapOf[K, V]) FromMap(source map[K]V) {
 					},
 				)
 			}
-		}, 0)
+		}, false)
 }
 
 // FilterAndTransform filters and transforms elements in the map
@@ -1603,7 +1631,7 @@ func (m *MapOf[K, V]) FilterAndTransform(
 
 	// Batch update elements that meet the condition
 	if len(toUpsert) > 0 {
-		m.BatchProcessImmutableEntries(
+		m.batchProcessImmutableEntries(
 			toUpsert, 1.0,
 			func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				return entry, entry.Value, false
@@ -1654,7 +1682,7 @@ func (m *MapOf[K, V]) Merge(
 				)
 				return true
 			})
-		}, 0)
+		}, false)
 }
 
 // Clone creates a deep copy of the map.
@@ -1695,7 +1723,7 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 					)
 					return true
 				})
-			}, 0)
+			}, false)
 	}
 
 	return clone
@@ -1775,9 +1803,11 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 		}
 		if nentries < stats.MinEntries {
 			stats.MinEntries = nentries
+			stats.MinBucket = i
 		}
 		if nentries > stats.MaxEntries {
 			stats.MaxEntries = nentries
+			stats.MaxBucket = i
 		}
 	}
 	return stats
@@ -1785,8 +1815,9 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 
 // MapConfig defines configurable MapOf options.
 type MapConfig struct {
-	sizeHint int
-	growOnly bool
+	sizeHint     int
+	growOnly     bool
+	withParallel bool
 }
 
 // WithPresize configures new MapOf instance with capacity enough
@@ -1808,6 +1839,13 @@ func WithPresize(sizeHint int) func(*MapConfig) {
 func WithGrowOnly() func(*MapConfig) {
 	return func(c *MapConfig) {
 		c.growOnly = true
+	}
+}
+
+// WithParallel enables automatic parallel execution of the resize and batch functions.
+func WithParallel() func(*MapConfig) {
+	return func(c *MapConfig) {
+		c.withParallel = true
 	}
 }
 
@@ -1843,9 +1881,11 @@ type MapStats struct {
 	// MinEntries is the minimum number of entries per a chain of
 	// buckets, i.e. a root bucket and its chained buckets.
 	MinEntries int
+	MinBucket  int
 	// MinEntries is the maximum number of entries per a chain of
 	// buckets, i.e. a root bucket and its chained buckets.
 	MaxEntries int
+	MaxBucket  int
 	// TotalGrowths is the number of times the hash table grew.
 	TotalGrowths uint32
 	// TotalGrowths is the number of times the hash table shrinked.
@@ -1864,7 +1904,9 @@ func (s *MapStats) ToString() string {
 	sb.WriteString(fmt.Sprintf("Counter:      %d\n", s.Counter))
 	sb.WriteString(fmt.Sprintf("CounterLen:   %d\n", s.CounterLen))
 	sb.WriteString(fmt.Sprintf("MinEntries:   %d\n", s.MinEntries))
+	sb.WriteString(fmt.Sprintf("MinBucket:   %d\n", s.MinBucket))
 	sb.WriteString(fmt.Sprintf("MaxEntries:   %d\n", s.MaxEntries))
+	sb.WriteString(fmt.Sprintf("MaxBucket:   %d\n", s.MaxBucket))
 	sb.WriteString(fmt.Sprintf("TotalGrowths: %d\n", s.TotalGrowths))
 	sb.WriteString(fmt.Sprintf("TotalShrinks: %d\n", s.TotalShrinks))
 	sb.WriteString("}\n")
@@ -1944,6 +1986,54 @@ func nextPowOf2(n int) int {
 	return int(v)
 }
 
+func loadPointer(addr *unsafe.Pointer) unsafe.Pointer {
+	if //goland:noinspection ALL
+	atomicLevel == 0 {
+		return atomic.LoadPointer(addr)
+	} else if //goland:noinspection ALL
+	atomicLevel == 1 {
+		return *addr
+	} else {
+		return *addr
+	}
+}
+
+func loadUint64(addr *uint64) uint64 {
+	if //goland:noinspection ALL
+	atomicLevel == 0 {
+		return atomic.LoadUint64(addr)
+	} else if //goland:noinspection ALL
+	atomicLevel == 1 {
+		return *addr
+	} else {
+		return *addr
+	}
+}
+
+func storePointer(addr *unsafe.Pointer, val unsafe.Pointer) {
+	if //goland:noinspection ALL
+	atomicLevel == 0 {
+		atomic.StorePointer(addr, val)
+	} else if //goland:noinspection ALL
+	atomicLevel == 1 {
+		atomic.StorePointer(addr, val)
+	} else {
+		*addr = val
+	}
+}
+
+func storeUint64(addr *uint64, val uint64) {
+	if //goland:noinspection ALL
+	atomicLevel == 0 {
+		atomic.StoreUint64(addr, val)
+	} else if //goland:noinspection ALL
+	atomicLevel == 1 {
+		atomic.StoreUint64(addr, val)
+	} else {
+		*addr = val
+	}
+}
+
 // noescape hides a pointer from escape analysis.  noescape is
 // the identity function but escape analysis doesn't think the
 // output depends on the input.  noescape is inlined and currently
@@ -1953,7 +2043,7 @@ func nextPowOf2(n int) int {
 // nolint:all
 //
 //go:nosplit
-//go:nocheckptr
+//goland:noinspection ALL
 func noescape(p unsafe.Pointer) unsafe.Pointer {
 	x := uintptr(p)
 	return unsafe.Pointer(x ^ 0)
@@ -2038,3 +2128,45 @@ type iEmptyInterface struct {
 	Type *iType
 	Data unsafe.Pointer
 }
+
+// Concurrency variable access rules:
+//
+// 1. If variable has atomic writes outside locks:
+//    - Must use atomic loads AND stores inside locks
+//    - Example:
+//      var value int32
+//      func update() {
+//          atomic.StoreInt32(&value, 1) // external atomic write
+//      }
+//      func lockedOp() {
+//          mu.Lock()
+//          defer mu.Unlock()
+//          v := atomic.LoadInt32(&value) // internal atomic load
+//          atomic.StoreInt32(&value, v+1) // internal atomic store
+//      }
+//
+// 2. If variable only has atomic reads outside locks:
+//    - Only need atomic stores inside locks (atomic loads not required)
+//    - Example:
+//      func read() int32 {
+//          return atomic.LoadInt32(&value) // external atomic read
+//      }
+//      func lockedOp() {
+//          mu.Lock()
+//          defer mu.Unlock()
+//          // Normal read sufficient (lock guarantees visibility)
+//			v := value
+//          // But writes need atomic store:
+//          atomic.StoreInt32(&value, 42)
+//      }
+//
+// 3. If variable has no external access:
+//    - No atomic operations needed inside locks
+//    - Normal reads/writes sufficient (lock provides full protection)
+//    - Example:
+//      func lockedOp() {
+//          mu.Lock()
+//          defer mu.Unlock()
+//          value = 42 // normal write
+//          v := value // normal read
+//      }

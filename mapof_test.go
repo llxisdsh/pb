@@ -3042,7 +3042,7 @@ func TestMapOfStats(t *testing.T) {
 	if stats.EmptyBuckets >= stats.RootBuckets {
 		t.Fatalf("unexpected number of empty buckets: %s", stats.ToString())
 	}
-	if stats.Capacity > 2*EntriesPerMapOfBucket*DefaultMinMapTableLen {
+	if stats.Capacity != EntriesPerMapOfBucket*stats.TotalBuckets {
 		t.Fatalf("unexpected capacity: %s", stats.ToString())
 	}
 	if stats.Size != 200 {
@@ -3309,12 +3309,12 @@ const (
 	benchmarkKeyPrefix = "what_a_looooooooooooooooooooooong_key_prefix_"
 )
 const (
-	entriesPerMapBucket     = 3
-	EntriesPerMapBucket     = entriesPerMapBucket
-	EntriesPerMapOfBucket   = entriesPerMapOfBucket
-	MapLoadFactor           = mapLoadFactor
-	DefaultMinMapTableLen   = defaultMinMapTableLen
-	DefaultMinMapTableCap   = defaultMinMapTableLen * entriesPerMapBucket
+	//entriesPerMapBucket     = 3
+	//EntriesPerMapBucket     = entriesPerMapBucket
+	EntriesPerMapOfBucket = entriesPerMapOfBucket
+	MapLoadFactor         = mapLoadFactor
+	DefaultMinMapTableLen = defaultMinMapTableLen
+	//DefaultMinMapTableCap   = defaultMinMapTableLen * entriesPerMapBucket
 	DefaultMinMapOfTableCap = defaultMinMapTableLen * entriesPerMapOfBucket
 )
 
