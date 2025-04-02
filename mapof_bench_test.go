@@ -58,30 +58,6 @@ func benchmarkMapOfLoadOrStore(b *testing.B, data []string) {
 	})
 }
 
-func BenchmarkMapOfLoadOrCompute(b *testing.B) {
-	benchmarkMapOfLoadOrCompute(b, testData[:])
-}
-func BenchmarkMapOfLoadOrComputeLarge(b *testing.B) {
-	benchmarkMapOfLoadOrCompute(b, testDataLarge[:])
-}
-func benchmarkMapOfLoadOrCompute(b *testing.B, data []string) {
-	b.ReportAllocs()
-	var m MapOf[string, int]
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			_, _ = m.LoadOrCompute(data[i], func() int {
-				return i
-			})
-			i++
-			if i >= len(data) {
-				i = 0
-			}
-		}
-	})
-}
-
 //	func BenchmarkMapOfStore(b *testing.B) {
 //		benchmarkMapOfStore(b, testData[:])
 //	}

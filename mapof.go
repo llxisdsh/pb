@@ -366,6 +366,25 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	return
 }
 
+func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key K) *EntryOf[K, V] {
+	h2val := h2(hash)
+	h2w := broadcast(h2val)
+	bidx := uintptr(len(table.buckets)-1) & h1(hash)
+	rootb := &table.buckets[bidx]
+	for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
+		metaw := loadUint64(&b.meta)
+		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
+			idx := firstMarkedByteIndex(markedw)
+			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
+				if e.Key == key {
+					return e
+				}
+			}
+		}
+	}
+	return nil
+}
+
 // Store inserts or updates a key-value pair, compatible with `sync.Map`.
 func (m *MapOf[K, V]) Store(key K, value V) {
 	table := (*mapOfTable)(loadPointer(&m.table))
@@ -492,9 +511,11 @@ func (m *MapOf[K, V]) mockSyncMap(
 	)
 }
 
-// LoadAndStore loads the existing value for a key if present,
-// otherwise stores the given value. Returns the actual value and
-// a boolean indicating whether the key was present.
+// LoadAndStore returns the existing value for the key if present,
+// while setting the new value for the key.
+// It stores the new value and returns the existing one, if present.
+// The loaded result is true if the existing value was loaded,
+// false otherwise.
 //
 // Compatible with `xsync.MapOf`.
 func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
@@ -513,53 +534,24 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 	)
 }
 
-// LoadOrCompute loads the existing value for a key if present,
-// otherwise computes and stores a new value using the provided function.
-// LoadOrCompute compatible with `xsync.MapOf`.
+// LoadOrCompute returns the existing value for the key if
+// present. Otherwise, it tries to compute the value using the
+// provided function and, if successful, stores and returns
+// the computed value. The loaded result is true if the value was
+// loaded, or false if computed. If valueFn returns true as the
+// cancel value, the computation is cancelled and the zero value
+// for type V is returned.
+//
+// This call locks a hash table bucket while the compute function
+// is executed. It means that modifications on other entries in
+// the bucket will be blocked until the valueFn executes. Consider
+// this when the function includes long-running operations.
 //
 // Compatible with `xsync.MapOf`.
-// Alias: LoadOrStoreFn
-func (m *MapOf[K, V]) LoadOrCompute(key K, valueFn func() V) (actual V, loaded bool) {
-	table := (*mapOfTable)(loadPointer(&m.table))
-	if table == nil {
-		table = m.initSlow()
-		hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-		return m.processEntry(table, hash, key,
-			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-				if loaded != nil {
-					return loaded, loaded.Value, true
-				}
-				newValue := valueFn()
-				return &EntryOf[K, V]{Value: newValue}, newValue, false
-			},
-		)
-	}
-
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	if e := m.findEntry(table, hash, key); e != nil {
-		return e.Value, true
-	}
-	return m.processEntry(table, hash, key,
-		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-			if loaded != nil {
-				return loaded, loaded.Value, true
-			}
-			newValue := valueFn()
-			return &EntryOf[K, V]{Value: newValue}, newValue, false
-		},
-	)
-}
-
-// LoadOrTryCompute loads the existing value for a key if present,
-// otherwise attempts to compute a new value using the provided function.
-// The function can signal that it doesn't want to store a value by returning cancel=true.
-//
-// Compatible with `xsync.MapOf`.
-func (m *MapOf[K, V]) LoadOrTryCompute(
+func (m *MapOf[K, V]) LoadOrCompute(
 	key K,
 	valueFn func() (newValue V, cancel bool),
 ) (value V, loaded bool) {
-
 	table := (*mapOfTable)(loadPointer(&m.table))
 	if table == nil {
 		table = m.initSlow()
@@ -596,15 +588,47 @@ func (m *MapOf[K, V]) LoadOrTryCompute(
 	)
 }
 
-// Compute either inserts a new value for a key or updates an existing value.
-// The provided function receives the current value (if any) and decides what to do:
-// - Return a new value to store
-// - Return delete=true to remove the entry
+type ComputeOp int
+
+const (
+	// CancelOp signals to Compute to not do anything as a result
+	// of executing the lambda. If the entry was not present in
+	// the map, nothing happens, and if it was present, the
+	// returned value is ignored.
+	CancelOp ComputeOp = iota
+	// UpdateOp signals to Compute to update the entry to the
+	// value returned by the lambda, creating it if necessary.
+	UpdateOp
+	// DeleteOp signals to Compute to always delete the entry
+	// from the map.
+	DeleteOp
+)
+
+// Compute either sets the computed new value for the key,
+// deletes the value for the key, or does nothing, based on
+// the returned [ComputeOp]. When the op returned by valueFn
+// is [UpdateOp], the value is updated to the new value. If
+// it is [DeleteOp], the entry is removed from the map
+// altogether. And finally, if the op is [CancelOp] then the
+// entry is left as-is. In other words, if it did not already
+// exist, it is not created, and if it did exist, it is not
+// updated. This is useful to synchronously execute some
+// operation on the value without incurring the cost of
+// updating the map every time. The ok result indicates
+// whether the entry is present in the map after the compute
+// operation. The actual result contains the value of the map
+// if a corresponding entry is present, or the zero value
+// otherwise. See the example for a few use cases.
+//
+// This call locks a hash table bucket while the compute function
+// is executed. It means that modifications on other entries in
+// the bucket will be blocked until the valueFn executes. Consider
+// this when the function includes long-running operations.
 //
 // Compatible with `xsync.MapOf`.
 func (m *MapOf[K, V]) Compute(
 	key K,
-	valueFn func(oldValue V, loaded bool) (newValue V, delete bool),
+	valueFn func(oldValue V, loaded bool) (newValue V, op ComputeOp),
 ) (actual V, ok bool) {
 
 	table := (*mapOfTable)(loadPointer(&m.table))
@@ -615,17 +639,20 @@ func (m *MapOf[K, V]) Compute(
 	return m.processEntry(table, hash, key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
-				newValue, del := valueFn(loaded.Value, true)
-				if del {
+				newValue, op := valueFn(loaded.Value, true)
+				if op == UpdateOp {
+					return &EntryOf[K, V]{Value: newValue}, newValue, true
+				}
+				if op == DeleteOp {
 					return nil, loaded.Value, false
 				}
+				return loaded, loaded.Value, true
+			}
+			newValue, op := valueFn(*new(V), false)
+			if op == UpdateOp {
 				return &EntryOf[K, V]{Value: newValue}, newValue, true
 			}
-			newValue, del := valueFn(*new(V), false)
-			if del {
-				return nil, *new(V), false
-			}
-			return &EntryOf[K, V]{Value: newValue}, newValue, true
+			return nil, *new(V), false
 		},
 	)
 }
@@ -723,25 +750,6 @@ func (m *MapOf[K, V]) ProcessEntry(
 	return m.processEntry(table, hash, key, fn)
 }
 
-func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key K) *EntryOf[K, V] {
-	h2val := h2(hash)
-	h2w := broadcast(h2val)
-	bidx := uintptr(len(table.buckets)-1) & h1(hash)
-	rootb := &table.buckets[bidx]
-	for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
-		metaw := loadUint64(&b.meta)
-		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
-			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
-				if e.Key == key {
-					return e
-				}
-			}
-		}
-	}
-	return nil
-}
-
 func (m *MapOf[K, V]) processEntry(
 	table *mapOfTable,
 	hash uintptr,
@@ -805,7 +813,6 @@ func (m *MapOf[K, V]) processEntry(
 					if e.Key == key {
 
 						newe, value, status := fn(e)
-
 						if newe == nil {
 							// Delete
 							newmetaw := setByte(metaw, emptyMetaSlot, idx)
@@ -1700,10 +1707,11 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 
 	// Create a new MapOf with the same configuration as the original
 	clone := &MapOf[K, V]{
-		keyHash:     m.keyHash,
-		valEqual:    m.valEqual,
-		minTableLen: m.minTableLen,
-		growOnly:    m.growOnly,
+		keyHash:      m.keyHash,
+		valEqual:     m.valEqual,
+		minTableLen:  m.minTableLen,
+		growOnly:     m.growOnly,
+		withParallel: m.withParallel,
 	}
 
 	// Pre-fetch size to optimize initial capacity

@@ -2081,50 +2081,7 @@ func TestMapOfLoadOrCompute(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[string, int]()
 	for i := 0; i < numEntries; i++ {
-		v, loaded := m.LoadOrCompute(strconv.Itoa(i), func() int {
-			return i
-		})
-		if loaded {
-			t.Fatalf("value not computed for %d", i)
-		}
-		if v != i {
-			t.Fatalf("values do not match for %d: %v", i, v)
-		}
-	}
-	for i := 0; i < numEntries; i++ {
-		v, loaded := m.LoadOrCompute(strconv.Itoa(i), func() int {
-			return i
-		})
-		if !loaded {
-			t.Fatalf("value not loaded for %d", i)
-		}
-		if v != i {
-			t.Fatalf("values do not match for %d: %v", i, v)
-		}
-	}
-}
-
-func TestMapOfLoadOrCompute_FunctionCalledOnce(t *testing.T) {
-	m := NewMapOf[int, int]()
-	for i := 0; i < 100; {
-		m.LoadOrCompute(i, func() (v int) {
-			v, i = i, i+1
-			return v
-		})
-	}
-	m.Range(func(k, v int) bool {
-		if k != v {
-			t.Fatalf("%dth key is not equal to value %d", k, v)
-		}
-		return true
-	})
-}
-
-func TestMapOfLoadOrTryCompute(t *testing.T) {
-	const numEntries = 1000
-	m := NewMapOf[string, int]()
-	for i := 0; i < numEntries; i++ {
-		v, loaded := m.LoadOrTryCompute(strconv.Itoa(i), func() (newValue int, cancel bool) {
+		v, loaded := m.LoadOrCompute(strconv.Itoa(i), func() (newValue int, cancel bool) {
 			return i, true
 		})
 		if loaded {
@@ -2138,7 +2095,7 @@ func TestMapOfLoadOrTryCompute(t *testing.T) {
 		t.Fatalf("zero map size expected: %d", m.Size())
 	}
 	for i := 0; i < numEntries; i++ {
-		v, loaded := m.LoadOrTryCompute(strconv.Itoa(i), func() (newValue int, cancel bool) {
+		v, loaded := m.LoadOrCompute(strconv.Itoa(i), func() (newValue int, cancel bool) {
 			return i, false
 		})
 		if loaded {
@@ -2149,8 +2106,9 @@ func TestMapOfLoadOrTryCompute(t *testing.T) {
 		}
 	}
 	for i := 0; i < numEntries; i++ {
-		v, loaded := m.LoadOrTryCompute(strconv.Itoa(i), func() (newValue int, cancel bool) {
-			return i, false
+		v, loaded := m.LoadOrCompute(strconv.Itoa(i), func() (newValue int, cancel bool) {
+			t.Fatalf("value func invoked")
+			return newValue, false
 		})
 		if !loaded {
 			t.Fatalf("value not loaded for %d", i)
@@ -2161,10 +2119,10 @@ func TestMapOfLoadOrTryCompute(t *testing.T) {
 	}
 }
 
-func TestMapOfLoadOrTryCompute_FunctionCalledOnce(t *testing.T) {
+func TestMapOfLoadOrCompute_FunctionCalledOnce(t *testing.T) {
 	m := NewMapOf[int, int]()
 	for i := 0; i < 100; {
-		m.LoadOrTryCompute(i, func() (newValue int, cancel bool) {
+		m.LoadOrCompute(i, func() (newValue int, cancel bool) {
 			newValue, i = i, i+1
 			return newValue, false
 		})
@@ -2180,7 +2138,7 @@ func TestMapOfLoadOrTryCompute_FunctionCalledOnce(t *testing.T) {
 func TestMapOfCompute(t *testing.T) {
 	m := NewMapOf[string, int]()
 	// Store a new value.
-	v, ok := m.Compute("foobar", func(oldValue int, loaded bool) (newValue int, delete bool) {
+	v, ok := m.Compute("foobar", func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
 		if oldValue != 0 {
 			t.Fatalf("oldValue should be 0 when computing a new value: %d", oldValue)
 		}
@@ -2188,7 +2146,7 @@ func TestMapOfCompute(t *testing.T) {
 			t.Fatal("loaded should be false when computing a new value")
 		}
 		newValue = 42
-		delete = false
+		op = UpdateOp
 		return
 	})
 	if v != 42 {
@@ -2198,7 +2156,7 @@ func TestMapOfCompute(t *testing.T) {
 		t.Fatal("ok should be true when computing a new value")
 	}
 	// Update an existing value.
-	v, ok = m.Compute("foobar", func(oldValue int, loaded bool) (newValue int, delete bool) {
+	v, ok = m.Compute("foobar", func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
 		if oldValue != 42 {
 			t.Fatalf("oldValue should be 42 when updating the value: %d", oldValue)
 		}
@@ -2206,7 +2164,7 @@ func TestMapOfCompute(t *testing.T) {
 			t.Fatal("loaded should be true when updating the value")
 		}
 		newValue = oldValue + 42
-		delete = false
+		op = UpdateOp
 		return
 	})
 	if v != 84 {
@@ -2215,15 +2173,25 @@ func TestMapOfCompute(t *testing.T) {
 	if !ok {
 		t.Fatal("ok should be true when updating the value")
 	}
+	// Check that NoOp doesn't update the value
+	v, ok = m.Compute("foobar", func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
+		return 0, CancelOp
+	})
+	if v != 84 {
+		t.Fatalf("v should be 84 after using NoOp: %d", v)
+	}
+	if !ok {
+		t.Fatal("ok should be true when updating the value")
+	}
 	// Delete an existing value.
-	v, ok = m.Compute("foobar", func(oldValue int, loaded bool) (newValue int, delete bool) {
+	v, ok = m.Compute("foobar", func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
 		if oldValue != 84 {
 			t.Fatalf("oldValue should be 84 when deleting the value: %d", oldValue)
 		}
 		if !loaded {
 			t.Fatal("loaded should be true when deleting the value")
 		}
-		delete = true
+		op = DeleteOp
 		return
 	})
 	if v != 84 {
@@ -2233,7 +2201,7 @@ func TestMapOfCompute(t *testing.T) {
 		t.Fatal("ok should be false when deleting the value")
 	}
 	// Try to delete a non-existing value. Notice different key.
-	v, ok = m.Compute("barbaz", func(oldValue int, loaded bool) (newValue int, delete bool) {
+	v, ok = m.Compute("barbaz", func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
 		if oldValue != 0 {
 			t.Fatalf("oldValue should be 0 when trying to delete a non-existing value: %d", oldValue)
 		}
@@ -2242,7 +2210,26 @@ func TestMapOfCompute(t *testing.T) {
 		}
 		// We're returning a non-zero value, but the map should ignore it.
 		newValue = 42
-		delete = true
+		op = DeleteOp
+		return
+	})
+	if v != 0 {
+		t.Fatalf("v should be 0 when trying to delete a non-existing value: %d", v)
+	}
+	if ok {
+		t.Fatal("ok should be false when trying to delete a non-existing value")
+	}
+	// Try NoOp on a non-existing value
+	v, ok = m.Compute("barbaz", func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
+		if oldValue != 0 {
+			t.Fatalf("oldValue should be 0 when trying to delete a non-existing value: %d", oldValue)
+		}
+		if loaded {
+			t.Fatal("loaded should be false when trying to delete a non-existing value")
+		}
+		// We're returning a non-zero value, but the map should ignore it.
+		newValue = 42
+		op = CancelOp
 		return
 	})
 	if v != 0 {
@@ -2864,8 +2851,8 @@ func TestMapOfParallelStoresAndDeletes(t *testing.T) {
 func parallelTypedComputer(m *MapOf[uint64, uint64], numIters, numEntries int, cdone chan bool) {
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numEntries; j++ {
-			m.Compute(uint64(j), func(oldValue uint64, loaded bool) (newValue uint64, delete bool) {
-				return oldValue + 1, false
+			m.Compute(uint64(j), func(oldValue uint64, loaded bool) (newValue uint64, op ComputeOp) {
+				return oldValue + 1, UpdateOp
 			})
 		}
 	}
