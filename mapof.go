@@ -493,6 +493,10 @@ func (m *MapOf[K, V]) mockSyncMap(
 					// Delete
 					return nil, loaded.Value, true
 				}
+
+				if m.valEqual != nil && m.valEqual(unsafe.Pointer(&loaded.Value), noescape(unsafe.Pointer(newValue))) {
+					return loaded, loaded.Value, true
+				}
 				// Update
 				newe := &EntryOf[K, V]{Value: *newValue}
 				return newe, loaded.Value, true
@@ -641,6 +645,9 @@ func (m *MapOf[K, V]) Compute(
 			if loaded != nil {
 				newValue, op := valueFn(loaded.Value, true)
 				if op == UpdateOp {
+					if m.valEqual != nil && m.valEqual(unsafe.Pointer(&loaded.Value), noescape(unsafe.Pointer(&newValue))) {
+						return loaded, newValue, true
+					}
 					return &EntryOf[K, V]{Value: newValue}, newValue, true
 				}
 				if op == DeleteOp {
