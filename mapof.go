@@ -493,13 +493,9 @@ func (m *MapOf[K, V]) mockSyncMap(
 					return nil, loaded.Value, true
 				}
 
-				// Check if the scalar value actually changed to avoid expensive atomic store
-				if unsafe.Sizeof(loaded.Value) <= bits.UintSize &&
-					m.valEqual != nil &&
-					m.valEqual(unsafe.Pointer(&loaded.Value), noescape(unsafe.Pointer(newValue))) {
+				if m.valEqual != nil && m.valEqual(unsafe.Pointer(&loaded.Value), noescape(unsafe.Pointer(newValue))) {
 					return loaded, loaded.Value, true
 				}
-
 				// Update
 				newe := &EntryOf[K, V]{Value: *newValue}
 				return newe, loaded.Value, true
@@ -648,6 +644,9 @@ func (m *MapOf[K, V]) Compute(
 			if loaded != nil {
 				newValue, op := valueFn(loaded.Value, true)
 				if op == UpdateOp {
+					if m.valEqual != nil && m.valEqual(unsafe.Pointer(&loaded.Value), noescape(unsafe.Pointer(&newValue))) {
+						return loaded, newValue, true
+					}
 					return &EntryOf[K, V]{Value: newValue}, newValue, true
 				}
 				if op == DeleteOp {
@@ -824,7 +823,7 @@ retry:
 							goto retry
 							//return value, status
 						}
-						newmetaw := storeMeta(&b.meta, emptyMetaSlot, idx)
+						newmetaw := storeByte(&b.meta, emptyMetaSlot, idx)
 						table.addSize(bidx, -1)
 						if newmetaw == defaultMeta {
 							tableLen := len(table.buckets)
@@ -862,7 +861,7 @@ retry:
 		if !casPointer(&emptyb.entries[emptyidx], unsafe.Pointer(nil), unsafe.Pointer(newe)) {
 			goto retry
 		}
-		storeMeta(&emptyb.meta, h2val, emptyidx)
+		storeByte(&emptyb.meta, h2val, emptyidx)
 		table.addSize(bidx, 1)
 		return value, status
 	}
@@ -2036,19 +2035,15 @@ func storeUint64(addr *uint64, val uint64) {
 	}
 }
 
-func storeMeta(addr *uint64, b uint8, idx int) uint64 {
-	shift := idx << 3
-	clearMask := ^(uint64(0xff) << shift)
-	setMask := uint64(b) << shift
+func storeByte(addr *uint64, b uint8, idx int) uint64 {
 	for {
 		oldMeta := atomic.LoadUint64(addr)
-		newMeta := (oldMeta & clearMask) | setMask
+		newMeta := setByte(oldMeta, b, idx)
 		if atomic.CompareAndSwapUint64(addr, oldMeta, newMeta) {
 			return newMeta
 		}
 	}
 }
-
 func casPointer(addr *unsafe.Pointer, old, val unsafe.Pointer) bool {
 	return atomic.CompareAndSwapPointer(addr, old, val)
 }
