@@ -10,24 +10,33 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 	"unsafe"
 )
 
 const (
+	// The highest byte is opStatus
+	maxEntriesPerMapOfBucket = 7
 	// entriesPerMapOfBucket defines the number of MapOf entries per bucket.
 	// This value is automatically calculated to fit within a cache line,
 	// but will not exceed 8, which is the upper limit supported by the meta field.
-	entriesPerMapOfBucket = min(8, (int(CacheLineSize)-int(unsafe.Sizeof(struct {
+	entriesPerMapOfBucket = min(maxEntriesPerMapOfBucket, (int(CacheLineSize)-int(unsafe.Sizeof(struct {
 		// entries [entriesPerMapOfBucket]unsafe.Pointer
 		next unsafe.Pointer
 		meta uint64
-		mu   sync.Mutex
 	}{})))/int(unsafe.Sizeof(unsafe.Pointer(nil))))
 
-	defaultMeta       uint64 = 0x8080808080808080
-	metaMask          uint64 = 0xffffffffffffffff >> (64 - min(entriesPerMapOfBucket*8, 64))
-	defaultMetaMasked uint64 = defaultMeta & metaMask
+	defaultMeta       uint64 = 0x0080808080808080
+	metaMask          uint64 = 0xffffffffffffffff >> (64 - min(entriesPerMapOfBucket*8, 64)) //example: 0x0000ffffffffffff
+	defaultMetaMasked uint64 = defaultMeta & metaMask                                        // example: 0x0000808080808080
 	emptyMetaSlot     uint8  = 0x80
+
+	// [Unused] The flag bits from the highest to the lowest are [Bucket, Entry 6, Entry 5, ... Entry 0]
+	opStatusMask    uint64 = 0xff00000000000000
+	opStatusByteIdx        = maxEntriesPerMapOfBucket
+	opStatusShift          = opStatusByteIdx * 8
+	// bucket next op index
+	// opStatusRootBucket = 7
 )
 
 type mapResizeHint int
@@ -162,12 +171,36 @@ type bucketOf struct {
 		entries [entriesPerMapOfBucket]unsafe.Pointer
 		next    unsafe.Pointer
 		meta    uint64
-		mu      sync.Mutex
 	}{})%CacheLineSize) % CacheLineSize]byte
 	entries [entriesPerMapOfBucket]unsafe.Pointer // Pointers to *EntryOf instances
 	next    unsafe.Pointer                        // Pointer to the next bucket (*bucketOf) in the chain
 	meta    uint64                                // Metadata for fast entry lookups using SWAR techniques, must be 64-bit aligned
-	mu      sync.Mutex                            // Lock for bucket modifications
+}
+
+func (b *bucketOf) tryLock() bool {
+	//return casOp(&b.meta, opStatusRootBucket, false, true)
+	return casByte(&b.meta, opStatusByteIdx, 0, 1)
+}
+func (b *bucketOf) unlock() {
+	//casOp(&b.meta, opStatusRootBucket, true, false)
+	casByte(&b.meta, opStatusByteIdx, 1, 0)
+}
+func (b *bucketOf) lock() {
+	iter := 0
+	for !b.tryLock() {
+		if sync_runtime_canSpin(iter) {
+			sync_runtime_doSpin()
+			iter++
+			continue
+		}
+		time.Sleep(1)
+	}
+}
+func (b *bucketOf) tryLockIdx(idx int) bool {
+	return casOp(&b.meta, idx, false, true)
+}
+func (b *bucketOf) unlockIdx(idx int) {
+	casOp(&b.meta, idx, true, false)
 }
 
 // EntryOf is an immutable map entry.
@@ -214,11 +247,9 @@ func newMapOfTable(tableLen int) *mapOfTable {
 		buckets[i].meta = defaultMeta
 	}
 
-	counterLen := calcSizeLen(tableLen)
-
 	t := &mapOfTable{
 		buckets: buckets,
-		size:    make([]counterStripe, counterLen),
+		size:    make([]counterStripe, calcSizeLen(tableLen)),
 		seed:    uintptr(rand.Uint64()),
 	}
 	return t
@@ -367,7 +398,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	return
 }
 
-func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key K) *EntryOf[K, V] {
+func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key *K) *EntryOf[K, V] {
 	h2val := h2(hash)
 	h2w := broadcast(h2val)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash)
@@ -377,7 +408,7 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key K) *EntryOf
 		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
 			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
-				if e.Key == key {
+				if e.Key == *key {
 					return e
 				}
 			}
@@ -393,7 +424,7 @@ func (m *MapOf[K, V]) Store(key K, value V) {
 		table = m.initSlow()
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	m.mockSyncMap(table, hash, key, nil, &value, false)
+	m.mockSyncMap(table, hash, &key, nil, &value, false)
 }
 
 // Swap stores a key-value pair and returns the previous value if any, compatible with `sync.Map`.
@@ -403,7 +434,7 @@ func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 		table = m.initSlow()
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	return m.mockSyncMap(table, hash, key, nil, &value, false)
+	return m.mockSyncMap(table, hash, &key, nil, &value, false)
 }
 
 // LoadOrStore retrieves an existing value or stores a new one if the key doesn't exist,
@@ -413,13 +444,13 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	if table == nil {
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-		return m.mockSyncMap(table, hash, key, nil, &value, true)
+		return m.mockSyncMap(table, hash, &key, nil, &value, true)
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	if e := m.findEntry(table, hash, key); e != nil {
+	if e := m.findEntry(table, hash, &key); e != nil {
 		return e.Value, true
 	}
-	return m.mockSyncMap(table, hash, key, nil, &value, true)
+	return m.mockSyncMap(table, hash, &key, nil, &value, true)
 }
 
 // Delete removes a key-value pair, compatible with `sync.Map`.
@@ -429,7 +460,7 @@ func (m *MapOf[K, V]) Delete(key K) {
 		return
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	m.mockSyncMap(table, hash, key, nil, nil, false)
+	m.mockSyncMap(table, hash, &key, nil, nil, false)
 }
 
 // LoadAndDelete retrieves the value for a key and deletes it from the map,
@@ -440,7 +471,7 @@ func (m *MapOf[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 		return *new(V), false
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	return m.mockSyncMap(table, hash, key, nil, nil, false)
+	return m.mockSyncMap(table, hash, &key, nil, nil, false)
 }
 
 // CompareAndSwap atomically replaces an existing value with a new value
@@ -454,7 +485,7 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 		panic("called CompareAndSwap when value is not of comparable type")
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	_, swapped = m.mockSyncMap(table, hash, key, &old, &new, false)
+	_, swapped = m.mockSyncMap(table, hash, &key, &old, &new, false)
 	return
 }
 
@@ -469,14 +500,14 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 		panic("called CompareAndDelete when value is not of comparable type")
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	_, deleted = m.mockSyncMap(table, hash, key, &old, nil, false)
+	_, deleted = m.mockSyncMap(table, hash, &key, &old, nil, false)
 	return
 }
 
 func (m *MapOf[K, V]) mockSyncMap(
 	table *mapOfTable,
 	hash uintptr,
-	key K,
+	key *K,
 	cmpValue *V,
 	newValue *V,
 	loadOrStore bool,
@@ -493,6 +524,9 @@ func (m *MapOf[K, V]) mockSyncMap(
 				if newValue == nil {
 					// Delete
 					return nil, loaded.Value, true
+				}
+				if m.valEqual != nil && m.valEqual(unsafe.Pointer(&loaded.Value), noescape(unsafe.Pointer(newValue))) {
+					return loaded, loaded.Value, true
 				}
 				// Update
 				newe := &EntryOf[K, V]{Value: *newValue}
@@ -525,7 +559,7 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 		table = m.initSlow()
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	return m.processEntry(table, hash, key,
+	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return &EntryOf[K, V]{Value: value}, loaded.Value, true
@@ -557,7 +591,7 @@ func (m *MapOf[K, V]) LoadOrCompute(
 	if table == nil {
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-		return m.processEntry(table, hash, key,
+		return m.processEntry(table, hash, &key,
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				if loaded != nil {
 					return loaded, loaded.Value, true
@@ -572,10 +606,10 @@ func (m *MapOf[K, V]) LoadOrCompute(
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	if e := m.findEntry(table, hash, key); e != nil {
+	if e := m.findEntry(table, hash, &key); e != nil {
 		return e.Value, true
 	}
-	return m.processEntry(table, hash, key,
+	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return loaded, loaded.Value, true
@@ -637,11 +671,14 @@ func (m *MapOf[K, V]) Compute(
 		table = m.initSlow()
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	return m.processEntry(table, hash, key,
+	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				newValue, op := valueFn(loaded.Value, true)
 				if op == UpdateOp {
+					if m.valEqual != nil && m.valEqual(unsafe.Pointer(&loaded.Value), noescape(unsafe.Pointer(&newValue))) {
+						return loaded, loaded.Value, true
+					}
 					return &EntryOf[K, V]{Value: newValue}, newValue, true
 				}
 				if op == DeleteOp {
@@ -687,7 +724,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 	if table == nil {
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-		return m.processEntry(table, hash, key,
+		return m.processEntry(table, hash, &key,
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				if loaded != nil {
 					return loaded, loaded.Value, true
@@ -698,10 +735,10 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	if e := m.findEntry(table, hash, key); e != nil {
+	if e := m.findEntry(table, hash, &key); e != nil {
 		return e.Value, true
 	}
-	return m.processEntry(table, hash, key,
+	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return loaded, loaded.Value, true
@@ -748,13 +785,13 @@ func (m *MapOf[K, V]) ProcessEntry(
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	return m.processEntry(table, hash, key, fn)
+	return m.processEntry(table, hash, &key, fn)
 }
 
 func (m *MapOf[K, V]) processEntry(
 	table *mapOfTable,
 	hash uintptr,
-	key K,
+	key *K,
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (V, bool) {
 
@@ -762,19 +799,19 @@ func (m *MapOf[K, V]) processEntry(
 		h2val := h2(hash)
 		h2w := broadcast(h2val)
 		bidx := uintptr(len(table.buckets)-1) & h1(hash)
-		rootb := &table.buckets[bidx]
+		root := &table.buckets[bidx]
 
-		rootb.mu.Lock()
+		root.lock()
 
 		// Check if a resize is needed.
 		// This is the first check, checking if there is a resize operation in progress
 		// before acquiring the bucket lock
 		if wg := (*sync.WaitGroup)(loadPointer(&m.resizeWg)); wg != nil {
-			rootb.mu.Unlock()
+			root.unlock()
 			// Wait for the current resize operation to complete
 			wg.Wait()
 			table = (*mapOfTable)(loadPointer(&m.table))
-			hash = m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
 			continue
 		}
 
@@ -784,78 +821,96 @@ func (m *MapOf[K, V]) processEntry(
 		// This is necessary because another goroutine may have completed a resize operation
 		// between the first check and acquiring the bucket lock
 		if newTable := (*mapOfTable)(loadPointer(&m.table)); table != newTable {
-			rootb.mu.Unlock()
+			root.unlock()
 			table = newTable
-			hash = m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
 			continue
 		}
 
+		// Find exist entry
+		var oldEntry *EntryOf[K, V]
+		var oldBucket *bucketOf
+		var oldIdx int
+		var oldMeta uint64
 		// Find an empty slot in advance
-		var emptyb *bucketOf
-		var emptyidx int
+		var emptyBucket *bucketOf
+		var emptyIdx int
 		// If no empty slot is found, use the last slot
 		var lastBucket *bucketOf
 
-		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
+		for b := root; b != nil; b = (*bucketOf)(b.next) {
 			lastBucket = b
 			metaw := b.meta
-
-			if emptyb == nil {
+			if emptyBucket == nil {
 				emptyw := metaw & defaultMetaMasked
 				if emptyw != 0 {
-					emptyb = b
-					emptyidx = firstMarkedByteIndex(emptyw)
+					emptyBucket = b
+					emptyIdx = firstMarkedByteIndex(emptyw)
 				}
 			}
 
 			for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
 				idx := firstMarkedByteIndex(markedw)
 				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
-					if e.Key == key {
-
-						newe, value, status := fn(e)
-						if newe == nil {
-							// Delete
-							newmetaw := setByte(metaw, emptyMetaSlot, idx)
-							storeUint64(&b.meta, newmetaw)
-							storePointer(&b.entries[idx], nil)
-							rootb.mu.Unlock()
-							table.addSize(bidx, -1)
-							if newmetaw == defaultMeta {
-								tableLen := len(table.buckets)
-								if !m.growOnly &&
-									m.minTableLen < tableLen &&
-									table.sumSize() <= (tableLen*entriesPerMapOfBucket)/mapShrinkFraction {
-									m.resize(table, mapShrinkHint)
-								}
-							}
-							return value, status
-						}
-						if newe != e {
-							// Update
-							newe.Key = e.Key
-							storePointer(&b.entries[idx], unsafe.Pointer(newe))
-						}
-						rootb.mu.Unlock()
-						return value, status
+					if e.Key == *key {
+						oldEntry = e
+						oldBucket = b
+						oldIdx = idx
+						oldMeta = metaw
+						break
 					}
 				}
 			}
+			if oldEntry != nil {
+				break
+			}
 		}
 
-		newe, value, status := fn(nil)
-		if newe == nil {
-			rootb.mu.Unlock()
+		newEntry, value, status := fn(oldEntry)
+
+		if oldEntry != nil {
+			if newEntry == oldEntry {
+				root.unlock()
+				return value, status
+			}
+			if newEntry == nil {
+				// Delete
+				newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
+				storeUint64(&oldBucket.meta, newmetaw)
+				storePointer(&oldBucket.entries[oldIdx], nil)
+				root.unlock()
+				table.addSize(bidx, -1)
+				if clearOp(newmetaw) == defaultMeta {
+					tableLen := len(table.buckets)
+					if !m.growOnly &&
+						m.minTableLen < tableLen &&
+						table.sumSize() <= (tableLen*entriesPerMapOfBucket)/mapShrinkFraction {
+						m.resize(table, mapShrinkHint)
+					}
+				}
+				return value, status
+			}
+
+			// Update
+			newEntry.Key = oldEntry.Key
+			storePointer(&oldBucket.entries[oldIdx], unsafe.Pointer(newEntry))
+			root.unlock()
 			return value, status
 		}
+
+		if newEntry == nil {
+			root.unlock()
+			return value, status
+		}
+
 		// Insert
-		newe.Key = key
 
 		// Insert into empty slot
-		if emptyb != nil {
-			storeUint64(&emptyb.meta, setByte(emptyb.meta, h2val, emptyidx))
-			storePointer(&emptyb.entries[emptyidx], unsafe.Pointer(newe))
-			rootb.mu.Unlock()
+		if emptyBucket != nil {
+			newEntry.Key = *key
+			storeUint64(&emptyBucket.meta, setByte(emptyBucket.meta, h2val, emptyIdx))
+			storePointer(&emptyBucket.entries[emptyIdx], unsafe.Pointer(newEntry))
+			root.unlock()
 			table.addSize(bidx, 1)
 			return value, status
 		}
@@ -863,18 +918,19 @@ func (m *MapOf[K, V]) processEntry(
 		// Check if expansion is needed
 		growThreshold := int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
 		if table.sumSize() >= growThreshold { // table.sumSize()+1 > growThreshold
-			rootb.mu.Unlock()
+			root.unlock()
 			table, _ = m.resize(table, mapGrowHint)
-			hash = m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
 			continue
 		}
 
 		// Create new bucket and insert
+		newEntry.Key = *key
 		storePointer(&lastBucket.next, unsafe.Pointer(&bucketOf{
 			meta:    setByte(defaultMeta, h2val, 0),
-			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newe)},
+			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newEntry)},
 		}))
-		rootb.mu.Unlock()
+		root.unlock()
 		table.addSize(bidx, 1)
 		return value, status
 	}
@@ -1008,7 +1064,7 @@ func copyBucketOf[K comparable, V any](
 	destTable *mapOfTable,
 	hasher hashFunc,
 ) (copied int) {
-	srcBucket.mu.Lock()
+	srcBucket.lock()
 	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
 			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
@@ -1024,7 +1080,7 @@ func copyBucketOf[K comparable, V any](
 			}
 		}
 	}
-	srcBucket.mu.Unlock()
+	srcBucket.unlock()
 	return copied
 }
 
@@ -1067,7 +1123,7 @@ func copyBucketOfParallel[K comparable, V any](
 	destTable *mapOfTable,
 	hasher hashFunc,
 ) (copied int) {
-	srcBucket.mu.Lock()
+	srcBucket.lock()
 	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
 			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
@@ -1077,14 +1133,14 @@ func copyBucketOfParallel[K comparable, V any](
 				// Locking the buckets of the target table is necessary during parallel copying,
 				// when copying in a single goroutine, it's not necessary, but due to the spinning of the mutex,
 				// it remains extremely fast.
-				destb.mu.Lock()
+				destb.lock()
 				appendToBucketOf[K, V](e, destb, h2(hash))
-				destb.mu.Unlock()
+				destb.unlock()
 				copied++
 			}
 		}
 	}
-	srcBucket.mu.Unlock()
+	srcBucket.unlock()
 	return copied
 }
 
@@ -1142,7 +1198,7 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	entries := make([]*EntryOf[K, V], 0, 16*entriesPerMapOfBucket)
 	for i := range table.buckets {
 		rootb := &table.buckets[i]
-		rootb.mu.Lock()
+		rootb.lock()
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			for i := 0; i < entriesPerMapOfBucket; i++ {
 				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
@@ -1150,7 +1206,7 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 				}
 			}
 		}
-		rootb.mu.Unlock()
+		rootb.unlock()
 		// Call the function for all copied entries.
 		for j := range entries {
 			if !yield(entries[j]) {
@@ -1231,7 +1287,7 @@ func (m *MapOf[K, V]) HasKey(key K) bool {
 		return false
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	return m.findEntry(table, hash, key) != nil
+	return m.findEntry(table, hash, &key) != nil
 }
 
 // String implement the formatting output interface fmt.Stringer
@@ -1361,14 +1417,13 @@ func (m *MapOf[K, V]) BatchProcessImmutableEntries(
 	growFactor float64,
 	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (values []V, status []bool) {
-	return m.batchProcessImmutableEntries(immutableEntries, growFactor, processFn, -1)
+	return m.batchProcessImmutableEntries(immutableEntries, growFactor, processFn)
 }
 
 func (m *MapOf[K, V]) batchProcessImmutableEntries(
 	immutableEntries []*EntryOf[K, V],
 	growFactor float64,
 	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
-	parallelism int,
 ) (values []V, status []bool) {
 	if len(immutableEntries) == 0 {
 		return
@@ -1382,7 +1437,7 @@ func (m *MapOf[K, V]) batchProcessImmutableEntries(
 	m.batchProcess(table, len(immutableEntries), growFactor, func(table *mapOfTable, start, end int) {
 		for i := start; i < end; i++ {
 			hash := m.keyHash(noescape(unsafe.Pointer(&immutableEntries[i].Key)), table.seed)
-			values[i], status[i] = m.processEntry(table, hash, immutableEntries[i].Key,
+			values[i], status[i] = m.processEntry(table, hash, &immutableEntries[i].Key,
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 					return processFn(immutableEntries[i], loaded)
 				},
@@ -1412,14 +1467,13 @@ func (m *MapOf[K, V]) BatchProcessEntries(
 	growFactor float64,
 	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (values []V, status []bool) {
-	return m.batchProcessEntries(entries, growFactor, processFn, -1)
+	return m.batchProcessEntries(entries, growFactor, processFn)
 }
 
 func (m *MapOf[K, V]) batchProcessEntries(
 	entries []EntryOf[K, V],
 	growFactor float64,
 	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
-	parallelism int,
 ) (values []V, status []bool) {
 	if len(entries) == 0 {
 		return
@@ -1433,7 +1487,7 @@ func (m *MapOf[K, V]) batchProcessEntries(
 	m.batchProcess(table, len(entries), growFactor, func(table *mapOfTable, start, end int) {
 		for i := start; i < end; i++ {
 			hash := m.keyHash(noescape(unsafe.Pointer(&entries[i].Key)), table.seed)
-			values[i], status[i] = m.processEntry(table, hash, entries[i].Key,
+			values[i], status[i] = m.processEntry(table, hash, &entries[i].Key,
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 					return processFn(&entries[i], loaded)
 				},
@@ -1459,14 +1513,13 @@ func (m *MapOf[K, V]) BatchProcessKeys(
 	growFactor float64,
 	processFn func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (values []V, status []bool) {
-	return m.batchProcessKeys(keys, growFactor, processFn, -1)
+	return m.batchProcessKeys(keys, growFactor, processFn)
 }
 
 func (m *MapOf[K, V]) batchProcessKeys(
 	keys []K,
 	growFactor float64,
 	processFn func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
-	parallelism int,
 ) (values []V, status []bool) {
 	if len(keys) == 0 {
 		return
@@ -1480,7 +1533,7 @@ func (m *MapOf[K, V]) batchProcessKeys(
 	m.batchProcess(table, len(keys), growFactor, func(table *mapOfTable, start, end int) {
 		for i := start; i < end; i++ {
 			hash := m.keyHash(noescape(unsafe.Pointer(&keys[i])), table.seed)
-			values[i], status[i] = m.processEntry(table, hash, keys[i],
+			values[i], status[i] = m.processEntry(table, hash, &keys[i],
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 					return processFn(keys[i], loaded)
 				},
@@ -1508,7 +1561,6 @@ func (m *MapOf[K, V]) BatchUpsert(entries []EntryOf[K, V]) (previous []V, loaded
 			}
 			return &EntryOf[K, V]{Value: entry.Value}, *new(V), false
 		},
-		-1,
 	)
 }
 
@@ -1529,7 +1581,6 @@ func (m *MapOf[K, V]) BatchInsert(entries []EntryOf[K, V]) (actual []V, loaded [
 			}
 			return &EntryOf[K, V]{Value: entry.Value}, entry.Value, false
 		},
-		-1,
 	)
 }
 
@@ -1550,7 +1601,6 @@ func (m *MapOf[K, V]) BatchDelete(keys []K) (previous []V, loaded []bool) {
 			}
 			return nil, *new(V), false
 		},
-		-1,
 	)
 }
 
@@ -1571,7 +1621,6 @@ func (m *MapOf[K, V]) BatchUpdate(entries []EntryOf[K, V]) (previous []V, loaded
 			}
 			return nil, *new(V), false
 		},
-		-1,
 	)
 }
 
@@ -1591,7 +1640,7 @@ func (m *MapOf[K, V]) FromMap(source map[K]V) {
 			// Directly iterate and process all key-value pairs
 			for k, v := range source {
 				hash := m.keyHash(noescape(unsafe.Pointer(&k)), table.seed)
-				m.processEntry(table, hash, k,
+				m.processEntry(table, hash, &k,
 					func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 						return &EntryOf[K, V]{Value: v}, v, e != nil
 					},
@@ -1644,7 +1693,6 @@ func (m *MapOf[K, V]) FilterAndTransform(
 			func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				return entry, entry.Value, false
 			},
-			-1,
 		)
 	}
 }
@@ -1678,7 +1726,7 @@ func (m *MapOf[K, V]) Merge(
 		func(table *mapOfTable, _, _ int) {
 			other.RangeEntry(func(other *EntryOf[K, V]) bool {
 				hash := m.keyHash(noescape(unsafe.Pointer(&other.Key)), table.seed)
-				m.processEntry(table, hash, other.Key,
+				m.processEntry(table, hash, &other.Key,
 					func(this *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 						if this == nil {
 							// Key doesn't exist in current Map, add directly
@@ -1725,7 +1773,7 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 				// Directly iterate and process all key-value pairs
 				m.RangeEntry(func(e *EntryOf[K, V]) bool {
 					hash := clone.keyHash(noescape(unsafe.Pointer(&e.Key)), table.seed)
-					clone.processEntry(table, hash, e.Key,
+					clone.processEntry(table, hash, &e.Key,
 						func(_ *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 							return e, e.Value, false
 						},
@@ -1964,6 +2012,11 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 	return (w &^ (0xff << shift)) | (uint64(b) << shift)
 }
 
+func getByte(w uint64, idx int) uint8 {
+	shift := idx << 3
+	return uint8((w >> shift) & 0xff)
+}
+
 // nextPowOf2 calculates the smallest power of 2 that is greater than or equal to n.
 // Compatible with both 32-bit and 64-bit systems.
 func nextPowOf2(n int) int {
@@ -2043,6 +2096,72 @@ func storeUint64(addr *uint64, val uint64) {
 	}
 }
 
+func storeByte(addr *uint64, idx int, newByte uint8) {
+	shift := idx << 3
+	mask := uint64(0xff) << shift
+
+	for {
+		oldVal := atomic.LoadUint64(addr)
+		newVal := (oldVal &^ mask) | (uint64(newByte) << shift)
+		if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
+			return
+		}
+	}
+}
+
+func casByte(addr *uint64, idx int, oldByte, newByte uint8) bool {
+	shift := idx << 3
+	mask := uint64(0xff) << shift
+
+	for {
+		oldVal := atomic.LoadUint64(addr)
+		currentByte := uint8((oldVal >> shift) & 0xff)
+		if currentByte != oldByte {
+			//return oldVal, false
+			return false
+		}
+		newVal := (oldVal &^ mask) | (uint64(newByte) << shift)
+		if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
+			//return newVal, true
+			return true
+		}
+	}
+}
+
+func casPointer(addr *unsafe.Pointer, oldPtr, newPtr unsafe.Pointer) bool {
+	return atomic.CompareAndSwapPointer(addr, oldPtr, newPtr)
+}
+
+func setOp(meta uint64, idx int, value bool) uint64 {
+	if value {
+		return meta | 1<<(idx+opStatusShift)
+	} else {
+		return meta & (^(1 << (idx + opStatusShift)))
+	}
+}
+
+func getOp(meta uint64, idx int) bool {
+	return (meta>>opStatusShift)&(1<<idx) != 0
+}
+
+func casOp(addr *uint64, idx int, oldValue, newValue bool) bool {
+	for {
+		oldMeta := atomic.LoadUint64(addr)
+		currentStatus := getOp(oldMeta, idx)
+		if currentStatus != oldValue {
+			return false
+		}
+		newMeta := setOp(oldMeta, idx, newValue)
+		if atomic.CompareAndSwapUint64(addr, oldMeta, newMeta) {
+			return true
+		}
+	}
+}
+
+func clearOp(meta uint64) uint64 {
+	return meta & (^opStatusMask)
+}
+
 // noescape hides a pointer from escape analysis.  noescape is
 // the identity function but escape analysis doesn't think the
 // output depends on the input.  noescape is inlined and currently
@@ -2057,6 +2176,29 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 	x := uintptr(p)
 	return unsafe.Pointer(x ^ 0)
 }
+
+// noEscapePtr hides a pointer from escape analysis. See noescape.
+// USE CAREFULLY!
+//
+// nolint:all
+//
+//go:nosplit
+//goland:noinspection ALL
+func noEscapePtr[T any](p *T) *T {
+	x := uintptr(unsafe.Pointer(p))
+	return (*T)(unsafe.Pointer(x ^ 0))
+}
+
+//go:linkname sync_runtime_canSpin sync.runtime_canSpin
+//go:nosplit
+func sync_runtime_canSpin(i int) bool
+
+//go:linkname sync_runtime_doSpin sync.runtime_doSpin
+//go:nosplit
+func sync_runtime_doSpin()
+
+////go:linkname runtimeNano runtime.nanotime
+//func runtimeNano() int64
 
 type hashFunc func(unsafe.Pointer, uintptr) uintptr
 type equalFunc func(unsafe.Pointer, unsafe.Pointer) bool
@@ -2164,7 +2306,7 @@ type iEmptyInterface struct {
 //          mu.Lock()
 //          defer mu.Unlock()
 //          // Normal read sufficient (lock guarantees visibility)
-//			v := value
+//          v := value
 //          // But writes need atomic store:
 //          atomic.StoreInt32(&value, 42)
 //      }
