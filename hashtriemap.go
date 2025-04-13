@@ -88,11 +88,11 @@ func (ht *HashTrieMap[K, V]) Load(key K) (value V, ok bool) {
 // Otherwise, it stores and returns the given value.
 // The loaded result is true if the value was loaded, false if stored.
 func (ht *HashTrieMap[K, V]) LoadOrStore(key K, value V) (result V, loaded bool) {
-	return ht.LoadOrCompute(key, func() V { return value })
+	return ht.LoadOrStoreFn(key, func() V { return value })
 }
 
-// LoadOrCompute is similar to LoadOrStore, but uses a generator function for lazy value creation
-func (ht *HashTrieMap[K, V]) LoadOrCompute(key K, valueFn func() V) (result V, loaded bool) {
+// LoadOrStoreFn is similar to LoadOrStore, but uses a generator function for lazy value creation
+func (ht *HashTrieMap[K, V]) LoadOrStoreFn(key K, valueFn func() V) (result V, loaded bool) {
 	i := ht.init()
 	hash := ht.keyHash(noescape(unsafe.Pointer(&key)), ht.seed)
 	var hashShift uint

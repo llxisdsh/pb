@@ -35,7 +35,7 @@ Key features of pb.MapOf:
 - Offers complete sync.Map API compatibility
 - Specially optimized for read operations
 - Supports parallel resizing for better scalability
-- Includes rich functional extensions such as LoadOrCompute, ProcessEntry, Size, IsZero,
+- Includes rich functional extensions such as LoadOrStoreFn, ProcessEntry, Size, IsZero,
   Clone, and batch processing functions
 - Thoroughly tested with comprehensive test coverage
 - Delivers exceptional performance (see benchmark results below)
@@ -206,6 +206,9 @@ func TestMapOf(t *testing.T) {
 
     m.LoadOrStore("a", 1)
     m.Load("a")
+    m.LoadOrStoreFn("b", func() int {
+        return 2
+    })
   
     m.ProcessEntry("a", func(e *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
         if e != nil {
@@ -235,7 +238,7 @@ func TestMapOf(t *testing.T) {
 
 The HashTrieMap is an optimization of the built-in HashTrieMap.
 
-- Supports lazy value generation with LoadOrCompute
+- Supports lazy value generation with LoadOrStoreFn
 - Faster than the built-in HashTrieMap by more than 50%
 - All tests passed
 

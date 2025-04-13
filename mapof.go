@@ -566,6 +566,50 @@ func (m *MapOf[K, V]) mockSyncMap(
 	)
 }
 
+// LoadOrStoreFn returns the existing value for the key if
+// present. Otherwise, it tries to compute the value using the
+// provided function and, if successful, stores and returns
+// the computed value. The loaded result is true if the value was
+// loaded, or false if computed.
+//
+// This call locks a hash table bucket while the compute function
+// is executed. It means that modifications on other entries in
+// the bucket will be blocked until the valueFn executes. Consider
+// this when the function includes long-running operations.
+func (m *MapOf[K, V]) LoadOrStoreFn(
+	key K,
+	valueFn func() V,
+) (actual V, loaded bool) {
+	table := (*mapOfTable)(loadPointer(&m.table))
+	if table == nil {
+		table = m.initSlow()
+		hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+		return m.processEntry(table, hash, &key,
+			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+				if loaded != nil {
+					return loaded, loaded.Value, true
+				}
+				newValue := valueFn()
+				return &EntryOf[K, V]{Value: newValue}, newValue, false
+			},
+		)
+	}
+
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	if e := m.findEntry(table, hash, &key); e != nil {
+		return e.Value, true
+	}
+	return m.processEntry(table, hash, &key,
+		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			if loaded != nil {
+				return loaded, loaded.Value, true
+			}
+			newValue := valueFn()
+			return &EntryOf[K, V]{Value: newValue}, newValue, false
+		},
+	)
+}
+
 // LoadAndStore returns the existing value for the key if present,
 // while setting the new value for the key.
 // It stores the new value and returns the existing one, if present.
