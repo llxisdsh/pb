@@ -181,24 +181,44 @@ func (b *bucketOf) tryLock() bool {
 	//return casOp(&b.meta, opStatusRootBucket, false, true)
 	return casByte(&b.meta, opStatusByteIdx, 0, 1)
 }
+
 func (b *bucketOf) unlock() {
 	//casOp(&b.meta, opStatusRootBucket, true, false)
 	casByte(&b.meta, opStatusByteIdx, 1, 0)
 }
+
 func (b *bucketOf) lock() {
 	iter := 0
+	yield := 0
+	backoff := time.Nanosecond
 	for !b.tryLock() {
 		if sync_runtime_canSpin(iter) {
-			sync_runtime_doSpin()
 			iter++
+			sync_runtime_doSpin()
 			continue
 		}
-		time.Sleep(1)
+
+		if yield < iter {
+			yield++
+			// runtime.Gosched sometimes fails to yield, This will add retries in the future.
+			// but for now, it is not used.
+			//runtime.Gosched()
+			time.Sleep(time.Nanosecond)
+			continue
+		}
+
+		time.Sleep(backoff)
+
+		if backoff < time.Millisecond {
+			backoff <<= 1
+		}
 	}
 }
+
 func (b *bucketOf) tryLockIdx(idx int) bool {
 	return casOp(&b.meta, idx, false, true)
 }
+
 func (b *bucketOf) unlockIdx(idx int) {
 	casOp(&b.meta, idx, true, false)
 }
