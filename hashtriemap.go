@@ -12,7 +12,7 @@ import (
 
 // HashTrieMap is an optimization of the built-in HashTrieMap.
 //
-// Supports lazy value generation with LoadOrCompute,
+// Supports lazy value generation with LoadOrStoreFn,
 // Faster than the built-in HashTrieMap by more than 50%.
 // The optimization for the built-in HashTrieMap is:
 // Remove inited field, use root instead

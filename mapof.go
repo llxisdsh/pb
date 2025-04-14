@@ -34,7 +34,7 @@ const (
 	// [Unused] The flag bits from the highest to the lowest are [Bucket, Entry 6, Entry 5, ... Entry 0]
 	opStatusMask    uint64 = 0xff00000000000000
 	opStatusByteIdx        = maxEntriesPerMapOfBucket
-	opStatusShift          = opStatusByteIdx * 8
+	// opStatusShift          = opStatusByteIdx * 8
 	// bucket next op index
 	// opStatusRootBucket = 7
 )
@@ -93,7 +93,7 @@ const (
 //   - Offers complete sync.Map API compatibility
 //   - Specially optimized for read operations
 //   - Supports parallel resizing for better scalability
-//   - Includes rich functional extensions such as LoadOrCompute, ProcessEntry, Size, IsZero,
+//   - Includes rich functional extensions such as LoadOrStoreFn, ProcessEntry, Size, IsZero,
 //     Clone, and batch processing functions
 //   - Thoroughly tested with comprehensive test coverage
 //   - Delivers exceptional performance (see benchmark results below)
@@ -215,13 +215,14 @@ func (b *bucketOf) lock() {
 	}
 }
 
-func (b *bucketOf) tryLockIdx(idx int) bool {
-	return casOp(&b.meta, idx, false, true)
-}
-
-func (b *bucketOf) unlockIdx(idx int) {
-	casOp(&b.meta, idx, true, false)
-}
+//
+//func (b *bucketOf) tryLockIdx(idx int) bool {
+//	return casOp(&b.meta, idx, false, true)
+//}
+//
+//func (b *bucketOf) unlockIdx(idx int) {
+//	casOp(&b.meta, idx, true, false)
+//}
 
 // EntryOf is an immutable map entry.
 type EntryOf[K comparable, V any] struct {
@@ -273,17 +274,6 @@ func newMapOfTable(tableLen int) *mapOfTable {
 		seed:    uintptr(rand.Uint64()),
 	}
 	return t
-}
-
-var (
-	jsonMarshal   func(v any) ([]byte, error)
-	jsonUnmarshal func(data []byte, v any) error
-)
-
-// SetDefaultJSONMarshal sets the default JSON serialization and deserialization functions.
-// If not set, the standard library is used by default.
-func SetDefaultJSONMarshal(marshal func(v any) ([]byte, error), unmarshal func(data []byte, v any) error) {
-	jsonMarshal, jsonUnmarshal = marshal, unmarshal
 }
 
 // Init the MapOf, Allows custom key hasher (keyHash)
@@ -364,7 +354,7 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	wg.Add(1)
 
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
-	if !atomic.CompareAndSwapPointer(&m.resizeWg, nil, unsafe.Pointer(wg)) {
+	if !casPointer(&m.resizeWg, nil, unsafe.Pointer(wg)) {
 		// Another goroutine is initializing, wait for it to complete
 		wg = (*sync.WaitGroup)(loadPointer(&m.resizeWg))
 		if wg != nil {
@@ -1021,7 +1011,7 @@ func (m *MapOf[K, V]) resize(
 	wg.Add(1)
 
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
-	if !atomic.CompareAndSwapPointer(&m.resizeWg, nil, unsafe.Pointer(wg)) {
+	if !casPointer(&m.resizeWg, nil, unsafe.Pointer(wg)) {
 		// Someone else started resize. Wait for it to finish.
 		if wg = (*sync.WaitGroup)(loadPointer(&m.resizeWg)); wg != nil {
 			wg.Wait()
@@ -1357,6 +1347,17 @@ func (m *MapOf[K, V]) HasKey(key K) bool {
 // String implement the formatting output interface fmt.Stringer
 func (m *MapOf[K, V]) String() string {
 	return strings.Replace(fmt.Sprint(m.ToMapWithLimit(1024)), "map[", "MapOf[", 1)
+}
+
+var (
+	jsonMarshal   func(v any) ([]byte, error)
+	jsonUnmarshal func(data []byte, v any) error
+)
+
+// SetDefaultJSONMarshal sets the default JSON serialization and deserialization functions.
+// If not set, the standard library is used by default.
+func SetDefaultJSONMarshal(marshal func(v any) ([]byte, error), unmarshal func(data []byte, v any) error) {
+	jsonMarshal, jsonUnmarshal = marshal, unmarshal
 }
 
 // MarshalJSON JSON serialization
@@ -2076,11 +2077,6 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 	return (w &^ (0xff << shift)) | (uint64(b) << shift)
 }
 
-func getByte(w uint64, idx int) uint8 {
-	shift := idx << 3
-	return uint8((w >> shift) & 0xff)
-}
-
 // nextPowOf2 calculates the smallest power of 2 that is greater than or equal to n.
 // Compatible with both 32-bit and 64-bit systems.
 func nextPowOf2(n int) int {
@@ -2160,17 +2156,8 @@ func storeUint64(addr *uint64, val uint64) {
 	}
 }
 
-func storeByte(addr *uint64, idx int, newByte uint8) {
-	shift := idx << 3
-	mask := uint64(0xff) << shift
-
-	for {
-		oldVal := atomic.LoadUint64(addr)
-		newVal := (oldVal &^ mask) | (uint64(newByte) << shift)
-		if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
-			return
-		}
-	}
+func casPointer(addr *unsafe.Pointer, oldPtr, newPtr unsafe.Pointer) bool {
+	return atomic.CompareAndSwapPointer(addr, oldPtr, newPtr)
 }
 
 func casByte(addr *uint64, idx int, oldByte, newByte uint8) bool {
@@ -2192,35 +2179,49 @@ func casByte(addr *uint64, idx int, oldByte, newByte uint8) bool {
 	}
 }
 
-func casPointer(addr *unsafe.Pointer, oldPtr, newPtr unsafe.Pointer) bool {
-	return atomic.CompareAndSwapPointer(addr, oldPtr, newPtr)
-}
-
-func setOp(meta uint64, idx int, value bool) uint64 {
-	if value {
-		return meta | 1<<(idx+opStatusShift)
-	} else {
-		return meta & (^(1 << (idx + opStatusShift)))
-	}
-}
-
-func getOp(meta uint64, idx int) bool {
-	return (meta>>opStatusShift)&(1<<idx) != 0
-}
-
-func casOp(addr *uint64, idx int, oldValue, newValue bool) bool {
-	for {
-		oldMeta := atomic.LoadUint64(addr)
-		currentStatus := getOp(oldMeta, idx)
-		if currentStatus != oldValue {
-			return false
-		}
-		newMeta := setOp(oldMeta, idx, newValue)
-		if atomic.CompareAndSwapUint64(addr, oldMeta, newMeta) {
-			return true
-		}
-	}
-}
+//func getByte(w uint64, idx int) uint8 {
+//	shift := idx << 3
+//	return uint8((w >> shift) & 0xff)
+//}
+//
+//func storeByte(addr *uint64, idx int, newByte uint8) {
+//	shift := idx << 3
+//	mask := uint64(0xff) << shift
+//
+//	for {
+//		oldVal := atomic.LoadUint64(addr)
+//		newVal := (oldVal &^ mask) | (uint64(newByte) << shift)
+//		if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
+//			return
+//		}
+//	}
+//}
+//
+//func setOp(meta uint64, idx int, value bool) uint64 {
+//	if value {
+//		return meta | 1<<(idx+opStatusShift)
+//	} else {
+//		return meta & (^(1 << (idx + opStatusShift)))
+//	}
+//}
+//
+//func getOp(meta uint64, idx int) bool {
+//	return (meta>>opStatusShift)&(1<<idx) != 0
+//}
+//
+//func casOp(addr *uint64, idx int, oldValue, newValue bool) bool {
+//	for {
+//		oldMeta := atomic.LoadUint64(addr)
+//		currentStatus := getOp(oldMeta, idx)
+//		if currentStatus != oldValue {
+//			return false
+//		}
+//		newMeta := setOp(oldMeta, idx, newValue)
+//		if atomic.CompareAndSwapUint64(addr, oldMeta, newMeta) {
+//			return true
+//		}
+//	}
+//}
 
 func clearOp(meta uint64) uint64 {
 	return meta & (^opStatusMask)
