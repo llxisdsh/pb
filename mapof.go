@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	// The highest byte is opStatus
+	// Reserve the highest byte for extended status flags (OpByte)
 	maxEntriesPerMapOfBucket = 7
 	// entriesPerMapOfBucket defines the number of MapOf entries per bucket.
 	// This value is automatically calculated to fit within a cache line,
@@ -31,12 +31,11 @@ const (
 	defaultMetaMasked uint64 = defaultMeta & metaMask                                        // example: 0x0000808080808080
 	emptyMetaSlot     uint8  = 0x80
 
-	// [Unused] The flag bits from the highest to the lowest are [Bucket, Entry 6, Entry 5, ... Entry 0]
-	opStatusMask    uint64 = 0xff00000000000000
-	opStatusByteIdx        = maxEntriesPerMapOfBucket
-	// opStatusShift          = opStatusByteIdx * 8
-	// bucket next op index
-	// opStatusRootBucket = 7
+	opByteMask uint64 = 0xff00000000000000
+	opByteIdx         = maxEntriesPerMapOfBucket
+	// opByteShift          = opByteIdx * 8
+	// The flag bits from the highest to the lowest are [Bucket, Entry 6, Entry 5, ... Entry 0]
+	// opByteBucketBit = 7
 )
 
 type mapResizeHint int
@@ -172,56 +171,80 @@ type bucketOf struct {
 		next    unsafe.Pointer
 		meta    uint64
 	}{})%CacheLineSize) % CacheLineSize]byte
+
 	entries [entriesPerMapOfBucket]unsafe.Pointer // Pointers to *EntryOf instances
 	next    unsafe.Pointer                        // Pointer to the next bucket (*bucketOf) in the chain
 	meta    uint64                                // Metadata for fast entry lookups using SWAR techniques, must be 64-bit aligned
 }
 
-func (b *bucketOf) tryLock() bool {
-	//return casOp(&b.meta, opStatusRootBucket, false, true)
-	return casByte(&b.meta, opStatusByteIdx, 0, 1)
+func (b *bucketOf) tryLock(tryCount int) bool {
+	//return casOp(&b.meta, opByteBucketBit, false, true, tryCount)
+	return casByte(&b.meta, opByteIdx, 0, 1, tryCount)
 }
 
 func (b *bucketOf) unlock() {
-	//casOp(&b.meta, opStatusRootBucket, true, false)
-	casByte(&b.meta, opStatusByteIdx, 1, 0)
+	//casOp(&b.meta, opByteBucketBit, true, false, -1)
+	casByte(&b.meta, opByteIdx, 1, 0, -1)
 }
 
+// lock acquires the bucket's lock with a hybrid contention strategy.
+//
+// Replace Mutex with a spinlock to avoid bucket false-sharing overhead.
+// Spinlock state is embedded in the Meta field for cache locality.
 func (b *bucketOf) lock() {
-	iter := 0
-	yield := 0
-	backoff := time.Nanosecond
-	for !b.tryLock() {
-		if sync_runtime_canSpin(iter) {
-			iter++
+	// lockStrategy defines the contention handling modes for lock acquisition.
+	const (
+		spinBit      = 0b001
+		yieldBit     = 0b010
+		sleepBit     = 0b100
+		lockStrategy = yieldBit | sleepBit // Enable yield and sleep
+		tryLockCount = 1
+	)
+
+	const maxYield = 64
+	const maxSleep = time.Microsecond
+
+	spins, yields, sleep := 0, 1, time.Nanosecond
+
+	for !b.tryLock(tryLockCount) {
+		// Spin: busy-wait if allowed
+		if //goland:noinspection GoBoolExpressions
+		lockStrategy&spinBit != 0 && sync_runtime_canSpin(spins) {
+			spins++
 			sync_runtime_doSpin()
 			continue
 		}
 
-		if yield < iter {
-			yield++
-			// runtime.Gosched sometimes fails to yield, This will add retries in the future.
-			// but for now, it is not used.
-			//runtime.Gosched()
-			time.Sleep(time.Nanosecond)
-			continue
+		// Yield: cede control to other goroutines
+		if //goland:noinspection GoBoolExpressions
+		lockStrategy&yieldBit != 0 {
+			for i := 0; i < yields; i++ {
+				runtime.Gosched()
+			}
+			if yields < maxYield {
+				yields *= 2
+				continue
+			}
 		}
 
-		time.Sleep(backoff)
-
-		if backoff < time.Millisecond {
-			backoff <<= 1
+		// Sleep: briefly pause execution
+		if //goland:noinspection GoBoolExpressions
+		lockStrategy&sleepBit != 0 {
+			time.Sleep(sleep)
+			if sleep < maxSleep {
+				sleep *= 2
+			}
 		}
 	}
 }
 
 //
-//func (b *bucketOf) tryLockIdx(idx int) bool {
-//	return casOp(&b.meta, idx, false, true)
+//func (b *bucketOf) tryLockIdx(idx, tryCount int) bool {
+//	return casOp(&b.meta, idx, false, true, tryCount)
 //}
 //
 //func (b *bucketOf) unlockIdx(idx int) {
-//	casOp(&b.meta, idx, true, false)
+//	casOp(&b.meta, idx, true, false, -1)
 //}
 
 // EntryOf is an immutable map entry.
@@ -349,8 +372,15 @@ func calcSizeLen(tableLen int) int {
 //
 //go:noinline
 func (m *MapOf[K, V]) initSlow() *mapOfTable {
+	wg := (*sync.WaitGroup)(loadPointer(&m.resizeWg))
+	if wg != nil {
+		wg.Wait()
+		// Now the table should be initialized
+		return (*mapOfTable)(loadPointer(&m.table))
+	}
+
 	// Create a temporary WaitGroup for initialization synchronization
-	wg := new(sync.WaitGroup)
+	wg = new(sync.WaitGroup)
 	wg.Add(1)
 
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
@@ -1006,8 +1036,16 @@ func (m *MapOf[K, V]) resize(
 	knownTable *mapOfTable,
 	hint mapResizeHint,
 	sizeHint ...int) (*mapOfTable, bool) {
+
+	wg := (*sync.WaitGroup)(loadPointer(&m.resizeWg))
+	if wg != nil {
+		wg.Wait()
+		// Now the table should be initialized
+		return (*mapOfTable)(loadPointer(&m.table)), false
+	}
+
 	// Create a new WaitGroup for the current resize operation
-	wg := new(sync.WaitGroup)
+	wg = new(sync.WaitGroup)
 	wg.Add(1)
 
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
@@ -2160,23 +2198,29 @@ func casPointer(addr *unsafe.Pointer, oldPtr, newPtr unsafe.Pointer) bool {
 	return atomic.CompareAndSwapPointer(addr, oldPtr, newPtr)
 }
 
-func casByte(addr *uint64, idx int, oldByte, newByte uint8) bool {
+// casByte atomically updates the byte at idx in addr from oldByte to newByte,
+// retrying up to tryCount times, -1 indicates infinite retries.
+// It returns true if successful, false otherwise.
+func casByte(addr *uint64, idx int, oldByte, newByte uint8, tryCount int) bool {
+
 	shift := idx << 3
 	mask := uint64(0xff) << shift
+	clearMask := ^mask
+	newByteMask := uint64(newByte) << shift
 
-	for {
+	for tryCount != 0 {
 		oldVal := atomic.LoadUint64(addr)
-		currentByte := uint8((oldVal >> shift) & 0xff)
-		if currentByte != oldByte {
-			//return oldVal, false
+		if uint8((oldVal>>shift)&0xff) != oldByte {
 			return false
 		}
-		newVal := (oldVal &^ mask) | (uint64(newByte) << shift)
+
+		newVal := (oldVal & clearMask) | newByteMask
 		if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
-			//return newVal, true
 			return true
 		}
+		tryCount--
 	}
+	return false
 }
 
 //func getByte(w uint64, idx int) uint8 {
@@ -2199,18 +2243,18 @@ func casByte(addr *uint64, idx int, oldByte, newByte uint8) bool {
 //
 //func setOp(meta uint64, idx int, value bool) uint64 {
 //	if value {
-//		return meta | 1<<(idx+opStatusShift)
+//		return meta | 1<<(idx+opByteShift)
 //	} else {
-//		return meta & (^(1 << (idx + opStatusShift)))
+//		return meta & (^(1 << (idx + opByteShift)))
 //	}
 //}
 //
 //func getOp(meta uint64, idx int) bool {
-//	return (meta>>opStatusShift)&(1<<idx) != 0
+//	return (meta>>opByteShift)&(1<<idx) != 0
 //}
 //
-//func casOp(addr *uint64, idx int, oldValue, newValue bool) bool {
-//	for {
+//func casOp(addr *uint64, idx int, oldValue, newValue bool, tryCount int) bool {
+//	for tryCount != 0{
 //		oldMeta := atomic.LoadUint64(addr)
 //		currentStatus := getOp(oldMeta, idx)
 //		if currentStatus != oldValue {
@@ -2220,11 +2264,12 @@ func casByte(addr *uint64, idx int, oldByte, newByte uint8) bool {
 //		if atomic.CompareAndSwapUint64(addr, oldMeta, newMeta) {
 //			return true
 //		}
+//		tryCount--
 //	}
 //}
 
 func clearOp(meta uint64) uint64 {
-	return meta & (^opStatusMask)
+	return meta & (^opByteMask)
 }
 
 // noescape hides a pointer from escape analysis.  noescape is
