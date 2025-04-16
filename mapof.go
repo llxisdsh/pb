@@ -38,14 +38,6 @@ const (
 	// opByteBucketBit = 7
 )
 
-type mapResizeHint int
-
-const (
-	mapGrowHint   mapResizeHint = 0
-	mapShrinkHint mapResizeHint = 1
-	mapClearHint  mapResizeHint = 2
-)
-
 const (
 	// mapShrinkFraction defines the threshold fraction of table occupation that triggers
 	// table shrinking when deleting the last entry in a bucket chain.
@@ -145,36 +137,78 @@ type MapOf[K comparable, V any] struct {
 	withParallel bool // WithParallel
 }
 
-// mapOfTable represents the internal hash table structure.
-type mapOfTable struct {
-	//lint:ignore U1000 prevents false sharing
-	pad [(CacheLineSize - unsafe.Sizeof(struct {
-		buckets []bucketOf
-		size    []counterStripe
-		seed    uintptr
-	}{})%CacheLineSize) % CacheLineSize]byte
-
-	buckets []bucketOf
-	// striped counter for number of table entries;
-	// used to determine if a table shrinking is needed
-	// occupies min(buckets_memory/1024, 64KB) of memory
-	// when the compile option `mapof_opt_enablepadding` is enabled
-	size []counterStripe
-	seed uintptr
+// NewMapOf creates a new MapOf instance. Direct initialization is also supported.
+//
+// Parameters:
+//   - WithPresize option for initial capacity
+//   - WithGrowOnly option to disable shrinking
+//   - WithParallel enables automatic parallel execution of the resize and batch functions.
+func NewMapOf[K comparable, V any](
+	options ...func(*MapConfig),
+) *MapOf[K, V] {
+	return NewMapOfWithHasher[K, V](nil, nil, options...)
 }
 
-func newMapOfTable(tableLen int) *mapOfTable {
-	buckets := make([]bucketOf, tableLen)
-	for i := range buckets {
-		buckets[i].meta = defaultMeta
-	}
+// NewMapOfWithHasher creates a MapOf with custom hashing and equality functions.
+// Allows custom key hashing (keyHash) and value equality (valEqual) functions for compare-and-swap operations
+//
+// Parameters:
+//   - keyHash: nil uses the built-in hasher
+//   - valEqual: nil uses the built-in comparison, but if the value is not of a comparable type,
+//     using the Compare series of functions will cause a panic
+//   - WithPresize option for initial capacity
+//   - WithGrowOnly option to disable shrinking
+//   - WithParallel enables automatic parallel execution of the resize and batch functions.
+func NewMapOfWithHasher[K comparable, V any](
+	keyHash func(key K, seed uintptr) uintptr,
+	valEqual func(val, val2 V) bool,
+	options ...func(*MapConfig),
+) *MapOf[K, V] {
+	m := &MapOf[K, V]{}
+	m.init(keyHash, valEqual, options...)
+	return m
+}
 
-	t := &mapOfTable{
-		buckets: buckets,
-		size:    make([]counterStripe, calcSizeLen(tableLen)),
-		seed:    uintptr(rand.Uint64()),
+// MapConfig defines configurable MapOf options.
+type MapConfig struct {
+	sizeHint     int
+	growOnly     bool
+	withParallel bool
+}
+
+// WithPresize configures new MapOf instance with capacity enough
+// to hold sizeHint entries. The capacity is treated as the minimal
+// capacity meaning that the underlying hash table will never shrink
+// to a smaller capacity. If sizeHint is zero or negative, the value
+// is ignored.
+func WithPresize(sizeHint int) func(*MapConfig) {
+	return func(c *MapConfig) {
+		c.sizeHint = sizeHint
 	}
-	return t
+}
+
+// WithGrowOnly configures new MapOf instance to be grow-only.
+// This means that the underlying hash table grows in capacity when
+// new keys are added, but does not shrink when keys are deleted.
+// The only exception to this rule is the Clear method which
+// shrinks the hash table back to the initial capacity.
+func WithGrowOnly() func(*MapConfig) {
+	return func(c *MapConfig) {
+		c.growOnly = true
+	}
+}
+
+// WithParallel enables automatic parallel execution of the resize and batch functions.
+func WithParallel() func(*MapConfig) {
+	return func(c *MapConfig) {
+		c.withParallel = true
+	}
+}
+
+// EntryOf is an immutable map entry.
+type EntryOf[K comparable, V any] struct {
+	Key   K
+	Value V
 }
 
 // bucketOf represents a single bucket in the hash table.
@@ -200,6 +234,15 @@ func (b *bucketOf) unlock() {
 	//casOp(&b.meta, opByteBucketBit, true, false, -1)
 	casByte(&b.meta, opByteIdx, 1, 0, -1)
 }
+
+//
+//func (b *bucketOf) tryLockIdx(idx, tryCount int) bool {
+//	return casOp(&b.meta, idx, false, true, tryCount)
+//}
+//
+//func (b *bucketOf) unlockIdx(idx int) {
+//	casOp(&b.meta, idx, true, false, -1)
+//}
 
 // lock acquires the lock for the bucket.
 // It uses an adaptive strategy based on contention level.
@@ -281,8 +324,8 @@ func (b *bucketOf) lock(table *mapOfTable) {
 	// Contention handling loop
 	for {
 		// Spinning phase - suitable for briefly held locks
-		for spins < localMaxSpins /*&& sync_runtime_canSpin(spins)*/ {
-			sync_runtime_doSpin()
+		for spins < localMaxSpins /*&& runtime_canSpin(spins)*/ {
+			runtime_doSpin()
 			if b.tryLock(normalTryCount) {
 				return
 			}
@@ -370,51 +413,84 @@ func (b *bucketOf) lock(table *mapOfTable) {
 	}
 }
 
-//
-//func (b *bucketOf) tryLockIdx(idx, tryCount int) bool {
-//	return casOp(&b.meta, idx, false, true, tryCount)
-//}
-//
-//func (b *bucketOf) unlockIdx(idx int) {
-//	casOp(&b.meta, idx, true, false, -1)
-//}
+// mapOfTable represents the internal hash table structure.
+type mapOfTable struct {
+	//lint:ignore U1000 prevents false sharing
+	pad [(CacheLineSize - unsafe.Sizeof(struct {
+		buckets []bucketOf
+		size    []counterStripe
+		seed    uintptr
+	}{})%CacheLineSize) % CacheLineSize]byte
 
-// EntryOf is an immutable map entry.
-type EntryOf[K comparable, V any] struct {
-	Key   K
-	Value V
+	buckets []bucketOf
+	// striped counter for number of table entries;
+	// used to determine if a table shrinking is needed
+	// occupies min(buckets_memory/1024, 64KB) of memory
+	// when the compile option `mapof_opt_enablepadding` is enabled
+	size []counterStripe
+	seed uintptr
 }
 
-// NewMapOf creates a new MapOf instance. Direct initialization is also supported.
-//
-// Parameters:
-//   - WithPresize option for initial capacity
-//   - WithGrowOnly option to disable shrinking
-//   - WithParallel enables automatic parallel execution of the resize and batch functions.
-func NewMapOf[K comparable, V any](
-	options ...func(*MapConfig),
-) *MapOf[K, V] {
-	return NewMapOfWithHasher[K, V](nil, nil, options...)
+func newMapOfTable(tableLen int) *mapOfTable {
+	buckets := make([]bucketOf, tableLen)
+	for i := range buckets {
+		buckets[i].meta = defaultMeta
+	}
+
+	t := &mapOfTable{
+		buckets: buckets,
+		size:    make([]counterStripe, calcSizeLen(tableLen)),
+		seed:    uintptr(rand.Uint64()),
+	}
+	return t
 }
 
-// NewMapOfWithHasher creates a MapOf with custom hashing and equality functions.
-// Allows custom key hashing (keyHash) and value equality (valEqual) functions for compare-and-swap operations
-//
-// Parameters:
-//   - keyHash: nil uses the built-in hasher
-//   - valEqual: nil uses the built-in comparison, but if the value is not of a comparable type,
-//     using the Compare series of functions will cause a panic
-//   - WithPresize option for initial capacity
-//   - WithGrowOnly option to disable shrinking
-//   - WithParallel enables automatic parallel execution of the resize and batch functions.
-func NewMapOfWithHasher[K comparable, V any](
-	keyHash func(key K, seed uintptr) uintptr,
-	valEqual func(val, val2 V) bool,
-	options ...func(*MapConfig),
-) *MapOf[K, V] {
-	m := &MapOf[K, V]{}
-	m.Init(keyHash, valEqual, options...)
-	return m
+// calcTableLen computes the bucket count for the table
+// return value must be a power of 2
+func calcTableLen(sizeHint int) int {
+	tableLen := defaultMinMapTableLen
+	if sizeHint > defaultMinMapTableLen*entriesPerMapOfBucket {
+		tableLen = nextPowOf2(int((float64(sizeHint) / float64(entriesPerMapOfBucket)) / mapLoadFactor))
+	}
+	return tableLen
+}
+
+// calcSizeLen computes the size count for the table
+// return value must be a power of 2
+func calcSizeLen(tableLen int) int {
+	return nextPowOf2(min(runtime.GOMAXPROCS(0), max(1, tableLen>>10)))
+}
+
+// addSize atomically adds delta to the size counter for the given bucket index.
+func (table *mapOfTable) addSize(bucketIdx uintptr, delta int) {
+	cidx := uintptr(len(table.size)-1) & bucketIdx
+	atomic.AddUintptr(&table.size[cidx].c, uintptr(delta))
+}
+
+// addSizePlain adds delta to the size counter without atomic operations.
+// This method should only be used when thread safety is guaranteed by the caller.
+func (table *mapOfTable) addSizePlain(bucketIdx uintptr, delta int) {
+	cidx := uintptr(len(table.size)-1) & bucketIdx
+	table.size[cidx].c += uintptr(delta)
+}
+
+// sumSize calculates the total number of entries in the table by summing all counter stripes.
+func (table *mapOfTable) sumSize() int {
+	var sum int
+	for i := range table.size {
+		sum += int(atomic.LoadUintptr(&table.size[i].c))
+	}
+	return sum
+}
+
+// isZero checks if the table is empty by verifying all counter stripes are zero.
+func (table *mapOfTable) isZero() bool {
+	for i := range table.size {
+		if atomic.LoadUintptr(&table.size[i].c) != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // Init the MapOf, Allows custom key hasher (keyHash)
@@ -467,22 +543,6 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 	table := newMapOfTable(m.minTableLen)
 	m.table = unsafe.Pointer(table)
 	return table
-}
-
-// calcTableLen computes the bucket count for the table
-// return value must be a power of 2
-func calcTableLen(sizeHint int) int {
-	tableLen := defaultMinMapTableLen
-	if sizeHint > defaultMinMapTableLen*entriesPerMapOfBucket {
-		tableLen = nextPowOf2(int((float64(sizeHint) / float64(entriesPerMapOfBucket)) / mapLoadFactor))
-	}
-	return tableLen
-}
-
-// calcSizeLen computes the size count for the table
-// return value must be a power of 2
-func calcSizeLen(tableLen int) int {
-	return nextPowOf2(min(runtime.GOMAXPROCS(0), max(1, tableLen>>10)))
 }
 
 // initSlow may be called concurrently by multiple goroutines, so it requires
@@ -573,6 +633,353 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key *K) *EntryO
 		}
 	}
 	return nil
+}
+
+func (m *MapOf[K, V]) processEntry(
+	table *mapOfTable,
+	hash uintptr,
+	key *K,
+	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+) (V, bool) {
+
+	for {
+		h2v := h2(hash)
+		h2w := broadcast(h2v)
+		bidx := uintptr(len(table.buckets)-1) & h1(hash)
+		root := &table.buckets[bidx]
+
+		root.lock(table)
+
+		// Check if a resize is needed.
+		// This is the first check, checking if there is a resize operation in progress
+		// before acquiring the bucket lock
+		if wg := (*sync.WaitGroup)(loadPointer(&m.resizeWg)); wg != nil {
+			root.unlock()
+			// Wait for the current resize operation to complete
+			wg.Wait()
+			table = (*mapOfTable)(loadPointer(&m.table))
+			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
+			continue
+		}
+
+		// Check if the table has changed.
+		// This is the second check, checking if the table has been replaced by another
+		// goroutine after acquiring the bucket lock
+		// This is necessary because another goroutine may have completed a resize operation
+		// between the first check and acquiring the bucket lock
+		if newTable := (*mapOfTable)(loadPointer(&m.table)); table != newTable {
+			root.unlock()
+			table = newTable
+			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
+			continue
+		}
+
+		// Find exist entry
+		var oldEntry *EntryOf[K, V]
+		var oldBucket *bucketOf
+		var oldIdx int
+		var oldMeta uint64
+		// Find an empty slot in advance
+		var emptyBucket *bucketOf
+		var emptyIdx int
+		// If no empty slot is found, use the last slot
+		var lastBucket *bucketOf
+
+		for b := root; b != nil; b = (*bucketOf)(b.next) {
+			lastBucket = b
+			metaw := b.meta
+			if emptyBucket == nil {
+				emptyw := metaw & defaultMetaMasked
+				if emptyw != 0 {
+					emptyBucket = b
+					emptyIdx = firstMarkedByteIndex(emptyw)
+				}
+			}
+
+			for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
+				idx := firstMarkedByteIndex(markedw)
+				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
+					if e.Key == *key {
+						oldEntry = e
+						oldBucket = b
+						oldIdx = idx
+						oldMeta = metaw
+						break
+					}
+				}
+			}
+			if oldEntry != nil {
+				break
+			}
+		}
+
+		newEntry, value, status := fn(oldEntry)
+
+		if oldEntry != nil {
+			if newEntry == oldEntry {
+				root.unlock()
+				return value, status
+			}
+			if newEntry == nil {
+				// Delete
+				newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
+				storeUint64(&oldBucket.meta, newmetaw)
+				storePointer(&oldBucket.entries[oldIdx], nil)
+				root.unlock()
+				table.addSize(bidx, -1)
+				if clearOp(newmetaw) == defaultMeta {
+					tableLen := len(table.buckets)
+					if !m.growOnly &&
+						m.minTableLen < tableLen &&
+						table.sumSize() <= (tableLen*entriesPerMapOfBucket)/mapShrinkFraction {
+						m.resize(table, mapShrinkHint)
+					}
+				}
+				return value, status
+			}
+
+			// Update
+			newEntry.Key = oldEntry.Key
+			storePointer(&oldBucket.entries[oldIdx], unsafe.Pointer(newEntry))
+			root.unlock()
+			return value, status
+		}
+
+		if newEntry == nil {
+			root.unlock()
+			return value, status
+		}
+
+		// Insert
+
+		// Insert into empty slot
+		if emptyBucket != nil {
+			newEntry.Key = *key
+			storeUint64(&emptyBucket.meta, setByte(emptyBucket.meta, h2v, emptyIdx))
+			storePointer(&emptyBucket.entries[emptyIdx], unsafe.Pointer(newEntry))
+			root.unlock()
+			table.addSize(bidx, 1)
+			return value, status
+		}
+
+		// Check if expansion is needed
+		growThreshold := int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
+		if table.sumSize() >= growThreshold { // table.sumSize()+1 > growThreshold
+			root.unlock()
+			table, _ = m.resize(table, mapGrowHint)
+			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
+			continue
+		}
+
+		// Create new bucket and insert
+		newEntry.Key = *key
+		storePointer(&lastBucket.next, unsafe.Pointer(&bucketOf{
+			meta:    setByte(defaultMeta, h2v, 0),
+			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newEntry)},
+		}))
+		root.unlock()
+		table.addSize(bidx, 1)
+		return value, status
+	}
+}
+
+type mapResizeHint int
+
+const (
+	mapGrowHint   mapResizeHint = 0
+	mapShrinkHint mapResizeHint = 1
+	mapClearHint  mapResizeHint = 2
+)
+
+// resize returns the current table and indicates whether it was created by the calling goroutine
+//
+// Parameters:
+//   - knownTable: The previously obtained table reference.
+//   - hint: The type of resize operation to perform.
+//   - sizeHint: If provided, specifies the target size for growth.
+//
+// Returns:
+//   - *mapOfTable: The most up-to-date table reference.
+//   - bool: True if this goroutine performed the resize, false if another goroutine already did it.
+//
+//go:noinline
+func (m *MapOf[K, V]) resize(
+	knownTable *mapOfTable,
+	hint mapResizeHint,
+	sizeHint ...int) (*mapOfTable, bool) {
+
+	wg := (*sync.WaitGroup)(loadPointer(&m.resizeWg))
+	if wg != nil {
+		wg.Wait()
+		// Now the table should be initialized
+		return (*mapOfTable)(loadPointer(&m.table)), false
+	}
+
+	// Create a new WaitGroup for the current resize operation
+	wg = new(sync.WaitGroup)
+	wg.Add(1)
+
+	// Try to set resizeWg, if successful it means we've acquired the "lock"
+	if !casPointer(&m.resizeWg, nil, unsafe.Pointer(wg)) {
+		// Someone else started resize. Wait for it to finish.
+		if wg = (*sync.WaitGroup)(loadPointer(&m.resizeWg)); wg != nil {
+			wg.Wait()
+		}
+		return (*mapOfTable)(loadPointer(&m.table)), false
+	}
+
+	// Although the table is always changed when resizeWg is not nil,
+	// it might have been changed before that.
+	table := (*mapOfTable)(loadPointer(&m.table))
+	if table != knownTable {
+		// If the table has already been changed, return directly
+		storePointer(&m.resizeWg, nil)
+		wg.Done()
+		return table, false
+	}
+	tableLen := len(table.buckets)
+
+	var newTableLen int
+	if hint == mapGrowHint {
+		if len(sizeHint) == 0 {
+			// Grow the table with factor of 2.
+			newTableLen = tableLen << 1
+		} else {
+			// Grow the table to sizeHint.
+			newTableLen = calcTableLen(sizeHint[0])
+		}
+		atomic.AddUint32(&m.totalGrowths, 1)
+	} else if hint == mapShrinkHint {
+		// Shrink the table with factor of 2.
+		newTableLen = tableLen >> 1
+		atomic.AddUint32(&m.totalShrinks, 1)
+	} else {
+		newTableLen = m.minTableLen
+	}
+	newTable := newMapOfTable(newTableLen)
+	if hint != mapClearHint {
+		// Calculate the parallel count
+		chunks := 1
+		if m.withParallel {
+			chunks = calcParallelism(tableLen, minParallelResizeThreshold, minBucketsPerGoroutine)
+		}
+		if chunks > 1 {
+			var copyWg sync.WaitGroup
+			// Simply evenly distributed
+			chunkSize := (tableLen + chunks - 1) / chunks
+
+			for c := 0; c < chunks; c++ {
+				copyWg.Add(1)
+				go func(start, end int) {
+					for i := start; i < end && i < tableLen; i++ {
+						srcb := &table.buckets[i]
+						srcb.lock(table)
+						copied := copyBucketOfParallel[K, V](&table.buckets[i], newTable, m.keyHash)
+						srcb.unlock()
+						if copied > 0 {
+							newTable.addSize(uintptr(i), copied)
+						}
+					}
+					copyWg.Done()
+				}(c*chunkSize, min((c+1)*chunkSize, tableLen))
+			}
+			copyWg.Wait()
+		} else {
+			// Serial processing
+			for i := 0; i < tableLen; i++ {
+				srcb := &table.buckets[i]
+				srcb.lock(table)
+				copied := copyBucketOf[K, V](srcb, newTable, m.keyHash)
+				srcb.unlock()
+				newTable.addSizePlain(uintptr(i), copied)
+			}
+		}
+	}
+	storePointer(&m.table, unsafe.Pointer(newTable))
+	storePointer(&m.resizeWg, nil)
+	wg.Done()
+	return newTable, true
+}
+
+func copyBucketOf[K comparable, V any](
+	srcBucket *bucketOf,
+	destTable *mapOfTable,
+	hasher hashFunc,
+) (copied int) {
+	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
+		for i := 0; i < entriesPerMapOfBucket; i++ {
+			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+				// We could store the hash value in the Entry during processEntry to avoid
+				// recalculating it here, which would speed up the resize process.
+				// However, for simple integer keys, this approach would actually slow down
+				// the load operation. Therefore, recalculating the hash value is the better approach.
+				hash := hasher(noescape(unsafe.Pointer(&e.Key)), destTable.seed)
+				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
+				destb := &destTable.buckets[bidx]
+				appendToBucketOf(e, destb, h2(hash))
+				copied++
+			}
+		}
+	}
+	return copied
+}
+
+// appendToBucketOf appends an entry pointer to a bucket chain.
+//
+// Parameters:
+//   - e: Pointer to the entry to be appended.
+//   - destb: Pointer to the bucket where the entry should be appended.
+//   - h2: The h2 hash value for the entry.
+func appendToBucketOf[K comparable, V any](
+	e *EntryOf[K, V],
+	destb *bucketOf,
+	h2 uint8,
+) {
+	// NewTable pointer has not been published, so atomic writes are not necessary.
+	for {
+		for i := 0; i < entriesPerMapOfBucket; i++ {
+			if destb.entries[i] == nil {
+				destb.meta = setByte(destb.meta, h2, i)
+				destb.entries[i] = unsafe.Pointer(e)
+				return
+			}
+		}
+
+		if next := (*bucketOf)(destb.next); next == nil {
+			destb.next = unsafe.Pointer(&bucketOf{
+				meta:    setByte(defaultMeta, h2, 0),
+				entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(e)},
+			})
+			return
+		} else {
+			destb = next
+		}
+	}
+}
+
+// copyBucketOfParallel unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
+func copyBucketOfParallel[K comparable, V any](
+	srcBucket *bucketOf,
+	destTable *mapOfTable,
+	hasher hashFunc,
+) (copied int) {
+	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
+		for i := 0; i < entriesPerMapOfBucket; i++ {
+			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+				hash := hasher(noescape(unsafe.Pointer(&e.Key)), destTable.seed)
+				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
+				destb := &destTable.buckets[bidx]
+				// Locking the buckets of the target table is necessary during parallel copying,
+				// when copying in a single goroutine, it's not necessary, but due to the spinning of the mutex,
+				// it remains extremely fast.
+				destb.lock(destTable)
+				appendToBucketOf[K, V](e, destb, h2(hash))
+				destb.unlock()
+				copied++
+			}
+		}
+	}
+	return copied
 }
 
 // Store inserts or updates a key-value pair, compatible with `sync.Map`.
@@ -990,406 +1397,18 @@ func (m *MapOf[K, V]) ProcessEntry(
 	return m.processEntry(table, hash, &key, fn)
 }
 
-func (m *MapOf[K, V]) processEntry(
-	table *mapOfTable,
-	hash uintptr,
-	key *K,
-	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
-) (V, bool) {
-
-	for {
-		h2val := h2(hash)
-		h2w := broadcast(h2val)
-		bidx := uintptr(len(table.buckets)-1) & h1(hash)
-		root := &table.buckets[bidx]
-
-		root.lock(table)
-
-		// Check if a resize is needed.
-		// This is the first check, checking if there is a resize operation in progress
-		// before acquiring the bucket lock
-		if wg := (*sync.WaitGroup)(loadPointer(&m.resizeWg)); wg != nil {
-			root.unlock()
-			// Wait for the current resize operation to complete
-			wg.Wait()
-			table = (*mapOfTable)(loadPointer(&m.table))
-			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
-			continue
-		}
-
-		// Check if the table has changed.
-		// This is the second check, checking if the table has been replaced by another
-		// goroutine after acquiring the bucket lock
-		// This is necessary because another goroutine may have completed a resize operation
-		// between the first check and acquiring the bucket lock
-		if newTable := (*mapOfTable)(loadPointer(&m.table)); table != newTable {
-			root.unlock()
-			table = newTable
-			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
-			continue
-		}
-
-		// Find exist entry
-		var oldEntry *EntryOf[K, V]
-		var oldBucket *bucketOf
-		var oldIdx int
-		var oldMeta uint64
-		// Find an empty slot in advance
-		var emptyBucket *bucketOf
-		var emptyIdx int
-		// If no empty slot is found, use the last slot
-		var lastBucket *bucketOf
-
-		for b := root; b != nil; b = (*bucketOf)(b.next) {
-			lastBucket = b
-			metaw := b.meta
-			if emptyBucket == nil {
-				emptyw := metaw & defaultMetaMasked
-				if emptyw != 0 {
-					emptyBucket = b
-					emptyIdx = firstMarkedByteIndex(emptyw)
-				}
-			}
-
-			for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
-				idx := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
-					if e.Key == *key {
-						oldEntry = e
-						oldBucket = b
-						oldIdx = idx
-						oldMeta = metaw
-						break
-					}
-				}
-			}
-			if oldEntry != nil {
-				break
-			}
-		}
-
-		newEntry, value, status := fn(oldEntry)
-
-		if oldEntry != nil {
-			if newEntry == oldEntry {
-				root.unlock()
-				return value, status
-			}
-			if newEntry == nil {
-				// Delete
-				newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
-				storeUint64(&oldBucket.meta, newmetaw)
-				storePointer(&oldBucket.entries[oldIdx], nil)
-				root.unlock()
-				table.addSize(bidx, -1)
-				if clearOp(newmetaw) == defaultMeta {
-					tableLen := len(table.buckets)
-					if !m.growOnly &&
-						m.minTableLen < tableLen &&
-						table.sumSize() <= (tableLen*entriesPerMapOfBucket)/mapShrinkFraction {
-						m.resize(table, mapShrinkHint)
-					}
-				}
-				return value, status
-			}
-
-			// Update
-			newEntry.Key = oldEntry.Key
-			storePointer(&oldBucket.entries[oldIdx], unsafe.Pointer(newEntry))
-			root.unlock()
-			return value, status
-		}
-
-		if newEntry == nil {
-			root.unlock()
-			return value, status
-		}
-
-		// Insert
-
-		// Insert into empty slot
-		if emptyBucket != nil {
-			newEntry.Key = *key
-			storeUint64(&emptyBucket.meta, setByte(emptyBucket.meta, h2val, emptyIdx))
-			storePointer(&emptyBucket.entries[emptyIdx], unsafe.Pointer(newEntry))
-			root.unlock()
-			table.addSize(bidx, 1)
-			return value, status
-		}
-
-		// Check if expansion is needed
-		growThreshold := int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
-		if table.sumSize() >= growThreshold { // table.sumSize()+1 > growThreshold
-			root.unlock()
-			table, _ = m.resize(table, mapGrowHint)
-			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
-			continue
-		}
-
-		// Create new bucket and insert
-		newEntry.Key = *key
-		storePointer(&lastBucket.next, unsafe.Pointer(&bucketOf{
-			meta:    setByte(defaultMeta, h2val, 0),
-			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newEntry)},
-		}))
-		root.unlock()
-		table.addSize(bidx, 1)
-		return value, status
-	}
-}
-
-// resize returns the current table and indicates whether it was created by the calling goroutine
-//
-// Parameters:
-//   - knownTable: The previously obtained table reference.
-//   - hint: The type of resize operation to perform.
-//   - sizeHint: If provided, specifies the target size for growth.
-//
-// Returns:
-//   - *mapOfTable: The most up-to-date table reference.
-//   - bool: True if this goroutine performed the resize, false if another goroutine already did it.
-//
-//go:noinline
-func (m *MapOf[K, V]) resize(
-	knownTable *mapOfTable,
-	hint mapResizeHint,
-	sizeHint ...int) (*mapOfTable, bool) {
-
-	wg := (*sync.WaitGroup)(loadPointer(&m.resizeWg))
-	if wg != nil {
-		wg.Wait()
-		// Now the table should be initialized
-		return (*mapOfTable)(loadPointer(&m.table)), false
-	}
-
-	// Create a new WaitGroup for the current resize operation
-	wg = new(sync.WaitGroup)
-	wg.Add(1)
-
-	// Try to set resizeWg, if successful it means we've acquired the "lock"
-	if !casPointer(&m.resizeWg, nil, unsafe.Pointer(wg)) {
-		// Someone else started resize. Wait for it to finish.
-		if wg = (*sync.WaitGroup)(loadPointer(&m.resizeWg)); wg != nil {
-			wg.Wait()
-		}
-		return (*mapOfTable)(loadPointer(&m.table)), false
-	}
-
-	// Although the table is always changed when resizeWg is not nil,
-	// it might have been changed before that.
+// Clear compatible with `sync.Map`
+func (m *MapOf[K, V]) Clear() {
 	table := (*mapOfTable)(loadPointer(&m.table))
-	if table != knownTable {
-		// If the table has already been changed, return directly
-		storePointer(&m.resizeWg, nil)
-		wg.Done()
-		return table, false
+	if table == nil {
+		return
 	}
-	tableLen := len(table.buckets)
-
-	var newTableLen int
-	if hint == mapGrowHint {
-		if len(sizeHint) == 0 {
-			// Grow the table with factor of 2.
-			newTableLen = tableLen << 1
-		} else {
-			// Grow the table to sizeHint.
-			newTableLen = calcTableLen(sizeHint[0])
-		}
-		atomic.AddUint32(&m.totalGrowths, 1)
-	} else if hint == mapShrinkHint {
-		// Shrink the table with factor of 2.
-		newTableLen = tableLen >> 1
-		atomic.AddUint32(&m.totalShrinks, 1)
-	} else {
-		newTableLen = m.minTableLen
-	}
-	newTable := newMapOfTable(newTableLen)
-	if hint != mapClearHint {
-		// Calculate the parallel count
-		chunks := 1
-		if m.withParallel {
-			chunks = calcParallelism(tableLen, minParallelResizeThreshold, minBucketsPerGoroutine)
-		}
-		if chunks > 1 {
-			var copyWg sync.WaitGroup
-			// Simply evenly distributed
-			chunkSize := (tableLen + chunks - 1) / chunks
-
-			for c := 0; c < chunks; c++ {
-				copyWg.Add(1)
-				go func(start, end int) {
-					for i := start; i < end && i < tableLen; i++ {
-						srcb := &table.buckets[i]
-						srcb.lock(table)
-						copied := copyBucketOfParallel[K, V](&table.buckets[i], newTable, m.keyHash)
-						srcb.unlock()
-						if copied > 0 {
-							newTable.addSize(uintptr(i), copied)
-						}
-					}
-					copyWg.Done()
-				}(c*chunkSize, min((c+1)*chunkSize, tableLen))
-			}
-			copyWg.Wait()
-		} else {
-			// Serial processing
-			for i := 0; i < tableLen; i++ {
-				srcb := &table.buckets[i]
-				srcb.lock(table)
-				copied := copyBucketOf[K, V](srcb, newTable, m.keyHash)
-				srcb.unlock()
-				newTable.addSizePlain(uintptr(i), copied)
-			}
-		}
-	}
-	storePointer(&m.table, unsafe.Pointer(newTable))
-	storePointer(&m.resizeWg, nil)
-	wg.Done()
-	return newTable, true
-}
-
-// calcParallelism calculates the number of goroutines for parallel processing.
-//
-// Parameters:
-//   - items: Number of items to process.
-//   - threshold: Minimum threshold to enable parallel processing.
-//   - minItemsPerGoroutine: Minimum number of items each goroutine should process.
-//
-// Returns:
-//   - Suggested degree of parallelism (number of goroutines).
-func calcParallelism(items, threshold, minItemsPerGoroutine int) int {
-	// If the items is too small, use single-threaded processing.
-	if items < threshold {
-		return 1
-	}
-
-	// If there is only one processor, use single-threaded processing.
-	numCPU := runtime.GOMAXPROCS(0)
-	if numCPU <= 1 {
-		return 1
-	}
-
-	// Use a logarithmic function to smoothly increase the degree of parallelism
-	logFactor := 1 + bits.Len(uint(items)) - bits.Len(uint(threshold))
-	chunks := min(numCPU*logFactor/2, items/minItemsPerGoroutine)
-	return max(1, chunks) // Ensure there is at least 1 chunk
-}
-
-func copyBucketOf[K comparable, V any](
-	srcBucket *bucketOf,
-	destTable *mapOfTable,
-	hasher hashFunc,
-) (copied int) {
-	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
-		for i := 0; i < entriesPerMapOfBucket; i++ {
-			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
-				// We could store the hash value in the Entry during processEntry to avoid
-				// recalculating it here, which would speed up the resize process.
-				// However, for simple integer keys, this approach would actually slow down
-				// the load operation. Therefore, recalculating the hash value is the better approach.
-				hash := hasher(noescape(unsafe.Pointer(&e.Key)), destTable.seed)
-				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
-				destb := &destTable.buckets[bidx]
-				appendToBucketOf(e, destb, h2(hash))
-				copied++
-			}
-		}
-	}
-	return copied
-}
-
-// appendToBucketOf appends an entry pointer to a bucket chain.
-//
-// Parameters:
-//   - e: Pointer to the entry to be appended.
-//   - destb: Pointer to the bucket where the entry should be appended.
-//   - h2: The h2 hash value for the entry.
-func appendToBucketOf[K comparable, V any](
-	e *EntryOf[K, V],
-	destb *bucketOf,
-	h2 uint8,
-) {
-	// NewTable pointer has not been published, so atomic writes are not necessary.
+	var ok bool
 	for {
-		for i := 0; i < entriesPerMapOfBucket; i++ {
-			if destb.entries[i] == nil {
-				destb.meta = setByte(destb.meta, h2, i)
-				destb.entries[i] = unsafe.Pointer(e)
-				return
-			}
-		}
-
-		if next := (*bucketOf)(destb.next); next == nil {
-			destb.next = unsafe.Pointer(&bucketOf{
-				meta:    setByte(defaultMeta, h2, 0),
-				entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(e)},
-			})
+		if table, ok = m.resize(table, mapClearHint); ok {
 			return
-		} else {
-			destb = next
 		}
 	}
-}
-
-// copyBucketOfParallel unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
-func copyBucketOfParallel[K comparable, V any](
-	srcBucket *bucketOf,
-	destTable *mapOfTable,
-	hasher hashFunc,
-) (copied int) {
-	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
-		for i := 0; i < entriesPerMapOfBucket; i++ {
-			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
-				hash := hasher(noescape(unsafe.Pointer(&e.Key)), destTable.seed)
-				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
-				destb := &destTable.buckets[bidx]
-				// Locking the buckets of the target table is necessary during parallel copying,
-				// when copying in a single goroutine, it's not necessary, but due to the spinning of the mutex,
-				// it remains extremely fast.
-				destb.lock(destTable)
-				appendToBucketOf[K, V](e, destb, h2(hash))
-				destb.unlock()
-				copied++
-			}
-		}
-	}
-	return copied
-}
-
-// All compatible with `sync.Map`.
-func (m *MapOf[K, V]) All() func(yield func(K, V) bool) {
-	return m.Range
-}
-
-// Keys is the iterator version for iterating over all keys.
-func (m *MapOf[K, V]) Keys() func(yield func(K) bool) {
-	return m.RangeKeys
-}
-
-// Values is the iterator version for iterating over all values.
-func (m *MapOf[K, V]) Values() func(yield func(V) bool) {
-	return m.RangeValues
-}
-
-// Range compatible with `sync.Map`.
-func (m *MapOf[K, V]) Range(yield func(key K, value V) bool) {
-	m.RangeEntry(func(e *EntryOf[K, V]) bool {
-		return yield(e.Key, e.Value)
-	})
-}
-
-// RangeKeys to iterate over all keys
-func (m *MapOf[K, V]) RangeKeys(yield func(key K) bool) {
-	m.RangeEntry(func(e *EntryOf[K, V]) bool {
-		return yield(e.Key)
-	})
-}
-
-// RangeValues to iterate over all values
-func (m *MapOf[K, V]) RangeValues(yield func(value V) bool) {
-	m.RangeEntry(func(e *EntryOf[K, V]) bool {
-		return yield(e.Value)
-	})
 }
 
 // RangeEntry iterates over all entries in the map.
@@ -1430,18 +1449,40 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	}
 }
 
-// Clear compatible with `sync.Map`
-func (m *MapOf[K, V]) Clear() {
-	table := (*mapOfTable)(loadPointer(&m.table))
-	if table == nil {
-		return
-	}
-	var ok bool
-	for {
-		if table, ok = m.resize(table, mapClearHint); ok {
-			return
-		}
-	}
+// All compatible with `sync.Map`.
+func (m *MapOf[K, V]) All() func(yield func(K, V) bool) {
+	return m.Range
+}
+
+// Keys is the iterator version for iterating over all keys.
+func (m *MapOf[K, V]) Keys() func(yield func(K) bool) {
+	return m.RangeKeys
+}
+
+// Values is the iterator version for iterating over all values.
+func (m *MapOf[K, V]) Values() func(yield func(V) bool) {
+	return m.RangeValues
+}
+
+// Range compatible with `sync.Map`.
+func (m *MapOf[K, V]) Range(yield func(key K, value V) bool) {
+	m.RangeEntry(func(e *EntryOf[K, V]) bool {
+		return yield(e.Key, e.Value)
+	})
+}
+
+// RangeKeys to iterate over all keys
+func (m *MapOf[K, V]) RangeKeys(yield func(key K) bool) {
+	m.RangeEntry(func(e *EntryOf[K, V]) bool {
+		return yield(e.Key)
+	})
+}
+
+// RangeValues to iterate over all values
+func (m *MapOf[K, V]) RangeValues(yield func(value V) bool) {
+	m.RangeEntry(func(e *EntryOf[K, V]) bool {
+		return yield(e.Value)
+	})
 }
 
 // Size returns the number of key-value pairs in the map.
@@ -1504,7 +1545,8 @@ func (m *MapOf[K, V]) HasKey(key K) bool {
 
 // String implement the formatting output interface fmt.Stringer
 func (m *MapOf[K, V]) String() string {
-	return strings.Replace(fmt.Sprint(m.ToMapWithLimit(1024)), "map[", "MapOf[", 1)
+	const limit = 1024
+	return strings.Replace(fmt.Sprint(m.ToMapWithLimit(limit)), "map[", "MapOf[", 1)
 }
 
 var (
@@ -1582,7 +1624,7 @@ func (m *MapOf[K, V]) batchProcess(
 				if sizeHint <= growThreshold {
 					break
 				}
-				if table, ok = m.resize(table, mapGrowHint, int(sizeHint)); ok {
+				if table, ok = m.resize(table, mapGrowHint, sizeHint); ok {
 					break
 				}
 			}
@@ -1619,6 +1661,33 @@ func (m *MapOf[K, V]) batchProcess(
 
 	// Serial processing
 	processor(table, 0, itemCount)
+}
+
+// calcParallelism calculates the number of goroutines for parallel processing.
+//
+// Parameters:
+//   - items: Number of items to process.
+//   - threshold: Minimum threshold to enable parallel processing.
+//   - minItemsPerGoroutine: Minimum number of items each goroutine should process.
+//
+// Returns:
+//   - Suggested degree of parallelism (number of goroutines).
+func calcParallelism(items, threshold, minItemsPerGoroutine int) int {
+	// If the items is too small, use single-threaded processing.
+	if items < threshold {
+		return 1
+	}
+
+	// If there is only one processor, use single-threaded processing.
+	numCPU := runtime.GOMAXPROCS(0)
+	if numCPU <= 1 {
+		return 1
+	}
+
+	// Use a logarithmic function to smoothly increase the degree of parallelism
+	logFactor := 1 + bits.Len(uint(items)) - bits.Len(uint(threshold))
+	chunks := min(numCPU*logFactor/2, items/minItemsPerGoroutine)
+	return max(1, chunks) // Ensure there is at least 1 chunk
 }
 
 // BatchProcessImmutableEntries batch processes multiple immutable key-value pairs with a custom function.
@@ -2009,38 +2078,6 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 	return clone
 }
 
-// addSize atomically adds delta to the size counter for the given bucket index.
-func (table *mapOfTable) addSize(bucketIdx uintptr, delta int) {
-	cidx := uintptr(len(table.size)-1) & bucketIdx
-	atomic.AddUintptr(&table.size[cidx].c, uintptr(delta))
-}
-
-// addSizePlain adds delta to the size counter without atomic operations.
-// This method should only be used when thread safety is guaranteed by the caller.
-func (table *mapOfTable) addSizePlain(bucketIdx uintptr, delta int) {
-	cidx := uintptr(len(table.size)-1) & bucketIdx
-	table.size[cidx].c += uintptr(delta)
-}
-
-// sumSize calculates the total number of entries in the table by summing all counter stripes.
-func (table *mapOfTable) sumSize() int {
-	var sum int
-	for i := range table.size {
-		sum += int(atomic.LoadUintptr(&table.size[i].c))
-	}
-	return sum
-}
-
-// isZero checks if the table is empty by verifying all counter stripes are zero.
-func (table *mapOfTable) isZero() bool {
-	for i := range table.size {
-		if atomic.LoadUintptr(&table.size[i].c) != 0 {
-			return false
-		}
-	}
-	return true
-}
-
 // Stats returns statistics for the MapOf. Just like other map
 // methods, this one is thread-safe. Yet it's an O(N) operation,
 // so it should be used only for diagnostics or debugging purposes.
@@ -2083,50 +2120,12 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 		}
 		if nentries < stats.MinEntries {
 			stats.MinEntries = nentries
-			stats.MinBucket = i
 		}
 		if nentries > stats.MaxEntries {
 			stats.MaxEntries = nentries
-			stats.MaxBucket = i
 		}
 	}
 	return stats
-}
-
-// MapConfig defines configurable MapOf options.
-type MapConfig struct {
-	sizeHint     int
-	growOnly     bool
-	withParallel bool
-}
-
-// WithPresize configures new MapOf instance with capacity enough
-// to hold sizeHint entries. The capacity is treated as the minimal
-// capacity meaning that the underlying hash table will never shrink
-// to a smaller capacity. If sizeHint is zero or negative, the value
-// is ignored.
-func WithPresize(sizeHint int) func(*MapConfig) {
-	return func(c *MapConfig) {
-		c.sizeHint = sizeHint
-	}
-}
-
-// WithGrowOnly configures new MapOf instance to be grow-only.
-// This means that the underlying hash table grows in capacity when
-// new keys are added, but does not shrink when keys are deleted.
-// The only exception to this rule is the Clear method which
-// shrinks the hash table back to the initial capacity.
-func WithGrowOnly() func(*MapConfig) {
-	return func(c *MapConfig) {
-		c.growOnly = true
-	}
-}
-
-// WithParallel enables automatic parallel execution of the resize and batch functions.
-func WithParallel() func(*MapConfig) {
-	return func(c *MapConfig) {
-		c.withParallel = true
-	}
 }
 
 // MapStats is MapOf statistics.
@@ -2161,11 +2160,9 @@ type MapStats struct {
 	// MinEntries is the minimum number of entries per a chain of
 	// buckets, i.e. a root bucket and its chained buckets.
 	MinEntries int
-	MinBucket  int
 	// MinEntries is the maximum number of entries per a chain of
 	// buckets, i.e. a root bucket and its chained buckets.
 	MaxEntries int
-	MaxBucket  int
 	// TotalGrowths is the number of times the hash table grew.
 	TotalGrowths uint32
 	// TotalGrowths is the number of times the hash table shrinked.
@@ -2184,9 +2181,7 @@ func (s *MapStats) ToString() string {
 	sb.WriteString(fmt.Sprintf("Counter:      %d\n", s.Counter))
 	sb.WriteString(fmt.Sprintf("CounterLen:   %d\n", s.CounterLen))
 	sb.WriteString(fmt.Sprintf("MinEntries:   %d\n", s.MinEntries))
-	sb.WriteString(fmt.Sprintf("MinBucket:   %d\n", s.MinBucket))
 	sb.WriteString(fmt.Sprintf("MaxEntries:   %d\n", s.MaxEntries))
-	sb.WriteString(fmt.Sprintf("MaxBucket:   %d\n", s.MaxBucket))
 	sb.WriteString(fmt.Sprintf("TotalGrowths: %d\n", s.TotalGrowths))
 	sb.WriteString(fmt.Sprintf("TotalShrinks: %d\n", s.TotalShrinks))
 	sb.WriteString("}\n")
@@ -2203,12 +2198,12 @@ func h2(h uintptr) uint8 {
 	return uint8(h & 0x7f)
 }
 
-// broadcast replicates a byte value across all bytes of a uint64.
+// broadcast replicates a byte value across all bytes of an uint64.
 func broadcast(b uint8) uint64 {
 	return 0x101010101010101 * uint64(b)
 }
 
-// firstMarkedByteIndex finds the index of the first marked byte in a uint64.
+// firstMarkedByteIndex finds the index of the first marked byte in an uint64.
 // It uses the trailing zeros count to determine the position of the first set bit,
 // then converts that bit position to a byte index (dividing by 8).
 //
@@ -2223,7 +2218,7 @@ func firstMarkedByteIndex(w uint64) int {
 
 // markZeroBytes implements SWAR (SIMD Within A Register) byte search.
 // It may produce false positives (e.g., for 0x0100), so results should be verified.
-// Returns a uint64 with the most significant bit of each byte set if that byte is zero.
+// Returns an uint64 with the most significant bit of each byte set if that byte is zero.
 func markZeroBytes(w uint64) uint64 {
 	return (w - 0x0101010101010101) & (^w) & 0x8080808080808080
 }
@@ -2419,14 +2414,20 @@ func noEscapePtr[T any](p *T) *T {
 	return (*T)(unsafe.Pointer(x ^ 0))
 }
 
-//go:linkname sync_runtime_canSpin sync.runtime_canSpin
+// nolint:all
+//
+//go:linkname runtime_canSpin sync.runtime_canSpin
 //go:nosplit
-func sync_runtime_canSpin(i int) bool
+func runtime_canSpin(i int) bool
 
-//go:linkname sync_runtime_doSpin sync.runtime_doSpin
+// nolint:all
+//
+//go:linkname runtime_doSpin sync.runtime_doSpin
 //go:nosplit
-func sync_runtime_doSpin()
+func runtime_doSpin()
 
+// nolint:all
+//
 //go:linkname runtimeNano runtime.nanotime
 //go:nosplit
 func runtimeNano() int64
