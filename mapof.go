@@ -163,6 +163,20 @@ type mapOfTable struct {
 	seed uintptr
 }
 
+func newMapOfTable(tableLen int) *mapOfTable {
+	buckets := make([]bucketOf, tableLen)
+	for i := range buckets {
+		buckets[i].meta = defaultMeta
+	}
+
+	t := &mapOfTable{
+		buckets: buckets,
+		size:    make([]counterStripe, calcSizeLen(tableLen)),
+		seed:    uintptr(rand.Uint64()),
+	}
+	return t
+}
+
 // bucketOf represents a single bucket in the hash table.
 type bucketOf struct {
 	//lint:ignore U1000 prevents false sharing
@@ -187,53 +201,171 @@ func (b *bucketOf) unlock() {
 	casByte(&b.meta, opByteIdx, 1, 0, -1)
 }
 
-// lock acquires the bucket's lock with a hybrid contention strategy.
+// lock acquires the lock for the bucket.
+// It uses an adaptive strategy based on contention level.
 //
 // Replace Mutex with a spinlock to avoid bucket false-sharing overhead.
 // Spinlock state is embedded in the Meta field for cache locality.
-func (b *bucketOf) lock() {
-	// lockStrategy defines the contention handling modes for lock acquisition.
+func (b *bucketOf) lock(table *mapOfTable) {
+	// Adaptive locking strategy constants
 	const (
-		spinBit      = 0b001
-		yieldBit     = 0b010
-		sleepBit     = 0b100
-		lockStrategy = yieldBit | sleepBit // Enable yield and sleep
-		tryLockCount = 1
+		// Initial attempt counts
+		initialTryCount = -1 // Higher initial attempts to reduce complex logic entry
+		normalTryCount  = 1
+
+		// Spin parameters - optimized for low latency
+		minSpins = 8  // Minimum spin count
+		maxSpins = 20 // Maximum spin count
+
+		// Contention detection thresholds
+		lowContentionThreshold  = 3 // Low contention threshold
+		highContentionThreshold = 8 // High contention threshold
+
+		// Backoff parameters
+		minBackoff = 1   // Minimum backoff cycles
+		maxBackoff = 128 // Maximum backoff cycles
+
+		// Wait time thresholds (nanoseconds)
+		mediumWaitThreshold = 2000  // 2 microseconds
+		longWaitThreshold   = 20000 // 20 microseconds
+
+		// Table size parameters - power of 2 for bit operations
+		baseTableSizeShift = 10 // 2^10 = 1024
+		maxTableSizeShift  = 24 // 2^24 = 16M
 	)
 
-	const maxYield = 64
-	const maxSleep = time.Microsecond
+	// Fast path: try to acquire lock quickly
+	if b.tryLock(initialTryCount) {
+		return
+	}
 
-	spins, yields, sleep := 0, 1, time.Nanosecond
+	// Record start time and contention statistics
+	startTime := runtimeNano()
+	spins := 0
+	backoff := minBackoff
+	failedAttempts := 0
 
-	for !b.tryLock(tryLockCount) {
-		// Spin: busy-wait if allowed
-		if //goland:noinspection GoBoolExpressions
-		lockStrategy&spinBit != 0 && sync_runtime_canSpin(spins) {
-			spins++
+	// Estimate map size for strategy adjustment
+	tableSize := 0
+	if table != nil {
+		//tableSize = table.sumSize()
+		tableSize = int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
+	}
+
+	// Calculate size factor (1.0 to 0.0) using bit operations
+	sizeFactor := 1.0
+	if tableSize > 0 {
+		// Calculate most significant bit position of tableSize
+		msb := bits.Len(uint(tableSize))
+
+		// Constrain msb to valid range
+		msb = max(baseTableSizeShift, min(msb, maxTableSizeShift))
+
+		// Calculate factor: higher tableSize = lower factor
+		sizeFactor = 1.0 - float64(msb-baseTableSizeShift)/(maxTableSizeShift-baseTableSizeShift)
+
+		// Apply square function for smoother curve
+		sizeFactor = sizeFactor * sizeFactor
+	}
+
+	// Calculate adaptive parameters based on table size
+	// Spin count: larger tables = fewer spins
+	spinRange := maxSpins - minSpins
+	localMaxSpins := minSpins + int(float64(spinRange)*sizeFactor)
+
+	// Backoff limit: larger tables = shorter backoff
+	minBackoffLimit := minBackoff << 2
+	backoffRange := maxBackoff - minBackoffLimit
+	localMaxBackoff := minBackoffLimit + int(float64(backoffRange)*sizeFactor)
+
+	// Contention handling loop
+	for {
+		// Spinning phase - suitable for briefly held locks
+		for spins < localMaxSpins /*&& sync_runtime_canSpin(spins)*/ {
 			sync_runtime_doSpin()
-			continue
+			if b.tryLock(normalTryCount) {
+				return
+			}
+
+			spins++
+			failedAttempts++
 		}
 
-		// Yield: cede control to other goroutines
-		if //goland:noinspection GoBoolExpressions
-		lockStrategy&yieldBit != 0 {
-			for i := 0; i < yields; i++ {
+		// Assess contention level
+		waitTime := runtimeNano() - startTime
+		contentionLevel := 0 // Low contention
+
+		// Evaluate based on failed attempts
+		if failedAttempts > highContentionThreshold {
+			contentionLevel = 2 // High contention
+		} else if failedAttempts > lowContentionThreshold {
+			contentionLevel = 1 // Medium contention
+		}
+
+		// Adjust based on wait time
+		if waitTime > longWaitThreshold {
+			contentionLevel = max(contentionLevel, 2) // Long wait = high contention
+		} else if waitTime > mediumWaitThreshold {
+			contentionLevel = max(contentionLevel, 1) // Medium wait = medium contention
+		}
+
+		// Apply strategy based on contention level
+		switch contentionLevel {
+		case 0: // Low contention: spin and yield
+			runtime.Gosched()
+			if b.tryLock(normalTryCount) {
+				return
+			}
+
+			spins = max(0, spins-2)
+
+		case 1: // Medium contention: linear backoff with yields
+			for i := 0; i < backoff; i++ {
 				runtime.Gosched()
 			}
-			if yields < maxYield {
-				yields *= 2
-				continue
+
+			if b.tryLock(normalTryCount) {
+				return
 			}
+
+			// Increase backoff
+			backoff += minBackoff
+			if backoff > localMaxBackoff {
+				backoff = localMaxBackoff
+			}
+
+			// Partial reset of contention statistics
+			spins = 0
+			failedAttempts = max(0, failedAttempts-1)
+
+		case 2: // High contention: yield and sleep
+			sleepTime := time.Duration(backoff) * time.Microsecond >> 2
+			time.Sleep(sleepTime)
+
+			if b.tryLock(normalTryCount) {
+				return
+			}
+
+			// Adaptive backoff growth
+			if backoff < 4 {
+				backoff++
+			} else {
+				// Approximately backoff * 1.25
+				backoff = backoff + (backoff >> 2)
+			}
+
+			if backoff > localMaxBackoff {
+				backoff = localMaxBackoff
+			}
+
+			// Reset contention statistics
+			spins = 0
+			failedAttempts = max(0, failedAttempts-2)
 		}
 
-		// Sleep: briefly pause execution
-		if //goland:noinspection GoBoolExpressions
-		lockStrategy&sleepBit != 0 {
-			time.Sleep(sleep)
-			if sleep < maxSleep {
-				sleep *= 2
-			}
+		// Try to acquire lock at the end of each iteration
+		if b.tryLock(normalTryCount) {
+			return
 		}
 	}
 }
@@ -283,20 +415,6 @@ func NewMapOfWithHasher[K comparable, V any](
 	m := &MapOf[K, V]{}
 	m.Init(keyHash, valEqual, options...)
 	return m
-}
-
-func newMapOfTable(tableLen int) *mapOfTable {
-	buckets := make([]bucketOf, tableLen)
-	for i := range buckets {
-		buckets[i].meta = defaultMeta
-	}
-
-	t := &mapOfTable{
-		buckets: buckets,
-		size:    make([]counterStripe, calcSizeLen(tableLen)),
-		seed:    uintptr(rand.Uint64()),
-	}
-	return t
 }
 
 // Init the MapOf, Allows custom key hasher (keyHash)
@@ -885,7 +1003,7 @@ func (m *MapOf[K, V]) processEntry(
 		bidx := uintptr(len(table.buckets)-1) & h1(hash)
 		root := &table.buckets[bidx]
 
-		root.lock()
+		root.lock(table)
 
 		// Check if a resize is needed.
 		// This is the first check, checking if there is a resize operation in progress
@@ -1101,7 +1219,10 @@ func (m *MapOf[K, V]) resize(
 				copyWg.Add(1)
 				go func(start, end int) {
 					for i := start; i < end && i < tableLen; i++ {
+						srcb := &table.buckets[i]
+						srcb.lock(table)
 						copied := copyBucketOfParallel[K, V](&table.buckets[i], newTable, m.keyHash)
+						srcb.unlock()
 						if copied > 0 {
 							newTable.addSize(uintptr(i), copied)
 						}
@@ -1113,7 +1234,10 @@ func (m *MapOf[K, V]) resize(
 		} else {
 			// Serial processing
 			for i := 0; i < tableLen; i++ {
-				copied := copyBucketOf[K, V](&table.buckets[i], newTable, m.keyHash)
+				srcb := &table.buckets[i]
+				srcb.lock(table)
+				copied := copyBucketOf[K, V](srcb, newTable, m.keyHash)
+				srcb.unlock()
 				newTable.addSizePlain(uintptr(i), copied)
 			}
 		}
@@ -1156,7 +1280,6 @@ func copyBucketOf[K comparable, V any](
 	destTable *mapOfTable,
 	hasher hashFunc,
 ) (copied int) {
-	srcBucket.lock()
 	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
 			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
@@ -1172,7 +1295,6 @@ func copyBucketOf[K comparable, V any](
 			}
 		}
 	}
-	srcBucket.unlock()
 	return copied
 }
 
@@ -1215,7 +1337,6 @@ func copyBucketOfParallel[K comparable, V any](
 	destTable *mapOfTable,
 	hasher hashFunc,
 ) (copied int) {
-	srcBucket.lock()
 	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
 			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
@@ -1225,14 +1346,13 @@ func copyBucketOfParallel[K comparable, V any](
 				// Locking the buckets of the target table is necessary during parallel copying,
 				// when copying in a single goroutine, it's not necessary, but due to the spinning of the mutex,
 				// it remains extremely fast.
-				destb.lock()
+				destb.lock(destTable)
 				appendToBucketOf[K, V](e, destb, h2(hash))
 				destb.unlock()
 				copied++
 			}
 		}
 	}
-	srcBucket.unlock()
 	return copied
 }
 
@@ -1290,7 +1410,7 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	entries := make([]*EntryOf[K, V], 0, 16*entriesPerMapOfBucket)
 	for i := range table.buckets {
 		rootb := &table.buckets[i]
-		rootb.lock()
+		rootb.lock(table)
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			for i := 0; i < entriesPerMapOfBucket; i++ {
 				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
@@ -2307,8 +2427,9 @@ func sync_runtime_canSpin(i int) bool
 //go:nosplit
 func sync_runtime_doSpin()
 
-////go:linkname runtimeNano runtime.nanotime
-//func runtimeNano() int64
+//go:linkname runtimeNano runtime.nanotime
+//go:nosplit
+func runtimeNano() int64
 
 type hashFunc func(unsafe.Pointer, uintptr) uintptr
 type equalFunc func(unsafe.Pointer, unsafe.Pointer) bool
