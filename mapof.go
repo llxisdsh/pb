@@ -1544,10 +1544,7 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 			return err
 		}
 	}
-
-	for k, v := range a {
-		m.Store(k, v)
-	}
+	m.FromMap(a)
 	return nil
 }
 
