@@ -67,91 +67,64 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 
 ## Benchmarks
 
-Below are my test results, in the benchmark tests for `Load`, `LoadOrStore`, and `Store` methods, `pb.MapOf` is always the fastest.
+Benchmark results (1,000,000 records) show `pb.MapOf` consistently outperforms other implementations, 
+achieving the fastest operations for Store (2.489 ns/op), LoadOrStore (2.137 ns/op), and Load (0.8733 ns/op)
 
 ```
 goos: windows
 goarch: amd64
+pkg: github.com/llxisdsh/pb
 cpu: AMD Ryzen Threadripper 3970X 32-Core Processor 
-BenchmarkLoad_original_syncMap
-BenchmarkLoad_original_syncMap-64                       	1000000000	         1.115 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoadOrStore_original_syncMap
-BenchmarkLoadOrStore_original_syncMap-64                	109891101	        10.91 ns/op	      16 B/op	       1 allocs/op
-BenchmarkStore_original_syncMap
-BenchmarkStore_original_syncMap-64                      	40714401	        28.73 ns/op	      64 B/op	       2 allocs/op
-BenchmarkLoad_pb_HashTrieMap
-BenchmarkLoad_pb_HashTrieMap-64                         	1000000000	         0.7153 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoadOrStore_pb_HashTrieMap
-BenchmarkLoadOrStore_pb_HashTrieMap-64                  	289147808	         3.954 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStore_pb_HashTrieMap
-BenchmarkStore_pb_HashTrieMap-64                        	60955131	        19.44 ns/op	      48 B/op	       1 allocs/op
-BenchmarkLoad_xsync_MapOf
-BenchmarkLoad_xsync_MapOf-64                            	1000000000	         0.3870 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoadOrStore_xsync_MapOf
-BenchmarkLoadOrStore_xsync_MapOf-64                     	1000000000	         1.111 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStore_xsync_MapOf
-BenchmarkStore_xsync_MapOf-64                           	136627312	         8.624 ns/op	      16 B/op	       1 allocs/op
-BenchmarkLoad_pb_MapOf
-BenchmarkLoad_pb_MapOf-64                               	1000000000	         0.3026 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoadOrStore_pb_MapOf
-BenchmarkLoadOrStore_pb_MapOf-64                        	1000000000	         0.6842 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStore_pb_MapOf
-BenchmarkStore_pb_MapOf-64                              	288284617	         3.729 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoad_alphadose_haxmap
-BenchmarkLoad_alphadose_haxmap-64                       	1000000000	         0.4076 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoadOrStore_alphadose_haxmap
-BenchmarkLoadOrStore_alphadose_haxmap-64                	274286868	         4.008 ns/op	       8 B/op	       1 allocs/op
-BenchmarkStore_alphadose_haxmap
-BenchmarkStore_alphadose_haxmap-64                      	149792583	         7.658 ns/op	       8 B/op	       1 allocs/op
-BenchmarkLoad_zhangyunhao116_skipmap
-BenchmarkLoad_zhangyunhao116_skipmap-64                 	677391657	         1.656 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoadOrStore_zhangyunhao116_skipmap
-BenchmarkLoadOrStore_zhangyunhao116_skipmap-64          	280333525	         3.727 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStore_zhangyunhao116_skipmap
-BenchmarkStore_zhangyunhao116_skipmap-64                	99588476	        10.88 ns/op	       8 B/op	       1 allocs/op
-BenchmarkLoad_fufuok_cmap
-BenchmarkLoad_fufuok_cmap-64                            	168652123	         7.096 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoadOrStore_fufuok_cmap
-BenchmarkLoadOrStore_fufuok_cmap-64                     	44925816	        22.60 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStore_fufuok_cmap
-BenchmarkStore_fufuok_cmap-64                           	31872086	        33.80 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoad_mhmtszr_concurrent_swiss_map
-BenchmarkLoad_mhmtszr_concurrent_swiss_map-64           	148250055	         8.037 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoadOrStore_mhmtszr_concurrent_swiss_map
-BenchmarkLoadOrStore_mhmtszr_concurrent_swiss_map-64    	99853716	        10.81 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStore_mhmtszr_concurrent_swiss_map
-BenchmarkStore_mhmtszr_concurrent_swiss_map-64          	29640973	        35.48 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoad_easierway_concurrent_map
-BenchmarkLoad_easierway_concurrent_map-64               	108911221	        13.78 ns/op	      15 B/op	       1 allocs/op
-BenchmarkLoadOrStore_easierway_concurrent_map
-BenchmarkLoadOrStore_easierway_concurrent_map-64        	65951138	        17.64 ns/op	      16 B/op	       2 allocs/op
-BenchmarkStore_easierway_concurrent_map
-BenchmarkStore_easierway_concurrent_map-64              	31173343	        36.01 ns/op	      24 B/op	       2 allocs/op
-BenchmarkLoad_orcaman_concurrent_map
-BenchmarkLoad_orcaman_concurrent_map-64                 	126582919	         9.576 ns/op	       5 B/op	       0 allocs/op
-BenchmarkLoadOrStore_orcaman_concurrent_map
-BenchmarkLoadOrStore_orcaman_concurrent_map-64          	42145189	        25.01 ns/op	       5 B/op	       0 allocs/op
-BenchmarkStore_orcaman_concurrent_map
-BenchmarkStore_orcaman_concurrent_map-64                	31977316	        35.69 ns/op	       5 B/op	       0 allocs/op
-BenchmarkLoad_RWLockMap
-BenchmarkLoad_RWLockMap-64                              	34047672	        34.71 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoadOrStore_RWLockMap
-BenchmarkLoadOrStore_RWLockMap-64                       	 9410553	       148.9 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStore_RWLockMap
-BenchmarkStore_RWLockMap-64                             	 4871845	       260.0 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoad_RWLockShardedMap
-BenchmarkLoad_RWLockShardedMap-64                       	121969340	         9.902 ns/op	       0 B/op	       0 allocs/op
-BenchmarkLoadOrStore_RWLockShardedMap
-BenchmarkLoadOrStore_RWLockShardedMap-64                	48799134	        29.82 ns/op	       0 B/op	       0 allocs/op
-BenchmarkStore_RWLockShardedMap
-BenchmarkStore_RWLockShardedMap-64                      	31306334	        38.76 ns/op	       0 B/op	       0 allocs/op
-PASS
 ```
 
+| Implementation                  | Operation       | Ops/sec      | ns/op   | B/op | Allocs/op |
+|----------------------------------|-----------------|-------------:|--------:|-----:|----------:|
+| sync.Map                         | Store           | 45,115,838   | 25.13   | 64   | 3         |
+| sync.Map                         | LoadOrStore     | 53,157,558   | 18.93   | 17   | 2         |
+| sync.Map                         | Load            | 414,168,854  | 3.915   | 0    | 0         |
+| pb.HashTrieMap                   | Store           | 62,276,613   | 18.90   | 48   | 1         |
+| pb.HashTrieMap                   | LoadOrStore     | 88,600,117   | 12.24   | 1    | 0         |
+| pb.HashTrieMap                   | Load            | 459,646,837  | 2.980   | 0    | 0         |
+| xsync.MapOf                      | Store           | 105,317,431  | 10.18   | 16   | 1         |
+| xsync.MapOf                      | LoadOrStore     | 144,292,809  | 7.172   | 0    | 0         |
+| xsync.MapOf                      | Load            | 720,721,586  | 1.627   | 0    | 0         |
+| pb.MapOf                         | Store           | 455,289,295  | 2.489   | 0    | 0         |
+| pb.MapOf                         | LoadOrStore     | 508,923,932  | 2.137   | 0    | 0         |
+| pb.MapOf                         | Load            | 1,000,000,000| 0.8733  | 0    | 0         |
+| alphadose/haxmap                 | Store           | 84,333,030   | 14.53   | 8    | 1         |
+| alphadose/haxmap                 | LoadOrStore     | 82,503,711   | 13.00   | 9    | 1         |
+| alphadose/haxmap                 | Load            | 787,015,812  | 1.946   | 0    | 0         |
+| zhangyunhao116/skipmap           | Store           | 28,972,909   | 38.62   | 9    | 1         |
+| zhangyunhao116/skipmap           | LoadOrStore     | 36,957,987   | 30.66   | 1    | 0         |
+| zhangyunhao116/skipmap           | Load            | 527,618,869  | 2.306   | 0    | 0         |
+| riraccuia/ash                    | Store           | 45,966,105   | 21.96   | 63   | 4         |
+| riraccuia/ash                    | LoadOrStore     | 29,512,130   | 41.47   | 94   | 3         |
+| riraccuia/ash                    | Load            | 270,116,048  | 5.059   | 7    | 0         |
+| fufuok/cmap                      | Store           | 27,902,758   | 39.85   | 0    | 0         |
+| fufuok/cmap                      | LoadOrStore     | 44,959,647   | 28.03   | 0    | 0         |
+| fufuok/cmap                      | Load            | 161,841,147  | 7.608   | 0    | 0         |
+| mhmtszr/concurrent_swiss_map     | Store           | 26,874,194   | 39.50   | 0    | 0         |
+| mhmtszr/concurrent_swiss_map     | LoadOrStore     | 25,488,638   | 45.19   | 0    | 0         |
+| mhmtszr/concurrent_swiss_map     | Load            | 129,942,864  | 8.868   | 0    | 0         |
+| easierway/concurrent_map         | Store           | 27,365,209   | 43.84   | 27   | 2         |
+| easierway/concurrent_map         | LoadOrStore     | 22,033,428   | 53.00   | 18   | 2         |
+| easierway/concurrent_map         | Load            | 100,000,000  | 13.77   | 15   | 1         |
+| orcaman/concurrent_map           | Store           | 30,959,991   | 42.23   | 9    | 0         |
+| orcaman/concurrent_map           | LoadOrStore     | 43,439,228   | 31.51   | 8    | 0         |
+| orcaman/concurrent_map           | Load            | 100,000,000  | 10.12   | 7    | 0         |
+| snawoot/lfmap                    | Store           | 435,790      | 2604    | 8166 | 51        |
+| snawoot/lfmap                    | LoadOrStore     | 8,361,651    | 213.8   | 518  | 2         |
+| snawoot/lfmap                    | Load            | 282,367,756  | 4.213   | 0    | 0         |
+| RWLockMap                        | Store           | 4,504,072    | 256.6   | 1    | 0         |
+| RWLockMap                        | LoadOrStore     | 9,235,543    | 164.4   | 1    | 0         |
+| RWLockMap                        | Load            | 33,700,858   | 35.46   | 0    | 0         |
+| RWLockShardedMap                 | Store           | 34,991,032   | 34.66   | 1    | 0         |
+| RWLockShardedMap                 | LoadOrStore     | 48,624,336   | 26.68   | 1    | 0         |
+| RWLockShardedMap                 | Load            | 121,242,320  | 10.11   | 0    | 0         |
 Benchmarks code referenced from:
 
 ```go
-const MapElementCount = 100000
+const MapElementCount = 1_000_000
 
 func BenchmarkLoad_original_syncMap(b *testing.B) {
 	b.ReportAllocs()
@@ -159,6 +132,7 @@ func BenchmarkLoad_original_syncMap(b *testing.B) {
 	for i := 0; i < MapElementCount; i++ {
 		m.Store(i, i)
 	}
+	runtime.GC()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
@@ -174,6 +148,7 @@ func BenchmarkLoad_original_syncMap(b *testing.B) {
 func BenchmarkLoadOrStore_original_syncMap(b *testing.B) {
 	b.ReportAllocs()
 	var m sync.Map
+	runtime.GC()
 	b.ResetTimer()
 	b.RunParallel(func(pb *testing.PB) {
 		i := 0
@@ -186,7 +161,6 @@ func BenchmarkLoadOrStore_original_syncMap(b *testing.B) {
 		}
 	})
 }
-
 ```
 
 ## Usage
