@@ -77,51 +77,50 @@ pkg: github.com/llxisdsh/pb
 cpu: AMD Ryzen Threadripper 3970X 32-Core Processor 
 ```
 
-| Implementation                  | Operation       | Ops/sec      | ns/op   | B/op | Allocs/op |
-|----------------------------------|-----------------|-------------:|--------:|-----:|----------:|
-| sync.Map                         | Store           | 45,115,838   | 25.13   | 64   | 3         |
-| sync.Map                         | LoadOrStore     | 53,157,558   | 18.93   | 17   | 2         |
-| sync.Map                         | Load            | 414,168,854  | 3.915   | 0    | 0         |
-| pb.HashTrieMap                   | Store           | 62,276,613   | 18.90   | 48   | 1         |
-| pb.HashTrieMap                   | LoadOrStore     | 88,600,117   | 12.24   | 1    | 0         |
-| pb.HashTrieMap                   | Load            | 459,646,837  | 2.980   | 0    | 0         |
-| xsync.MapOf                      | Store           | 105,317,431  | 10.18   | 16   | 1         |
-| xsync.MapOf                      | LoadOrStore     | 144,292,809  | 7.172   | 0    | 0         |
-| xsync.MapOf                      | Load            | 720,721,586  | 1.627   | 0    | 0         |
-| pb.MapOf                         | Store           | 455,289,295  | 2.489   | 0    | 0         |
-| pb.MapOf                         | LoadOrStore     | 508,923,932  | 2.137   | 0    | 0         |
-| pb.MapOf                         | Load            | 1,000,000,000| 0.8733  | 0    | 0         |
-| alphadose/haxmap                 | Store           | 84,333,030   | 14.53   | 8    | 1         |
-| alphadose/haxmap                 | LoadOrStore     | 82,503,711   | 13.00   | 9    | 1         |
-| alphadose/haxmap                 | Load            | 787,015,812  | 1.946   | 0    | 0         |
-| zhangyunhao116/skipmap           | Store           | 28,972,909   | 38.62   | 9    | 1         |
-| zhangyunhao116/skipmap           | LoadOrStore     | 36,957,987   | 30.66   | 1    | 0         |
-| zhangyunhao116/skipmap           | Load            | 527,618,869  | 2.306   | 0    | 0         |
-| riraccuia/ash                    | Store           | 45,966,105   | 21.96   | 63   | 4         |
-| riraccuia/ash                    | LoadOrStore     | 29,512,130   | 41.47   | 94   | 3         |
-| riraccuia/ash                    | Load            | 270,116,048  | 5.059   | 7    | 0         |
-| fufuok/cmap                      | Store           | 27,902,758   | 39.85   | 0    | 0         |
-| fufuok/cmap                      | LoadOrStore     | 44,959,647   | 28.03   | 0    | 0         |
-| fufuok/cmap                      | Load            | 161,841,147  | 7.608   | 0    | 0         |
-| mhmtszr/concurrent_swiss_map     | Store           | 26,874,194   | 39.50   | 0    | 0         |
-| mhmtszr/concurrent_swiss_map     | LoadOrStore     | 25,488,638   | 45.19   | 0    | 0         |
-| mhmtszr/concurrent_swiss_map     | Load            | 129,942,864  | 8.868   | 0    | 0         |
-| easierway/concurrent_map         | Store           | 27,365,209   | 43.84   | 27   | 2         |
-| easierway/concurrent_map         | LoadOrStore     | 22,033,428   | 53.00   | 18   | 2         |
-| easierway/concurrent_map         | Load            | 100,000,000  | 13.77   | 15   | 1         |
-| orcaman/concurrent_map           | Store           | 30,959,991   | 42.23   | 9    | 0         |
-| orcaman/concurrent_map           | LoadOrStore     | 43,439,228   | 31.51   | 8    | 0         |
-| orcaman/concurrent_map           | Load            | 100,000,000  | 10.12   | 7    | 0         |
-| snawoot/lfmap                    | Store           | 435,790      | 2604    | 8166 | 51        |
-| snawoot/lfmap                    | LoadOrStore     | 8,361,651    | 213.8   | 518  | 2         |
-| snawoot/lfmap                    | Load            | 282,367,756  | 4.213   | 0    | 0         |
-| RWLockMap                        | Store           | 4,504,072    | 256.6   | 1    | 0         |
-| RWLockMap                        | LoadOrStore     | 9,235,543    | 164.4   | 1    | 0         |
-| RWLockMap                        | Load            | 33,700,858   | 35.46   | 0    | 0         |
-| RWLockShardedMap                 | Store           | 34,991,032   | 34.66   | 1    | 0         |
-| RWLockShardedMap                 | LoadOrStore     | 48,624,336   | 26.68   | 1    | 0         |
-| RWLockShardedMap                 | Load            | 121,242,320  | 10.11   | 0    | 0         |
-
+| Implementation                  | Operation       | Ops/sec      | ns/op  | B/op | Allocs/op |
+|----------------------------------|-----------------|-------------:|-------:|-----:|----------:|
+| sync.Map                         | Store           | 45,115,838   | 25.13  | 64   | 3         |
+| sync.Map                         | LoadOrStore     | 53,157,558   | 18.93  | 17   | 2         |
+| sync.Map                         | Load            | 414,168,854  | 3.92   | 0    | 0         |
+| pb.HashTrieMap                   | Store           | 62,276,613   | 18.90  | 48   | 1         |
+| pb.HashTrieMap                   | LoadOrStore     | 88,600,117   | 12.24  | 1    | 0         |
+| pb.HashTrieMap                   | Load            | 459,646,837  | 2.98   | 0    | 0         |
+| xsync.MapOf                      | Store           | 105,317,431  | 10.18  | 16   | 1         |
+| xsync.MapOf                      | LoadOrStore     | 144,292,809  | 7.17   | 0    | 0         |
+| xsync.MapOf                      | Load            | 720,721,586  | 1.63   | 0    | 0         |
+| pb.MapOf                         | Store           | 455,289,295  | 2.49   | 0    | 0         |
+| pb.MapOf                         | LoadOrStore     | 508,923,932  | 2.14   | 0    | 0         |
+| pb.MapOf                         | Load            | 1,000,000,000| 0.87   | 0    | 0         |
+| alphadose/haxmap                 | Store           | 84,333,030   | 14.53  | 8    | 1         |
+| alphadose/haxmap                 | LoadOrStore     | 82,503,711   | 13.00  | 9    | 1         |
+| alphadose/haxmap                 | Load            | 787,015,812  | 1.95   | 0    | 0         |
+| zhangyunhao116/skipmap           | Store           | 28,972,909   | 38.62  | 9    | 1         |
+| zhangyunhao116/skipmap           | LoadOrStore     | 36,957,987   | 30.66  | 1    | 0         |
+| zhangyunhao116/skipmap           | Load            | 527,618,869  | 2.31   | 0    | 0         |
+| riraccuia/ash                    | Store           | 45,966,105   | 21.96  | 63   | 4         |
+| riraccuia/ash                    | LoadOrStore     | 29,512,130   | 41.47  | 94   | 3         |
+| riraccuia/ash                    | Load            | 270,116,048  | 5.06   | 7    | 0         |
+| fufuok/cmap                      | Store           | 27,902,758   | 39.85  | 0    | 0         |
+| fufuok/cmap                      | LoadOrStore     | 44,959,647   | 28.03  | 0    | 0         |
+| fufuok/cmap                      | Load            | 161,841,147  | 7.61   | 0    | 0         |
+| mhmtszr/concurrent_swiss_map     | Store           | 26,874,194   | 39.50  | 0    | 0         |
+| mhmtszr/concurrent_swiss_map     | LoadOrStore     | 25,488,638   | 45.19  | 0    | 0         |
+| mhmtszr/concurrent_swiss_map     | Load            | 129,942,864  | 8.87   | 0    | 0         |
+| easierway/concurrent_map         | Store           | 27,365,209   | 43.84  | 27   | 2         |
+| easierway/concurrent_map         | LoadOrStore     | 22,033,428   | 53.00  | 18   | 2         |
+| easierway/concurrent_map         | Load            | 100,000,000  | 13.77  | 15   | 1         |
+| orcaman/concurrent_map           | Store           | 30,959,991   | 42.23  | 9    | 0         |
+| orcaman/concurrent_map           | LoadOrStore     | 43,439,228   | 31.51  | 8    | 0         |
+| orcaman/concurrent_map           | Load            | 100,000,000  | 10.12  | 7    | 0         |
+| snawoot/lfmap                    | Store           | 435,790      | 2604.00| 8166 | 51        |
+| snawoot/lfmap                    | LoadOrStore     | 8,361,651    | 213.80 | 518  | 2         |
+| snawoot/lfmap                    | Load            | 282,367,756  | 4.21   | 0    | 0         |
+| RWLockMap                        | Store           | 4,504,072    | 256.60 | 1    | 0         |
+| RWLockMap                        | LoadOrStore     | 9,235,543    | 164.40 | 1    | 0         |
+| RWLockMap                        | Load            | 33,700,858   | 35.46  | 0    | 0         |
+| RWLockShardedMap                 | Store           | 34,991,032   | 34.66  | 1    | 0         |
+| RWLockShardedMap                 | LoadOrStore     | 48,624,336   | 26.68  | 1    | 0         |
+| RWLockShardedMap                 | Load            | 121,242,320  | 10.11  | 0    | 0         |
 
 Benchmarks code referenced from:
 
