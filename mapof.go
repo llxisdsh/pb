@@ -268,7 +268,7 @@ func (b *bucketOf) lock() {
 	for {
 		// time.Sleep with non-zero duration (≈Millisecond level) works effectively
 		// as backoff under high concurrency.
-		time.Sleep(100 * time.Microsecond)
+		time.Sleep(1)
 		if b.tryLock(-1) {
 			return
 		}
