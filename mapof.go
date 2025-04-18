@@ -63,6 +63,12 @@ const (
 	minItemsPerGoroutine = 32
 )
 
+const (
+	// enableFastPath optimizes read-only operations by fast-returning results,
+	// avoiding expensive lock contention and write barriers. In extreme cases, reduces latency by up to 100x.
+	enableFastPath = true
+)
+
 // MapOf is a high-performance concurrent map implementation that offers significant
 // performance improvements over sync.Map in many common scenarios.
 //
@@ -245,169 +251,25 @@ func (b *bucketOf) unlock() {
 //}
 
 // lock acquires the lock for the bucket.
-// It uses an adaptive strategy based on contention level.
-//
 // Replace Mutex with a spinlock to avoid bucket false-sharing overhead.
 // Spinlock state is embedded in the Meta field for cache locality.
-func (b *bucketOf) lock(table *mapOfTable) {
-	// Adaptive locking strategy constants
-	const (
-		// Initial attempt counts
-		initialTryCount = -1 // Higher initial attempts to reduce complex logic entry
-		normalTryCount  = 1
-
-		// Spin parameters - optimized for low latency
-		minSpins = 8  // Minimum spin count
-		maxSpins = 20 // Maximum spin count
-
-		// Contention detection thresholds
-		lowContentionThreshold  = 3 // Low contention threshold
-		highContentionThreshold = 8 // High contention threshold
-
-		// Backoff parameters
-		minBackoff = 1   // Minimum backoff cycles
-		maxBackoff = 128 // Maximum backoff cycles
-
-		// Wait time thresholds (nanoseconds)
-		mediumWaitThreshold = 2000  // 2 microseconds
-		longWaitThreshold   = 20000 // 20 microseconds
-
-		// Table size parameters - power of 2 for bit operations
-		baseTableSizeShift = 10 // 2^10 = 1024
-		maxTableSizeShift  = 24 // 2^24 = 16M
-	)
-
-	// Fast path: try to acquire lock quickly
-	if b.tryLock(initialTryCount) {
+func (b *bucketOf) lock() {
+	if b.tryLock(-1) {
 		return
 	}
 
-	// Record start time and contention statistics
-	startTime := runtimeNano()
-	spins := 0
-	backoff := minBackoff
-	failedAttempts := 0
-
-	// Estimate map size for strategy adjustment
-	tableSize := 0
-	if table != nil {
-		//tableSize = table.sumSize()
-		tableSize = int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
+	for i := 0; runtime_canSpin(i); i++ {
+		runtime_doSpin()
+		if b.tryLock(-1) {
+			return
+		}
 	}
 
-	// Calculate size factor (1.0 to 0.0) using bit operations
-	sizeFactor := 1.0
-	if tableSize > 0 {
-		// Calculate most significant bit position of tableSize
-		msb := bits.Len(uint(tableSize))
-
-		// Constrain msb to valid range
-		msb = max(baseTableSizeShift, min(msb, maxTableSizeShift))
-
-		// Calculate factor: higher tableSize = lower factor
-		sizeFactor = 1.0 - float64(msb-baseTableSizeShift)/(maxTableSizeShift-baseTableSizeShift)
-
-		// Apply square function for smoother curve
-		sizeFactor = sizeFactor * sizeFactor
-	}
-
-	// Calculate adaptive parameters based on table size
-	// Spin count: larger tables = fewer spins
-	spinRange := maxSpins - minSpins
-	localMaxSpins := minSpins + int(float64(spinRange)*sizeFactor)
-
-	// Backoff limit: larger tables = shorter backoff
-	minBackoffLimit := minBackoff << 2
-	backoffRange := maxBackoff - minBackoffLimit
-	localMaxBackoff := minBackoffLimit + int(float64(backoffRange)*sizeFactor)
-
-	// Contention handling loop
 	for {
-		// Spinning phase - suitable for briefly held locks
-		for spins < localMaxSpins /*&& runtime_canSpin(spins)*/ {
-			runtime_doSpin()
-			if b.tryLock(normalTryCount) {
-				return
-			}
-
-			spins++
-			failedAttempts++
-		}
-
-		// Assess contention level
-		waitTime := runtimeNano() - startTime
-		contentionLevel := 0 // Low contention
-
-		// Evaluate based on failed attempts
-		if failedAttempts > highContentionThreshold {
-			contentionLevel = 2 // High contention
-		} else if failedAttempts > lowContentionThreshold {
-			contentionLevel = 1 // Medium contention
-		}
-
-		// Adjust based on wait time
-		if waitTime > longWaitThreshold {
-			contentionLevel = max(contentionLevel, 2) // Long wait = high contention
-		} else if waitTime > mediumWaitThreshold {
-			contentionLevel = max(contentionLevel, 1) // Medium wait = medium contention
-		}
-
-		// Apply strategy based on contention level
-		switch contentionLevel {
-		case 0: // Low contention: spin and yield
-			runtime.Gosched()
-			if b.tryLock(normalTryCount) {
-				return
-			}
-
-			spins = max(0, spins-2)
-
-		case 1: // Medium contention: linear backoff with yields
-			for i := 0; i < backoff; i++ {
-				runtime.Gosched()
-			}
-
-			if b.tryLock(normalTryCount) {
-				return
-			}
-
-			// Increase backoff
-			backoff += minBackoff
-			if backoff > localMaxBackoff {
-				backoff = localMaxBackoff
-			}
-
-			// Partial reset of contention statistics
-			spins = 0
-			failedAttempts = max(0, failedAttempts-1)
-
-		case 2: // High contention: yield and sleep
-			sleepTime := time.Duration(backoff) * time.Microsecond >> 2
-			time.Sleep(sleepTime)
-
-			if b.tryLock(normalTryCount) {
-				return
-			}
-
-			// Adaptive backoff growth
-			if backoff < 4 {
-				backoff++
-			} else {
-				// Approximately backoff * 1.25
-				backoff = backoff + (backoff >> 2)
-			}
-
-			if backoff > localMaxBackoff {
-				backoff = localMaxBackoff
-			}
-
-			// Reset contention statistics
-			spins = 0
-			failedAttempts = max(0, failedAttempts-2)
-		}
-
-		// Try to acquire lock at the end of each iteration
-		if b.tryLock(normalTryCount) {
+		// time.Sleep with non-zero duration (≈Millisecond level) works effectively
+		// as backoff under high concurrency.
+		time.Sleep(100 * time.Microsecond)
+		if b.tryLock(-1) {
 			return
 		}
 	}
@@ -428,6 +290,10 @@ type mapOfTable struct {
 	// occupies min(buckets_memory/1024, 64KB) of memory
 	// when the compile option `mapof_opt_enablepadding` is enabled
 	size []counterStripe
+	// A new seed forces rehashing on each resize to prevent collision attacks.
+	// Using a fixed seed avoids rehashing but requires storing hash values,
+	// which adds a cache miss during resize. This overhead often exceeds rehashing cost.
+	// Trade-off: Regenerate seed on every resize.
 	seed uintptr
 }
 
@@ -646,15 +512,16 @@ func (m *MapOf[K, V]) processEntry(
 		h2v := h2(hash)
 		h2w := broadcast(h2v)
 		bidx := uintptr(len(table.buckets)-1) & h1(hash)
-		root := &table.buckets[bidx]
+		rootb := &table.buckets[bidx]
 
-		root.lock(table)
+		// slow path
+		rootb.lock()
 
 		// Check if a resize is needed.
 		// This is the first check, checking if there is a resize operation in progress
 		// before acquiring the bucket lock
 		if wg := (*sync.WaitGroup)(loadPointer(&m.resizeWg)); wg != nil {
-			root.unlock()
+			rootb.unlock()
 			// Wait for the current resize operation to complete
 			wg.Wait()
 			table = (*mapOfTable)(loadPointer(&m.table))
@@ -668,7 +535,7 @@ func (m *MapOf[K, V]) processEntry(
 		// This is necessary because another goroutine may have completed a resize operation
 		// between the first check and acquiring the bucket lock
 		if newTable := (*mapOfTable)(loadPointer(&m.table)); table != newTable {
-			root.unlock()
+			rootb.unlock()
 			table = newTable
 			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
 			continue
@@ -685,7 +552,7 @@ func (m *MapOf[K, V]) processEntry(
 		// If no empty slot is found, use the last slot
 		var lastBucket *bucketOf
 
-		for b := root; b != nil; b = (*bucketOf)(b.next) {
+		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			lastBucket = b
 			metaw := b.meta
 			if emptyBucket == nil {
@@ -717,7 +584,7 @@ func (m *MapOf[K, V]) processEntry(
 
 		if oldEntry != nil {
 			if newEntry == oldEntry {
-				root.unlock()
+				rootb.unlock()
 				return value, status
 			}
 			if newEntry == nil {
@@ -725,7 +592,7 @@ func (m *MapOf[K, V]) processEntry(
 				newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
 				storeUint64(&oldBucket.meta, newmetaw)
 				storePointer(&oldBucket.entries[oldIdx], nil)
-				root.unlock()
+				rootb.unlock()
 				table.addSize(bidx, -1)
 				if clearOp(newmetaw) == defaultMeta {
 					tableLen := len(table.buckets)
@@ -741,12 +608,12 @@ func (m *MapOf[K, V]) processEntry(
 			// Update
 			newEntry.Key = oldEntry.Key
 			storePointer(&oldBucket.entries[oldIdx], unsafe.Pointer(newEntry))
-			root.unlock()
+			rootb.unlock()
 			return value, status
 		}
 
 		if newEntry == nil {
-			root.unlock()
+			rootb.unlock()
 			return value, status
 		}
 
@@ -757,7 +624,7 @@ func (m *MapOf[K, V]) processEntry(
 			newEntry.Key = *key
 			storeUint64(&emptyBucket.meta, setByte(emptyBucket.meta, h2v, emptyIdx))
 			storePointer(&emptyBucket.entries[emptyIdx], unsafe.Pointer(newEntry))
-			root.unlock()
+			rootb.unlock()
 			table.addSize(bidx, 1)
 			return value, status
 		}
@@ -765,7 +632,7 @@ func (m *MapOf[K, V]) processEntry(
 		// Check if expansion is needed
 		growThreshold := int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
 		if table.sumSize() >= growThreshold { // table.sumSize()+1 > growThreshold
-			root.unlock()
+			rootb.unlock()
 			table, _ = m.resize(table, mapGrowHint)
 			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
 			continue
@@ -777,7 +644,7 @@ func (m *MapOf[K, V]) processEntry(
 			meta:    setByte(defaultMeta, h2v, 0),
 			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newEntry)},
 		}))
-		root.unlock()
+		rootb.unlock()
 		table.addSize(bidx, 1)
 		return value, status
 	}
@@ -872,10 +739,7 @@ func (m *MapOf[K, V]) resize(
 				copyWg.Add(1)
 				go func(start, end int) {
 					for i := start; i < end && i < tableLen; i++ {
-						srcb := &table.buckets[i]
-						srcb.lock(table)
 						copied := copyBucketOfParallel[K, V](&table.buckets[i], newTable, m.keyHash)
-						srcb.unlock()
 						if copied > 0 {
 							newTable.addSize(uintptr(i), copied)
 						}
@@ -887,10 +751,7 @@ func (m *MapOf[K, V]) resize(
 		} else {
 			// Serial processing
 			for i := 0; i < tableLen; i++ {
-				srcb := &table.buckets[i]
-				srcb.lock(table)
-				copied := copyBucketOf[K, V](srcb, newTable, m.keyHash)
-				srcb.unlock()
+				copied := copyBucketOf[K, V](&table.buckets[i], newTable, m.keyHash)
 				newTable.addSizePlain(uintptr(i), copied)
 			}
 		}
@@ -906,6 +767,7 @@ func copyBucketOf[K comparable, V any](
 	destTable *mapOfTable,
 	hasher hashFunc,
 ) (copied int) {
+	srcBucket.lock()
 	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
 			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
@@ -921,6 +783,7 @@ func copyBucketOf[K comparable, V any](
 			}
 		}
 	}
+	srcBucket.unlock()
 	return copied
 }
 
@@ -963,6 +826,7 @@ func copyBucketOfParallel[K comparable, V any](
 	destTable *mapOfTable,
 	hasher hashFunc,
 ) (copied int) {
+	srcBucket.lock()
 	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
 			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
@@ -972,13 +836,14 @@ func copyBucketOfParallel[K comparable, V any](
 				// Locking the buckets of the target table is necessary during parallel copying,
 				// when copying in a single goroutine, it's not necessary, but due to the spinning of the mutex,
 				// it remains extremely fast.
-				destb.lock(destTable)
+				destb.lock()
 				appendToBucketOf[K, V](e, destb, h2(hash))
 				destb.unlock()
 				copied++
 			}
 		}
 	}
+	srcBucket.unlock()
 	return copied
 }
 
@@ -989,6 +854,19 @@ func (m *MapOf[K, V]) Store(key K, value V) {
 		table = m.initSlow()
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+
+	if enableFastPath {
+		// deduplicates identical values
+		if m.valEqual != nil {
+			e := m.findEntry(table, hash, &key)
+			if e != nil {
+				if m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&value))) {
+					return
+				}
+			}
+		}
+	}
+
 	m.mockSyncMap(table, hash, &key, nil, &value, false)
 }
 
@@ -999,6 +877,19 @@ func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 		table = m.initSlow()
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+
+	if enableFastPath {
+		// deduplicates identical values
+		if m.valEqual != nil {
+			e := m.findEntry(table, hash, &key)
+			if e != nil {
+				if m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&value))) {
+					return e.Value, true
+				}
+			}
+		}
+	}
+
 	return m.mockSyncMap(table, hash, &key, nil, &value, false)
 }
 
@@ -1012,9 +903,14 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 		return m.mockSyncMap(table, hash, &key, nil, &value, true)
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	if e := m.findEntry(table, hash, &key); e != nil {
-		return e.Value, true
+
+	if enableFastPath {
+		e := m.findEntry(table, hash, &key)
+		if e != nil {
+			return e.Value, true
+		}
 	}
+
 	return m.mockSyncMap(table, hash, &key, nil, &value, true)
 }
 
@@ -1025,6 +921,14 @@ func (m *MapOf[K, V]) Delete(key K) {
 		return
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+
+	if enableFastPath {
+		e := m.findEntry(table, hash, &key)
+		if e == nil {
+			return
+		}
+	}
+
 	m.mockSyncMap(table, hash, &key, nil, nil, false)
 }
 
@@ -1036,6 +940,14 @@ func (m *MapOf[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 		return *new(V), false
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+
+	if enableFastPath {
+		e := m.findEntry(table, hash, &key)
+		if e == nil {
+			return
+		}
+	}
+
 	return m.mockSyncMap(table, hash, &key, nil, nil, false)
 }
 
@@ -1050,8 +962,22 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 		panic("called CompareAndSwap when value is not of comparable type")
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+
+	if enableFastPath {
+		e := m.findEntry(table, hash, &key)
+		if e == nil {
+			return false
+		}
+		// deduplicates identical values
+		if m.valEqual != nil &&
+			m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&old))) &&
+			m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&new))) {
+			return true
+		}
+	}
+
 	_, swapped = m.mockSyncMap(table, hash, &key, &old, &new, false)
-	return
+	return swapped
 }
 
 // CompareAndDelete atomically deletes an existing entry
@@ -1065,8 +991,16 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 		panic("called CompareAndDelete when value is not of comparable type")
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+
+	if enableFastPath {
+		e := m.findEntry(table, hash, &key)
+		if e == nil {
+			return false
+		}
+	}
+
 	_, deleted = m.mockSyncMap(table, hash, &key, &old, nil, false)
-	return
+	return deleted
 }
 
 func (m *MapOf[K, V]) mockSyncMap(
@@ -1083,22 +1017,27 @@ func (m *MapOf[K, V]) mockSyncMap(
 				if loadOrStore {
 					return loaded, loaded.Value, true
 				}
-				if cmpValue != nil && !m.valEqual(unsafe.Pointer(&loaded.Value), noescape(unsafe.Pointer(cmpValue))) {
+				if cmpValue != nil && !m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(cmpValue))) {
 					return loaded, loaded.Value, false
 				}
 				if newValue == nil {
 					// Delete
 					return nil, loaded.Value, true
 				}
-				if m.valEqual != nil && m.valEqual(unsafe.Pointer(&loaded.Value), noescape(unsafe.Pointer(newValue))) {
-					return loaded, loaded.Value, true
-				}
+
+				// Skip deduplication here - move to caller side to avoid lock contention
+				//if enableFastPath {
+				//	if m.valEqual != nil && m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(newValue))) {
+				//		return loaded, loaded.Value, true
+				//	}
+				//}
+
 				// Update
 				newe := &EntryOf[K, V]{Value: *newValue}
 				return newe, loaded.Value, true
 			}
 
-			if cmpValue != nil || newValue == nil {
+			if newValue == nil || cmpValue != nil {
 				return loaded, *new(V), false
 			}
 			// Insert
@@ -1141,9 +1080,13 @@ func (m *MapOf[K, V]) LoadOrStoreFn(
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	if e := m.findEntry(table, hash, &key); e != nil {
-		return e.Value, true
+
+	if enableFastPath {
+		if e := m.findEntry(table, hash, &key); e != nil {
+			return e.Value, true
+		}
 	}
+
 	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1168,6 +1111,17 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 		table = m.initSlow()
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+
+	if enableFastPath {
+		// deduplicates identical values
+		if m.valEqual != nil {
+			e := m.findEntry(table, hash, &key)
+			if e != nil && m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&value))) {
+				return e.Value, true
+			}
+		}
+	}
+
 	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1215,9 +1169,13 @@ func (m *MapOf[K, V]) LoadOrCompute(
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	if e := m.findEntry(table, hash, &key); e != nil {
-		return e.Value, true
+
+	if enableFastPath {
+		if e := m.findEntry(table, hash, &key); e != nil {
+			return e.Value, true
+		}
 	}
+
 	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1285,8 +1243,10 @@ func (m *MapOf[K, V]) Compute(
 			if loaded != nil {
 				newValue, op := valueFn(loaded.Value, true)
 				if op == UpdateOp {
-					if m.valEqual != nil && m.valEqual(unsafe.Pointer(&loaded.Value), noescape(unsafe.Pointer(&newValue))) {
-						return loaded, loaded.Value, true
+					if enableFastPath {
+						if m.valEqual != nil && m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(&newValue))) {
+							return loaded, loaded.Value, true
+						}
 					}
 					return &EntryOf[K, V]{Value: newValue}, newValue, true
 				}
@@ -1344,9 +1304,13 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
-	if e := m.findEntry(table, hash, &key); e != nil {
-		return e.Value, true
+
+	if enableFastPath {
+		if e := m.findEntry(table, hash, &key); e != nil {
+			return e.Value, true
+		}
 	}
+
 	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1429,7 +1393,7 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	entries := make([]*EntryOf[K, V], 0, 16*entriesPerMapOfBucket)
 	for i := range table.buckets {
 		rootb := &table.buckets[i]
-		rootb.lock(table)
+		rootb.lock()
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			for i := 0; i < entriesPerMapOfBucket; i++ {
 				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
@@ -2096,9 +2060,10 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 	stats.CounterLen = len(table.size)
 	for i := range table.buckets {
 		nentries := 0
-		b := &table.buckets[i]
-		stats.TotalBuckets++
-		for {
+		rootb := &table.buckets[i]
+		rootb.lock()
+		for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
+			stats.TotalBuckets++
 			nentriesLocal := 0
 			stats.Capacity += entriesPerMapOfBucket
 			for i := 0; i < entriesPerMapOfBucket; i++ {
@@ -2111,13 +2076,9 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 			if nentriesLocal == 0 {
 				stats.EmptyBuckets++
 			}
-			b = (*bucketOf)(loadPointer(&b.next))
-			if b == nil {
-				break
-			}
-
-			stats.TotalBuckets++
 		}
+		rootb.unlock()
+
 		if nentries < stats.MinEntries {
 			stats.MinEntries = nentries
 		}
@@ -2426,11 +2387,11 @@ func runtime_canSpin(i int) bool
 //go:nosplit
 func runtime_doSpin()
 
-// nolint:all
-//
-//go:linkname runtimeNano runtime.nanotime
-//go:nosplit
-func runtimeNano() int64
+//// nolint:all
+////
+////go:linkname runtimeNano runtime.nanotime
+////go:nosplit
+//func runtimeNano() int64
 
 type hashFunc func(unsafe.Pointer, uintptr) uintptr
 type equalFunc func(unsafe.Pointer, unsafe.Pointer) bool
