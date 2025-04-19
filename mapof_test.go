@@ -460,6 +460,125 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 	}
 }
 
+func TestMapOfConcurrentInsert(t *testing.T) {
+	const total = 100_000_000
+
+	m := NewMapOf[int, int](WithPresize(total), WithParallel())
+	numCPU := runtime.GOMAXPROCS(0)
+
+	var wg sync.WaitGroup
+	wg.Add(numCPU)
+
+	start := time.Now()
+
+	batchSize := total / numCPU
+
+	for i := 0; i < numCPU; i++ {
+		go func(workerID int) {
+			defer wg.Done()
+
+			startIdx := workerID * batchSize
+			endIdx := startIdx + batchSize
+			if workerID == numCPU-1 {
+				endIdx = total
+			}
+			for j := startIdx; j < endIdx; j++ {
+				m.Store(j, j)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	elapsed := time.Since(start)
+
+	size := m.Size()
+	if size != total {
+		t.Errorf("Expected size %d, got %d", total, size)
+	}
+
+	t.Logf("Inserted %d items in %v", total, elapsed)
+	t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
+	t.Logf("Throughput: %.2f million ops/sec", float64(total)/(elapsed.Seconds()*1000000))
+
+	// rand check
+	for i := 0; i < 1000; i++ {
+		idx := i * (total / 1000)
+		if val, ok := m.Load(idx); !ok || val != idx {
+			t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val, ok)
+		}
+	}
+}
+
+func TestMapOfMisc(t *testing.T) {
+	//var a *SyncMap[int, int] = NewSyncMap[int, int]()
+	var a, a1, a2, a3, a4 MapOf[int, int]
+
+	t.Log(unsafe.Sizeof(MapOf[string, int]{}))
+
+	t.Log(&a)
+	s, _ := json.Marshal(&a)
+	t.Log(string(s))
+
+	t.Log(a.Size())
+	t.Log(a.IsZero())
+	t.Log(a.Load(1))
+	a.Delete(1)
+	a.Clear()
+	a.Range(func(i int, i2 int) bool {
+		return true
+	})
+	t.Log(a.LoadAndDelete(1))
+	t.Log(a.LoadOrStore(1, 1))
+	a1.Store(1, 1)
+	t.Log(&a)
+	t.Log(a2.Swap(1, 1))
+	t.Log(&a2)
+	t.Log(a2.LoadAndDelete(1))
+	t.Log(&a2)
+
+	err := json.Unmarshal([]byte(`{"1":1}`), &a3)
+	if err != nil {
+		t.Fatal(err)
+		return
+	}
+	s, err = json.Marshal(&a3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Log(string(s))
+
+	t.Log(&a4)
+
+	var idm MapOf[structKey, int]
+	t.Log(idm.LoadOrStore(structKey{1, 1}, 1))
+	t.Log(&idm)
+	t.Log(idm.LoadAndDelete(structKey{1, 1}))
+	t.Log(&idm)
+
+	var test int64
+	for k := int64(0); k <= 100000; k++ {
+		atomic.StoreInt64(&test, k)
+		if test != k {
+			t.Fatal("sync test fail:", test, k)
+		}
+	}
+
+	var wg sync.WaitGroup
+	for k := int64(0); k <= 100000; k++ {
+
+		wg.Add(1)
+		go func(k int64) {
+			atomic.StoreInt64(&test, k)
+			wg.Done()
+		}(k)
+		wg.Wait()
+		if test != k {
+			t.Fatal("async test2 fail:", test, k)
+		}
+	}
+}
+
 // TestMapOfSimpleConcurrentReadWrite test 1 goroutine for store and 1 goroutine for load
 func TestMapOfSimpleConcurrentReadWrite(t *testing.T) {
 	const iterations = 1000
@@ -660,124 +779,6 @@ func TestMapOfConcurrentReadWriteStress(t *testing.T) {
 	}
 }
 
-func TestMapOfConcurrentInsert(t *testing.T) {
-	const total = 100_000_000
-
-	m := NewMapOf[int, int](WithPresize(total), WithParallel())
-	numCPU := runtime.GOMAXPROCS(0)
-
-	var wg sync.WaitGroup
-	wg.Add(numCPU)
-
-	start := time.Now()
-
-	batchSize := total / numCPU
-
-	for i := 0; i < numCPU; i++ {
-		go func(workerID int) {
-			defer wg.Done()
-
-			startIdx := workerID * batchSize
-			endIdx := startIdx + batchSize
-			if workerID == numCPU-1 {
-				endIdx = total
-			}
-			for j := startIdx; j < endIdx; j++ {
-				m.Store(j, j)
-			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	elapsed := time.Since(start)
-
-	size := m.Size()
-	if size != total {
-		t.Errorf("Expected size %d, got %d", total, size)
-	}
-
-	t.Logf("Inserted %d items in %v", total, elapsed)
-	t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
-	t.Logf("Throughput: %.2f million ops/sec", float64(total)/(elapsed.Seconds()*1000000))
-
-	// rand check
-	for i := 0; i < 1000; i++ {
-		idx := i * (total / 1000)
-		if val, ok := m.Load(idx); !ok || val != idx {
-			t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val, ok)
-		}
-	}
-}
-
-func TestMapOfMisc(t *testing.T) {
-	//var a *SyncMap[int, int] = NewSyncMap[int, int]()
-	var a, a1, a2, a3, a4 MapOf[int, int]
-
-	t.Log(unsafe.Sizeof(MapOf[string, int]{}))
-
-	t.Log(&a)
-	s, _ := json.Marshal(&a)
-	t.Log(string(s))
-
-	t.Log(a.Size())
-	t.Log(a.IsZero())
-	t.Log(a.Load(1))
-	a.Delete(1)
-	a.Clear()
-	a.Range(func(i int, i2 int) bool {
-		return true
-	})
-	t.Log(a.LoadAndDelete(1))
-	t.Log(a.LoadOrStore(1, 1))
-	a1.Store(1, 1)
-	t.Log(&a)
-	t.Log(a2.Swap(1, 1))
-	t.Log(&a2)
-	t.Log(a2.LoadAndDelete(1))
-	t.Log(&a2)
-
-	err := json.Unmarshal([]byte(`{"1":1}`), &a3)
-	if err != nil {
-		t.Fatal(err)
-		return
-	}
-	s, err = json.Marshal(&a3)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log(string(s))
-
-	t.Log(&a4)
-
-	var idm MapOf[structKey, int]
-	t.Log(idm.LoadOrStore(structKey{1, 1}, 1))
-	t.Log(&idm)
-	t.Log(idm.LoadAndDelete(structKey{1, 1}))
-	t.Log(&idm)
-
-	var test int64
-	for k := int64(0); k <= 100000; k++ {
-		atomic.StoreInt64(&test, k)
-		if test != k {
-			t.Fatal("sync test fail:", test, k)
-		}
-	}
-
-	var wg sync.WaitGroup
-	for k := int64(0); k <= 100000; k++ {
-
-		wg.Add(1)
-		go func(k int64) {
-			atomic.StoreInt64(&test, k)
-			wg.Done()
-		}(k)
-		wg.Wait()
-		if test != k {
-			t.Fatal("async test2 fail:", test, k)
-		}
-	}
-}
 func TestMapOfCalcLen(t *testing.T) {
 	var tableLen, sizeLen, parallelism, lastTableLen, lastSizeLen, lastParallelism int
 	t.Log("runtime.GOMAXPROCS(0),", runtime.GOMAXPROCS(0))

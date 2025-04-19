@@ -258,12 +258,13 @@ func (b *bucketOf) lock() {
 		return
 	}
 
-	for i := 0; runtime_canSpin(i); i++ {
-		runtime_doSpin()
-		if b.tryLock(-1) {
-			return
-		}
-	}
+	// Disabled: runtime_doSpin performs poorly under high contention (CPU-heavy).
+	//for i := 0; runtime_canSpin(i); i++ {
+	//	runtime_doSpin()
+	//	if b.tryLock(-1) {
+	//		return
+	//	}
+	//}
 
 	for {
 		// time.Sleep with non-zero duration (≈Millisecond level) works effectively
@@ -1025,7 +1026,7 @@ func (m *MapOf[K, V]) mockSyncMap(
 					return nil, loaded.Value, true
 				}
 
-				// Skip deduplication here - move to caller side to avoid lock contention
+				// Disabled: Skip deduplication here - move to caller side to avoid lock contention
 				//if enableFastPath {
 				//	if m.valEqual != nil && m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(newValue))) {
 				//		return loaded, loaded.Value, true
@@ -2373,17 +2374,18 @@ func noEscapePtr[T any](p *T) *T {
 	return (*T)(unsafe.Pointer(x ^ 0))
 }
 
-// nolint:all
 //
-//go:linkname runtime_canSpin sync.runtime_canSpin
-//go:nosplit
-func runtime_canSpin(i int) bool
-
-// nolint:all
+//// nolint:all
+////
+////go:linkname runtime_canSpin sync.runtime_canSpin
+////go:nosplit
+//func runtime_canSpin(i int) bool
 //
-//go:linkname runtime_doSpin sync.runtime_doSpin
-//go:nosplit
-func runtime_doSpin()
+//// nolint:all
+////
+////go:linkname runtime_doSpin sync.runtime_doSpin
+////go:nosplit
+//func runtime_doSpin()
 
 //// nolint:all
 ////
