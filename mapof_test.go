@@ -659,6 +659,7 @@ func TestMapOfConcurrentReadWriteStress(t *testing.T) {
 		t.Errorf("Found %d read errors", errorCount)
 	}
 }
+
 func TestMapOfConcurrentInsert(t *testing.T) {
 	const total = 100_000_000
 
@@ -681,7 +682,6 @@ func TestMapOfConcurrentInsert(t *testing.T) {
 			if workerID == numCPU-1 {
 				endIdx = total
 			}
-
 			for j := startIdx; j < endIdx; j++ {
 				m.Store(j, j)
 			}
@@ -709,6 +709,7 @@ func TestMapOfConcurrentInsert(t *testing.T) {
 		}
 	}
 }
+
 func TestMapOfMisc(t *testing.T) {
 	//var a *SyncMap[int, int] = NewSyncMap[int, int]()
 	var a, a1, a2, a3, a4 MapOf[int, int]
@@ -778,15 +779,17 @@ func TestMapOfMisc(t *testing.T) {
 	}
 }
 func TestMapOfCalcLen(t *testing.T) {
-	var tableLen, sizeLen, lastTableLen, lastSizeLen int
+	var tableLen, sizeLen, parallelism, lastTableLen, lastSizeLen, lastParallelism int
 	t.Log("runtime.GOMAXPROCS(0),", runtime.GOMAXPROCS(0))
 	for i := 0; i < 1000000; i++ {
 		tableLen = calcTableLen(i)
 		sizeLen = calcSizeLen(i)
-		if tableLen != lastTableLen || sizeLen != lastSizeLen {
-			t.Log(i, tableLen, sizeLen)
-			lastTableLen, lastSizeLen = tableLen, sizeLen
+		parallelism = calcParallelism(i, minParallelBatchItems, minItemsPerGoroutine)
+		if tableLen != lastTableLen || sizeLen != lastSizeLen || parallelism != lastParallelism {
+			t.Log(i, tableLen, sizeLen, parallelism)
+			lastTableLen, lastSizeLen, lastParallelism = tableLen, sizeLen, parallelism
 		}
+
 	}
 }
 

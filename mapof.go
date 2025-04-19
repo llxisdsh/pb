@@ -1648,6 +1648,7 @@ func calcParallelism(items, threshold, minItemsPerGoroutine int) int {
 	// Use a logarithmic function to smoothly increase the degree of parallelism
 	logFactor := 1 + bits.Len(uint(items)) - bits.Len(uint(threshold))
 	chunks := min(numCPU*logFactor/2, items/minItemsPerGoroutine)
+	chunks = min(chunks, numCPU)
 	return max(1, chunks) // Ensure there is at least 1 chunk
 }
 
