@@ -26,9 +26,11 @@ const (
 		meta uint64
 	}{})))/int(unsafe.Sizeof(unsafe.Pointer(nil))))
 
-	defaultMeta       uint64 = 0x0080808080808080
-	metaMask          uint64 = 0xffffffffffffffff >> (64 - min(entriesPerMapOfBucket*8, 64)) //example: 0x0000ffffffffffff
-	defaultMetaMasked uint64 = defaultMeta & metaMask                                        // example: 0x0000808080808080
+	defaultMeta uint64 = 0x0080808080808080
+	//e.g. 0x0000ffffffffffff
+	metaMask uint64 = 0xffffffffffffffff >> (64 - min(entriesPerMapOfBucket*8, 64))
+	//e.g. 0x0000808080808080
+	defaultMetaMasked uint64 = defaultMeta & metaMask
 	emptyMetaSlot     uint8  = 0x80
 
 	opByteMask uint64 = 0xff00000000000000
@@ -226,9 +228,9 @@ type bucketOf struct {
 		meta    uint64
 	}{})%CacheLineSize) % CacheLineSize]byte
 
-	entries [entriesPerMapOfBucket]unsafe.Pointer // Pointers to *EntryOf instances
-	next    unsafe.Pointer                        // Pointer to the next bucket (*bucketOf) in the chain
-	meta    uint64                                // Metadata for fast entry lookups using SWAR techniques, must be 64-bit aligned
+	entries [entriesPerMapOfBucket]unsafe.Pointer // entries Pointers to *EntryOf instances
+	next    unsafe.Pointer                        // next Pointer to the next bucket (*bucketOf) in the chain
+	meta    uint64                                // meta for fast entry lookups using SWAR, must be 64-bit aligned
 }
 
 func (b *bucketOf) tryLock(tryCount int) bool {
@@ -269,7 +271,7 @@ func (b *bucketOf) lock() {
 	for {
 		// time.Sleep with non-zero duration (≈Millisecond level) works effectively
 		// as backoff under high concurrency.
-		time.Sleep(1)
+		time.Sleep(time.Nanosecond)
 		if b.tryLock(-1) {
 			return
 		}
@@ -1018,7 +1020,8 @@ func (m *MapOf[K, V]) mockSyncMap(
 				if loadOrStore {
 					return loaded, loaded.Value, true
 				}
-				if cmpValue != nil && !m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(cmpValue))) {
+				if cmpValue != nil &&
+					!m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(cmpValue))) {
 					return loaded, loaded.Value, false
 				}
 				if newValue == nil {
@@ -1028,7 +1031,8 @@ func (m *MapOf[K, V]) mockSyncMap(
 
 				// Disabled: Skip deduplication here - move to caller side to avoid lock contention
 				//if enableFastPath {
-				//	if m.valEqual != nil && m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(newValue))) {
+				//	if m.valEqual != nil &&
+				//		m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(newValue))) {
 				//		return loaded, loaded.Value, true
 				//	}
 				//}
@@ -1245,7 +1249,8 @@ func (m *MapOf[K, V]) Compute(
 				newValue, op := valueFn(loaded.Value, true)
 				if op == UpdateOp {
 					if enableFastPath {
-						if m.valEqual != nil && m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(&newValue))) {
+						if m.valEqual != nil &&
+							m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(&newValue))) {
 							return loaded, loaded.Value, true
 						}
 					}
@@ -1658,7 +1663,8 @@ func calcParallelism(items, threshold, minItemsPerGoroutine int) int {
 // Parameters:
 //   - immutableEntries: Slice of immutable key-value pairs to process.
 //   - growFactor: Capacity change coefficient (see batchProcess).
-//   - processFn: Function that receives entry and current value (if exists), returns new value, result value, and status.
+//   - processFn: Function that receives entry and current value (if exists),
+//     returns new value, result value, and status.
 //
 // Returns:
 //   - values []V: Slice of values from processFn.
@@ -1708,7 +1714,8 @@ func (m *MapOf[K, V]) batchProcessImmutableEntries(
 // Parameters:
 //   - entries: slice of key-value pairs to process
 //   - growFactor: capacity change coefficient (see batchProcess)
-//   - processFn: function that receives entry and current value (if exists), returns new value, result value, and status
+//   - processFn: function that receives entry and current value (if exists),
+//     returns new value, result value, and status
 //
 // Returns:
 //   - values []V: slice of values from processFn
@@ -1758,7 +1765,8 @@ func (m *MapOf[K, V]) batchProcessEntries(
 // Parameters:
 //   - keys: slice of keys to process
 //   - growFactor: capacity change coefficient (see batchProcess)
-//   - processFn: function that receives key and current value (if exists), returns new value, result value, and status
+//   - processFn: function that receives key and current value (if exists),
+//     returns new value, result value, and status
 //
 // Returns:
 //   - values []V: slice of values from processFn
