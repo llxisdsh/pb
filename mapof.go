@@ -2370,17 +2370,17 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 	return unsafe.Pointer(x ^ 0)
 }
 
-// noEscapePtr hides a pointer from escape analysis. See noescape.
-// USE CAREFULLY!
-//
-// nolint:all
-//
-//go:nosplit
-//goland:noinspection ALL
-func noEscapePtr[T any](p *T) *T {
-	x := uintptr(unsafe.Pointer(p))
-	return (*T)(unsafe.Pointer(x ^ 0))
-}
+//// noEscapePtr hides a pointer from escape analysis. See noescape.
+//// USE CAREFULLY!
+////
+//// nolint:all
+////
+////go:nosplit
+////goland:noinspection ALL
+//func noEscapePtr[T any](p *T) *T {
+//	x := uintptr(unsafe.Pointer(p))
+//	return (*T)(unsafe.Pointer(x ^ 0))
+//}
 
 //
 //// nolint:all
