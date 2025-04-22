@@ -508,7 +508,6 @@ func (m *MapOf[K, V]) processEntry(
 		bidx := uintptr(len(table.buckets)-1) & h1(hash)
 		rootb := &table.buckets[bidx]
 
-		// slow path
 		rootb.lock()
 
 		// Check if a resize is needed.
@@ -581,28 +580,27 @@ func (m *MapOf[K, V]) processEntry(
 				rootb.unlock()
 				return value, status
 			}
-			if newEntry == nil {
-				// Delete
-				newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
-				storeUint64(&oldBucket.meta, newmetaw)
-				storePointer(&oldBucket.entries[oldIdx], nil)
+			if newEntry != nil {
+				// Update
+				newEntry.Key = *key
+				storePointer(&oldBucket.entries[oldIdx], unsafe.Pointer(newEntry))
 				rootb.unlock()
-				table.addSize(bidx, -1)
-				if clearOp(newmetaw) == emptyMeta {
-					tableLen := len(table.buckets)
-					if !m.growOnly &&
-						m.minTableLen < tableLen &&
-						table.sumSize() <= (tableLen*entriesPerMapOfBucket)/mapShrinkFraction {
-						m.resize(table, mapShrinkHint)
-					}
-				}
 				return value, status
 			}
-
-			// Update
-			newEntry.Key = oldEntry.Key
-			storePointer(&oldBucket.entries[oldIdx], unsafe.Pointer(newEntry))
+			// Delete
+			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
+			storeUint64(&oldBucket.meta, newmetaw)
+			storePointer(&oldBucket.entries[oldIdx], nil)
 			rootb.unlock()
+			table.addSize(bidx, -1)
+			if clearOp(newmetaw) == emptyMeta {
+				tableLen := len(table.buckets)
+				if !m.growOnly &&
+					m.minTableLen < tableLen &&
+					table.sumSize() <= (tableLen*entriesPerMapOfBucket)/mapShrinkFraction {
+					m.resize(table, mapShrinkHint)
+				}
+			}
 			return value, status
 		}
 
@@ -612,10 +610,10 @@ func (m *MapOf[K, V]) processEntry(
 		}
 
 		// Insert
+		newEntry.Key = *key
 
 		// Insert into empty slot
 		if emptyBucket != nil {
-			newEntry.Key = *key
 			storeUint64(&emptyBucket.meta, setByte(emptyBucket.meta, h2v, emptyIdx))
 			storePointer(&emptyBucket.entries[emptyIdx], unsafe.Pointer(newEntry))
 			rootb.unlock()
@@ -623,23 +621,20 @@ func (m *MapOf[K, V]) processEntry(
 			return value, status
 		}
 
-		// Check if expansion is needed
-		growThreshold := int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
-		if table.sumSize() >= growThreshold { // table.sumSize()+1 > growThreshold
-			rootb.unlock()
-			table, _ = m.resize(table, mapGrowHint)
-			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
-			continue
-		}
-
 		// Create new bucket and insert
-		newEntry.Key = *key
 		storePointer(&lastBucket.next, unsafe.Pointer(&bucketOf{
 			meta:    setByte(emptyMeta, h2v, 0),
 			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newEntry)},
 		}))
 		rootb.unlock()
 		table.addSize(bidx, 1)
+
+		// Check if expansion is needed
+		growThreshold := int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
+		if table.sumSize() > growThreshold {
+			m.resize(table, mapGrowHint)
+		}
+
 		return value, status
 	}
 }
