@@ -15,29 +15,24 @@ import (
 )
 
 const (
-	// Reserve the highest byte for extended status flags (OpByte)
-	maxEntriesPerMapOfBucket = 7
+	// opByteIdx reserve the meta highest byte for extended status flags (OpByte)
+	opByteIdx         = 7
+	opByteMask uint64 = 0xff00000000000000
+	// opByteShift          = opByteIdx * 8
+	// The flag bits from the highest to the lowest are [Bucket, Entry 6, Entry 5, ... Entry 0]
+	// opByteBucketBit = 7
+
 	// entriesPerMapOfBucket defines the number of MapOf entries per bucket.
 	// This value is automatically calculated to fit within a cache line,
 	// but will not exceed 8, which is the upper limit supported by the meta field.
-	entriesPerMapOfBucket = min(maxEntriesPerMapOfBucket, (int(CacheLineSize)-int(unsafe.Sizeof(struct {
+	entriesPerMapOfBucket = min(opByteIdx, (int(CacheLineSize)-int(unsafe.Sizeof(struct {
 		// entries [entriesPerMapOfBucket]unsafe.Pointer
 		next unsafe.Pointer
 		meta uint64
 	}{})))/int(unsafe.Sizeof(unsafe.Pointer(nil))))
 
-	defaultMeta uint64 = 0x0080808080808080
-	//e.g. 0x0000ffffffffffff
-	metaMask uint64 = 0xffffffffffffffff >> (64 - min(entriesPerMapOfBucket*8, 64))
-	//e.g. 0x0000808080808080
-	defaultMetaMasked uint64 = defaultMeta & metaMask
-	emptyMetaSlot     uint8  = 0x80
-
-	opByteMask uint64 = 0xff00000000000000
-	opByteIdx         = maxEntriesPerMapOfBucket
-	// opByteShift          = opByteIdx * 8
-	// The flag bits from the highest to the lowest are [Bucket, Entry 6, Entry 5, ... Entry 0]
-	// opByteBucketBit = 7
+	emptyMeta     uint64 = 0x8080808080808080 >> (64 - min(entriesPerMapOfBucket*8, 64))
+	emptyMetaSlot uint8  = 0x80
 )
 
 const (
@@ -299,7 +294,7 @@ type mapOfTable struct {
 func newMapOfTable(tableLen int) *mapOfTable {
 	buckets := make([]bucketOf, tableLen)
 	for i := range buckets {
-		buckets[i].meta = defaultMeta
+		buckets[i].meta = emptyMeta
 	}
 
 	t := &mapOfTable{
@@ -469,7 +464,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	rootb := &table.buckets[bidx]
 	for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
-		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
+		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
 			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
 				if e.Key == key {
@@ -488,7 +483,7 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key *K) *EntryO
 	rootb := &table.buckets[bidx]
 	for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
-		for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
+		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
 			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
 				if e.Key == *key {
@@ -555,14 +550,14 @@ func (m *MapOf[K, V]) processEntry(
 			lastBucket = b
 			metaw := b.meta
 			if emptyBucket == nil {
-				emptyw := metaw & defaultMetaMasked
+				emptyw := metaw & emptyMeta
 				if emptyw != 0 {
 					emptyBucket = b
 					emptyIdx = firstMarkedByteIndex(emptyw)
 				}
 			}
 
-			for markedw := markZeroBytes(metaw^h2w) & metaMask; markedw != 0; markedw &= markedw - 1 {
+			for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 				idx := firstMarkedByteIndex(markedw)
 				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
 					if e.Key == *key {
@@ -593,7 +588,7 @@ func (m *MapOf[K, V]) processEntry(
 				storePointer(&oldBucket.entries[oldIdx], nil)
 				rootb.unlock()
 				table.addSize(bidx, -1)
-				if clearOp(newmetaw) == defaultMeta {
+				if clearOp(newmetaw) == emptyMeta {
 					tableLen := len(table.buckets)
 					if !m.growOnly &&
 						m.minTableLen < tableLen &&
@@ -640,7 +635,7 @@ func (m *MapOf[K, V]) processEntry(
 		// Create new bucket and insert
 		newEntry.Key = *key
 		storePointer(&lastBucket.next, unsafe.Pointer(&bucketOf{
-			meta:    setByte(defaultMeta, h2v, 0),
+			meta:    setByte(emptyMeta, h2v, 0),
 			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newEntry)},
 		}))
 		rootb.unlock()
@@ -809,7 +804,7 @@ func appendToBucketOf[K comparable, V any](
 
 		if next := (*bucketOf)(destb.next); next == nil {
 			destb.next = unsafe.Pointer(&bucketOf{
-				meta:    setByte(defaultMeta, h2, 0),
+				meta:    setByte(emptyMeta, h2, 0),
 				entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(e)},
 			})
 			return
@@ -2184,7 +2179,7 @@ func firstMarkedByteIndex(w uint64) int {
 // It may produce false positives (e.g., for 0x0100), so results should be verified.
 // Returns an uint64 with the most significant bit of each byte set if that byte is zero.
 func markZeroBytes(w uint64) uint64 {
-	return (w - 0x0101010101010101) & (^w) & 0x8080808080808080
+	return (w - 0x0101010101010101) & (^w) & emptyMeta
 }
 
 // setByte sets the byte at index idx in the uint64 w to the value b.
