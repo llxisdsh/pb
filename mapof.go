@@ -255,25 +255,21 @@ func (b *bucketOf) unlock() {
 // lock acquires the lock for the bucket.
 // Replace Mutex with a spinlock to avoid bucket false-sharing overhead.
 // Spinlock state is embedded in the Meta field for cache locality.
+//
+// Partially references:
+// [https://github.com/facebook/folly/blob/main/folly/synchronization/detail/Sleeper.h]
 func (b *bucketOf) lock() {
-	if b.tryLock(-1) {
-		return
-	}
-
-	// Disabled: runtime_doSpin performs poorly under high contention (CPU-heavy).
-	//for i := 0; runtime_canSpin(i); i++ {
-	//	runtime_doSpin()
-	//	if b.tryLock(-1) {
-	//		return
-	//	}
-	//}
-
-	for {
-		// time.Sleep with non-zero duration (≈Millisecond level) works effectively
-		// as backoff under high concurrency.
-		time.Sleep(time.Nanosecond)
-		if b.tryLock(-1) {
-			return
+	const yieldSleep = 500 * time.Microsecond
+	spins := 0
+	for !b.tryLock(-1) {
+		if runtime_canSpin(spins) {
+			runtime_doSpin()
+			spins++
+		} else {
+			// time.Sleep with non-zero duration (≈Millisecond level) works effectively
+			// as backoff under high concurrency.
+			time.Sleep(yieldSleep)
+			spins = 0
 		}
 	}
 }
@@ -2382,18 +2378,17 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 //	return (*T)(unsafe.Pointer(x ^ 0))
 //}
 
+// nolint:all
 //
-//// nolint:all
-////
-////go:linkname runtime_canSpin sync.runtime_canSpin
-////go:nosplit
-//func runtime_canSpin(i int) bool
+//go:linkname runtime_canSpin sync.runtime_canSpin
+//go:nosplit
+func runtime_canSpin(i int) bool
+
+// nolint:all
 //
-//// nolint:all
-////
-////go:linkname runtime_doSpin sync.runtime_doSpin
-////go:nosplit
-//func runtime_doSpin()
+//go:linkname runtime_doSpin sync.runtime_doSpin
+//go:nosplit
+func runtime_doSpin()
 
 //// nolint:all
 ////

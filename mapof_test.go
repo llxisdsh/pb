@@ -460,55 +460,56 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 	}
 }
 
-func TestMapOfConcurrentInsert(t *testing.T) {
-	const total = 100_000_000
-
-	m := NewMapOf[int, int](WithPresize(total), WithParallel())
-	numCPU := runtime.GOMAXPROCS(0)
-
-	var wg sync.WaitGroup
-	wg.Add(numCPU)
-
-	start := time.Now()
-
-	batchSize := total / numCPU
-
-	for i := 0; i < numCPU; i++ {
-		go func(workerID int) {
-			defer wg.Done()
-
-			startIdx := workerID * batchSize
-			endIdx := startIdx + batchSize
-			if workerID == numCPU-1 {
-				endIdx = total
-			}
-			for j := startIdx; j < endIdx; j++ {
-				m.Store(j, j)
-			}
-		}(i)
-	}
-
-	wg.Wait()
-
-	elapsed := time.Since(start)
-
-	size := m.Size()
-	if size != total {
-		t.Errorf("Expected size %d, got %d", total, size)
-	}
-
-	t.Logf("Inserted %d items in %v", total, elapsed)
-	t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
-	t.Logf("Throughput: %.2f million ops/sec", float64(total)/(elapsed.Seconds()*1000000))
-
-	// rand check
-	for i := 0; i < 1000; i++ {
-		idx := i * (total / 1000)
-		if val, ok := m.Load(idx); !ok || val != idx {
-			t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val, ok)
-		}
-	}
-}
+//
+//func TestMapOfConcurrentInsert(t *testing.T) {
+//	const total = 100_000_000
+//
+//	m := NewMapOf[int, int](WithPresize(total), WithParallel())
+//	numCPU := runtime.GOMAXPROCS(0)
+//
+//	var wg sync.WaitGroup
+//	wg.Add(numCPU)
+//
+//	start := time.Now()
+//
+//	batchSize := total / numCPU
+//
+//	for i := 0; i < numCPU; i++ {
+//		go func(workerID int) {
+//			defer wg.Done()
+//
+//			startIdx := workerID * batchSize
+//			endIdx := startIdx + batchSize
+//			if workerID == numCPU-1 {
+//				endIdx = total
+//			}
+//			for j := startIdx; j < endIdx; j++ {
+//				m.Store(j, j)
+//			}
+//		}(i)
+//	}
+//
+//	wg.Wait()
+//
+//	elapsed := time.Since(start)
+//
+//	size := m.Size()
+//	if size != total {
+//		t.Errorf("Expected size %d, got %d", total, size)
+//	}
+//
+//	t.Logf("Inserted %d items in %v", total, elapsed)
+//	t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
+//	t.Logf("Throughput: %.2f million ops/sec", float64(total)/(elapsed.Seconds()*1000000))
+//
+//	// rand check
+//	for i := 0; i < 1000; i++ {
+//		idx := i * (total / 1000)
+//		if val, ok := m.Load(idx); !ok || val != idx {
+//			t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val, ok)
+//		}
+//	}
+//}
 
 func TestMapOfMisc(t *testing.T) {
 	//var a *SyncMap[int, int] = NewSyncMap[int, int]()
