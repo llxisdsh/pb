@@ -573,6 +573,7 @@ func (m *MapOf[K, V]) processEntry(
 			}
 		}
 
+		// --- Processing Logic ---
 		newEntry, value, status := fn(oldEntry)
 
 		if oldEntry != nil {
@@ -621,7 +622,7 @@ func (m *MapOf[K, V]) processEntry(
 			return value, status
 		}
 
-		// Create new bucket and insert
+		// No empty slot, create new bucket and insert
 		storePointer(&lastBucket.next, unsafe.Pointer(&bucketOf{
 			meta:    setByte(emptyMeta, h2v, 0),
 			entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(newEntry)},
