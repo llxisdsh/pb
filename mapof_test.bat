@@ -14,7 +14,7 @@ if %ERRORLEVEL% neq 0 (
 )
 
 :loop
-echo Running go test...
+echo %TIME% Running test...
 
 "%OUTPUT%"
 if %ERRORLEVEL% neq 0 (
@@ -23,5 +23,5 @@ if %ERRORLEVEL% neq 0 (
     exit /b %ERRORLEVEL%
 )
 
-echo Test completed successfully. Looping...
+::echo Test completed successfully. Looping...
 goto loop

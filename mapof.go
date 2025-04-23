@@ -228,25 +228,6 @@ type bucketOf struct {
 	meta    uint64                                // meta for fast entry lookups using SWAR, must be 64-bit aligned
 }
 
-func (b *bucketOf) tryLock() bool {
-	//return casOp(&b.meta, opByteBucketBit, false, true, tryCount)
-	return casByte(&b.meta, opByteIdx, 0, 1)
-}
-
-func (b *bucketOf) unlock() {
-	//casOp(&b.meta, opByteBucketBit, true, false, -1)
-	casByte(&b.meta, opByteIdx, 1, 0)
-}
-
-//
-//func (b *bucketOf) tryLockIdx(idx, tryCount int) bool {
-//	return casOp(&b.meta, idx, false, true, tryCount)
-//}
-//
-//func (b *bucketOf) unlockIdx(idx int) {
-//	casOp(&b.meta, idx, true, false, -1)
-//}
-
 // lock acquires the lock for the bucket.
 // Replace Mutex with a spinlock to avoid bucket false-sharing overhead.
 // Spinlock state is embedded in the Meta field for cache locality.
@@ -275,6 +256,25 @@ func (b *bucketOf) lock() {
 		}
 	}
 }
+
+func (b *bucketOf) tryLock() bool {
+	//return casOp(&b.meta, opByteBucketBit, false, true, tryCount)
+	return casByte(&b.meta, opByteIdx, 0, 1)
+}
+
+func (b *bucketOf) unlock() {
+	//casOp(&b.meta, opByteBucketBit, true, false, -1)
+	casByte(&b.meta, opByteIdx, 1, 0)
+}
+
+//
+//func (b *bucketOf) tryLockIdx(idx, tryCount int) bool {
+//	return casOp(&b.meta, idx, false, true, tryCount)
+//}
+//
+//func (b *bucketOf) unlockIdx(idx int) {
+//	casOp(&b.meta, idx, true, false, -1)
+//}
 
 // mapOfTable represents the internal hash table structure.
 type mapOfTable struct {
@@ -517,7 +517,6 @@ func (m *MapOf[K, V]) processEntry(
 
 		rootb.lock()
 
-		// Check if a resize is needed.
 		// This is the first check, checking if there is a resize operation in progress
 		// before acquiring the bucket lock
 		if wg := (*sync.WaitGroup)(loadPointer(&m.resizeWg)); wg != nil {
@@ -529,7 +528,6 @@ func (m *MapOf[K, V]) processEntry(
 			continue
 		}
 
-		// Check if the table has changed.
 		// This is the second check, checking if the table has been replaced by another
 		// goroutine after acquiring the bucket lock
 		// This is necessary because another goroutine may have completed a resize operation
@@ -963,11 +961,15 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 		if e == nil {
 			return false
 		}
-		// deduplicates identical values
-		if m.valEqual != nil &&
-			m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&old))) &&
-			m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&new))) {
-			return true
+
+		if m.valEqual != nil {
+			if !m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&old))) {
+				return false
+			}
+			// deduplicates identical values
+			if m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&new))) {
+				return true
+			}
 		}
 	}
 
@@ -991,6 +993,11 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 		e := m.findEntry(table, hash, &key)
 		if e == nil {
 			return false
+		}
+		if m.valEqual != nil {
+			if !m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&old))) {
+				return false
+			}
 		}
 	}
 
@@ -1113,7 +1120,8 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 		// deduplicates identical values
 		if m.valEqual != nil {
 			e := m.findEntry(table, hash, &key)
-			if e != nil && m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&value))) {
+			if e != nil &&
+				m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&value))) {
 				return e.Value, true
 			}
 		}
@@ -1379,8 +1387,7 @@ func (m *MapOf[K, V]) Clear() {
 //   - Never modify the Key or Value in an Entry under any circumstances.
 //   - Range operates on the current table snapshot, which may not reflect the most up-to-date state.
 //     Similar to `sync.Map`, this provides eventual consistency for reads.
-//     at a slight performance cost. See its description for details.
-//     By default, lock-free iteration is used for maximum performance.
+//     at a slight performance cost.
 func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	table := (*mapOfTable)(loadPointer(&m.table))
 	if table == nil {
