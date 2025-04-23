@@ -228,14 +228,14 @@ type bucketOf struct {
 	meta    uint64                                // meta for fast entry lookups using SWAR, must be 64-bit aligned
 }
 
-func (b *bucketOf) tryLock(tryCount int) bool {
+func (b *bucketOf) tryLock() bool {
 	//return casOp(&b.meta, opByteBucketBit, false, true, tryCount)
-	return casByte(&b.meta, opByteIdx, 0, 1, tryCount)
+	return casByte(&b.meta, opByteIdx, 0, 1)
 }
 
 func (b *bucketOf) unlock() {
 	//casOp(&b.meta, opByteBucketBit, true, false, -1)
-	casByte(&b.meta, opByteIdx, 1, 0, -1)
+	casByte(&b.meta, opByteIdx, 1, 0)
 }
 
 //
@@ -254,9 +254,13 @@ func (b *bucketOf) unlock() {
 // Partially references:
 // [https://github.com/facebook/folly/blob/main/folly/synchronization/detail/Sleeper.h]
 func (b *bucketOf) lock() {
+	if b.tryLock() {
+		return
+	}
+
 	const yieldSleep = 500 * time.Microsecond
 	spins := 0
-	for !b.tryLock(-1) {
+	for {
 		if runtime_canSpin(spins) {
 			runtime_doSpin()
 			spins++
@@ -265,6 +269,9 @@ func (b *bucketOf) lock() {
 			// as backoff under high concurrency.
 			time.Sleep(yieldSleep)
 			spins = 0
+		}
+		if b.tryLock() {
+			return
 		}
 	}
 }
@@ -534,20 +541,20 @@ func (m *MapOf[K, V]) processEntry(
 			continue
 		}
 
-		// Find exist entry
-		var oldEntry *EntryOf[K, V]
-		var oldBucket *bucketOf
-		var oldIdx int
-		var oldMeta uint64
-		// Find an empty slot in advance
-		var emptyBucket *bucketOf
-		var emptyIdx int
-		// If no empty slot is found, use the last slot
-		var lastBucket *bucketOf
+		var (
+			oldEntry    *EntryOf[K, V]
+			oldBucket   *bucketOf
+			oldIdx      int
+			oldMeta     uint64
+			emptyBucket *bucketOf
+			emptyIdx    int
+			lastBucket  *bucketOf
+		)
 
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			lastBucket = b
 			metaw := b.meta
+
 			if emptyBucket == nil {
 				emptyw := metaw & emptyMeta
 				if emptyw != 0 {
@@ -612,8 +619,6 @@ func (m *MapOf[K, V]) processEntry(
 
 		// Insert
 		newEntry.Key = *key
-
-		// Insert into empty slot
 		if emptyBucket != nil {
 			storeUint64(&emptyBucket.meta, setByte(emptyBucket.meta, h2v, emptyIdx))
 			storePointer(&emptyBucket.entries[emptyIdx], unsafe.Pointer(newEntry))
@@ -632,7 +637,7 @@ func (m *MapOf[K, V]) processEntry(
 
 		// Check if expansion is needed
 		growThreshold := int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
-		if table.sumSize() > growThreshold {
+		if table.sumSize() >= growThreshold {
 			m.resize(table, mapGrowHint)
 		}
 
@@ -2271,26 +2276,23 @@ func casPointer(addr *unsafe.Pointer, oldPtr, newPtr unsafe.Pointer) bool {
 // casByte atomically updates the byte at idx in addr from oldByte to newByte,
 // retrying up to tryCount times, -1 indicates infinite retries.
 // It returns true if successful, false otherwise.
-func casByte(addr *uint64, idx int, oldByte, newByte uint8, tryCount int) bool {
-
+func casByte(addr *uint64, idx int, old, new uint8 /*, tryCount int*/) bool {
 	shift := idx << 3
-	mask := uint64(0xff) << shift
-	clearMask := ^mask
-	newByteMask := uint64(newByte) << shift
-
-	for tryCount != 0 {
-		oldVal := atomic.LoadUint64(addr)
-		if uint8((oldVal>>shift)&0xff) != oldByte {
+	clearMask := ^(uint64(0xff) << shift)
+	newVal := uint64(new) << shift
+	for /*tryCount != 0*/ {
+		cur := atomic.LoadUint64(addr)
+		if uint8((cur>>shift)&0xff) != old {
 			return false
 		}
 
-		newVal := (oldVal & clearMask) | newByteMask
-		if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
+		nv := (cur & clearMask) | newVal
+		if atomic.CompareAndSwapUint64(addr, cur, nv) {
 			return true
 		}
-		tryCount--
+		/*tryCount--*/
 	}
-	return false
+	/*return false*/
 }
 
 //func getByte(w uint64, idx int) uint8 {
