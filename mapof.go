@@ -16,11 +16,10 @@ import (
 
 const (
 	// opByteIdx reserve the meta highest byte for extended status flags (OpByte)
-	opByteIdx         = 7
-	opByteMask uint64 = 0xff00000000000000
-	// opByteShift          = opByteIdx * 8
-	// The flag bits from the highest to the lowest are [Bucket, Entry 6, Entry 5, ... Entry 0]
-	// opByteBucketBit = 7
+	opByteIdx          = 7
+	opByteMask  uint64 = 0xff00000000000000
+	opByteShift        = opByteIdx * 8
+	opLockBit          = 7
 
 	// entriesPerMapOfBucket defines the number of MapOf entries per bucket.
 	// This value is automatically calculated to fit within a cache line,
@@ -48,16 +47,10 @@ const (
 	defaultMinMapTableLen = 32
 	// minParallelResizeThreshold defines the minimum table size required to trigger parallel resizing.
 	// Tables smaller than this threshold will use single-threaded resizing for better efficiency.
-	minParallelResizeThreshold = 1024
-	// minBucketsPerGoroutine defines the minimum number of buckets each goroutine handles
-	// during parallel resizing operations to ensure efficient workload distribution.
-	minBucketsPerGoroutine = 32
+	minParallelResizeThreshold = 64
 	// minParallelBatchItems defines the minimum number of items required for parallel batch processing.
 	// Below this threshold, serial processing is used to avoid the overhead of goroutine creation.
 	minParallelBatchItems = 256
-	// minItemsPerGoroutine defines the minimum number of items each goroutine processes
-	// during batch operations, used to control the degree of parallelism.
-	minItemsPerGoroutine = 32
 )
 
 const (
@@ -126,7 +119,6 @@ type MapOf[K comparable, V any] struct {
 		valEqual     equalFunc
 		minTableLen  int
 		growOnly     bool
-		withParallel bool
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	table        unsafe.Pointer // *mapOfTable
@@ -137,7 +129,6 @@ type MapOf[K comparable, V any] struct {
 	valEqual     equalFunc
 	minTableLen  int  // WithPresize
 	growOnly     bool // WithGrowOnly
-	withParallel bool // WithParallel
 }
 
 // NewMapOf creates a new MapOf instance. Direct initialization is also supported.
@@ -145,7 +136,6 @@ type MapOf[K comparable, V any] struct {
 // Parameters:
 //   - WithPresize option for initial capacity
 //   - WithGrowOnly option to disable shrinking
-//   - WithParallel enables automatic parallel execution of the resize and batch functions.
 func NewMapOf[K comparable, V any](
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
@@ -161,7 +151,6 @@ func NewMapOf[K comparable, V any](
 //     using the Compare series of functions will cause a panic
 //   - WithPresize option for initial capacity
 //   - WithGrowOnly option to disable shrinking
-//   - WithParallel enables automatic parallel execution of the resize and batch functions.
 func NewMapOfWithHasher[K comparable, V any](
 	keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
@@ -174,9 +163,8 @@ func NewMapOfWithHasher[K comparable, V any](
 
 // MapConfig defines configurable MapOf options.
 type MapConfig struct {
-	sizeHint     int
-	growOnly     bool
-	withParallel bool
+	sizeHint int
+	growOnly bool
 }
 
 // WithPresize configures new MapOf instance with capacity enough
@@ -202,9 +190,9 @@ func WithGrowOnly() func(*MapConfig) {
 }
 
 // WithParallel enables automatic parallel execution of the resize and batch functions.
+// Deprecated: Auto-activated
 func WithParallel() func(*MapConfig) {
 	return func(c *MapConfig) {
-		c.withParallel = true
 	}
 }
 
@@ -239,10 +227,12 @@ func (b *bucketOf) lock() {
 		return
 	}
 
+	const enableSpin = false // Disabled: PAUSE saves power but degrades total throughput
 	const yieldSleep = 500 * time.Microsecond
 	spins := 0
 	for {
-		if runtime_canSpin(spins) {
+		if //goland:noinspection ALL
+		enableSpin && runtime_canSpin(spins) {
 			runtime_doSpin()
 			spins++
 		} else {
@@ -258,23 +248,12 @@ func (b *bucketOf) lock() {
 }
 
 func (b *bucketOf) tryLock() bool {
-	//return casOp(&b.meta, opByteBucketBit, false, true, tryCount)
-	return casByte(&b.meta, opByteIdx, 0, 1)
+	return casOp(&b.meta, opLockBit, false, true)
 }
 
 func (b *bucketOf) unlock() {
-	//casOp(&b.meta, opByteBucketBit, true, false, -1)
-	casByte(&b.meta, opByteIdx, 1, 0)
+	storeOp(&b.meta, opLockBit, false)
 }
-
-//
-//func (b *bucketOf) tryLockIdx(idx, tryCount int) bool {
-//	return casOp(&b.meta, idx, false, true, tryCount)
-//}
-//
-//func (b *bucketOf) unlockIdx(idx int) {
-//	casOp(&b.meta, idx, true, false, -1)
-//}
 
 // mapOfTable represents the internal hash table structure.
 type mapOfTable struct {
@@ -369,7 +348,6 @@ func (table *mapOfTable) isZero() bool {
 //     using the Compare series of functions will cause a panic
 //   - WithPresize option for initial capacity
 //   - WithGrowOnly option to disable shrinking
-//   - WithParallel enables automatic parallel execution of the resize and batch functions.
 //
 // Notes:
 //   - This function is not thread-safe and can only be used before the MapOf is utilized.
@@ -405,7 +383,6 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 
 	m.minTableLen = calcTableLen(c.sizeHint)
 	m.growOnly = c.growOnly
-	m.withParallel = c.withParallel
 
 	table := newMapOfTable(m.minTableLen)
 	m.table = unsafe.Pointer(table)
@@ -599,6 +576,8 @@ func (m *MapOf[K, V]) processEntry(
 			storePointer(&oldBucket.entries[oldIdx], nil)
 			rootb.unlock()
 			table.addSize(bidx, -1)
+
+			// Check if table shrinking is needed
 			if clearOp(newmetaw) == emptyMeta {
 				tableLen := len(table.buckets)
 				if !m.growOnly &&
@@ -633,7 +612,7 @@ func (m *MapOf[K, V]) processEntry(
 		rootb.unlock()
 		table.addSize(bidx, 1)
 
-		// Check if expansion is needed
+		// Check if the table needs to grow
 		growThreshold := int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
 		if table.sumSize() >= growThreshold {
 			m.resize(table, mapGrowHint)
@@ -719,10 +698,7 @@ func (m *MapOf[K, V]) resize(
 	newTable := newMapOfTable(newTableLen)
 	if hint != mapClearHint {
 		// Calculate the parallel count
-		chunks := 1
-		if m.withParallel {
-			chunks = calcParallelism(tableLen, minParallelResizeThreshold, minBucketsPerGoroutine)
-		}
+		chunks := calcParallelism(tableLen, minParallelResizeThreshold)
 		if chunks > 1 {
 			var copyWg sync.WaitGroup
 			// Simply evenly distributed
@@ -753,6 +729,28 @@ func (m *MapOf[K, V]) resize(
 	storePointer(&m.resizeWg, nil)
 	wg.Done()
 	return newTable, true
+}
+
+// calcParallelism calculates the number of goroutines for parallel processing.
+//
+// Parameters:
+//   - items: Number of items to process.
+//   - threshold: Minimum threshold to enable parallel processing.
+//
+// Returns:
+//   - Suggested degree of parallelism (number of goroutines).
+func calcParallelism(items, threshold int) int {
+	// If the items is too small, use single-threaded processing.
+	if items < threshold {
+		return 1
+	}
+
+	// If there is only one processor, use single-threaded processing.
+	numCPU := runtime.GOMAXPROCS(0)
+	if numCPU <= 1 {
+		return 1
+	}
+	return max(min(items/threshold, numCPU), 1)
 }
 
 func copyBucketOf[K comparable, V any](
@@ -1563,13 +1561,12 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 //     >0: Estimates new items as itemCount * growFactor.
 //     <=0: No estimation for new items.
 //   - processor: The function to process each item.
-//   - withParallel: True is automatic determination based on workload.
 func (m *MapOf[K, V]) batchProcess(
 	table *mapOfTable,
 	itemCount int,
 	growFactor float64,
 	processor func(table *mapOfTable, start, end int),
-	withParallel bool,
+	canParallel bool,
 ) {
 	if table == nil {
 		table = m.initSlow()
@@ -1599,9 +1596,10 @@ func (m *MapOf[K, V]) batchProcess(
 
 	// Calculate the parallel count
 	chunks := 1
-	if withParallel && m.withParallel {
-		chunks = calcParallelism(itemCount, minParallelBatchItems, minItemsPerGoroutine)
+	if canParallel {
+		chunks = calcParallelism(itemCount, minParallelBatchItems)
 	}
+
 	if chunks > 1 {
 		// Calculate data volume for each goroutine
 		chunkSize := (itemCount + chunks - 1) / chunks
@@ -1627,34 +1625,6 @@ func (m *MapOf[K, V]) batchProcess(
 
 	// Serial processing
 	processor(table, 0, itemCount)
-}
-
-// calcParallelism calculates the number of goroutines for parallel processing.
-//
-// Parameters:
-//   - items: Number of items to process.
-//   - threshold: Minimum threshold to enable parallel processing.
-//   - minItemsPerGoroutine: Minimum number of items each goroutine should process.
-//
-// Returns:
-//   - Suggested degree of parallelism (number of goroutines).
-func calcParallelism(items, threshold, minItemsPerGoroutine int) int {
-	// If the items is too small, use single-threaded processing.
-	if items < threshold {
-		return 1
-	}
-
-	// If there is only one processor, use single-threaded processing.
-	numCPU := runtime.GOMAXPROCS(0)
-	if numCPU <= 1 {
-		return 1
-	}
-
-	// Use a logarithmic function to smoothly increase the degree of parallelism
-	logFactor := 1 + bits.Len(uint(items)) - bits.Len(uint(threshold))
-	chunks := min(numCPU*logFactor/2, items/minItemsPerGoroutine)
-	chunks = min(chunks, numCPU)
-	return max(1, chunks) // Ensure there is at least 1 chunk
 }
 
 // BatchProcessImmutableEntries batch processes multiple immutable key-value pairs with a custom function.
@@ -2018,11 +1988,10 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 
 	// Create a new MapOf with the same configuration as the original
 	clone := &MapOf[K, V]{
-		keyHash:      m.keyHash,
-		valEqual:     m.valEqual,
-		minTableLen:  m.minTableLen,
-		growOnly:     m.growOnly,
-		withParallel: m.withParallel,
+		keyHash:     m.keyHash,
+		valEqual:    m.valEqual,
+		minTableLen: m.minTableLen,
+		growOnly:    m.growOnly,
 	}
 
 	// Pre-fetch size to optimize initial capacity
@@ -2280,72 +2249,75 @@ func casPointer(addr *unsafe.Pointer, oldPtr, newPtr unsafe.Pointer) bool {
 	return atomic.CompareAndSwapPointer(addr, oldPtr, newPtr)
 }
 
-// casByte atomically updates the byte at idx in addr from oldByte to newByte,
-// retrying up to tryCount times, -1 indicates infinite retries.
-// It returns true if successful, false otherwise.
-func casByte(addr *uint64, idx int, old, new uint8 /*, tryCount int*/) bool {
-	shift := idx << 3
-	clearMask := ^(uint64(0xff) << shift)
-	newVal := uint64(new) << shift
-	for /*tryCount != 0*/ {
+//func casByte(addr *uint64, idx int, old, new uint8 /*, tryCount int*/) bool {
+//	shift := idx << 3
+//	clearMask := ^(uint64(0xff) << shift)
+//	newVal := uint64(new) << shift
+//	for /*tryCount != 0*/ {
+//		cur := atomic.LoadUint64(addr)
+//		if uint8((cur>>shift)&0xff) != old {
+//			return false
+//		}
+//
+//		nv := (cur & clearMask) | newVal
+//		if atomic.CompareAndSwapUint64(addr, cur, nv) {
+//			return true
+//		}
+//		/*tryCount--*/
+//	}
+//	/*return false*/
+//}
+//	func getByte(w uint64, idx int) uint8 {
+//		shift := idx << 3
+//		return uint8((w >> shift) & 0xff)
+//	}
+//
+//	func storeByte(addr *uint64, idx int, newByte uint8) {
+//		shift := idx << 3
+//		mask := uint64(0xff) << shift
+//
+//		for {
+//			oldVal := atomic.LoadUint64(addr)
+//			newVal := (oldVal &^ mask) | (uint64(newByte) << shift)
+//			if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
+//				return
+//			}
+//		}
+//	}
+
+func setOp(meta uint64, idx int, value bool) uint64 {
+	if value {
+		return meta | 1<<(idx+opByteShift)
+	} else {
+		return meta & (^(1 << (idx + opByteShift)))
+	}
+}
+
+func getOp(meta uint64, idx int) bool {
+	return (meta>>opByteShift)&(1<<idx) != 0
+}
+
+func casOp(addr *uint64, idx int, old, new bool) bool {
+	for {
 		cur := atomic.LoadUint64(addr)
-		if uint8((cur>>shift)&0xff) != old {
+		op := getOp(cur, idx)
+		if op != old {
 			return false
 		}
-
-		nv := (cur & clearMask) | newVal
+		nv := setOp(cur, idx, new)
 		if atomic.CompareAndSwapUint64(addr, cur, nv) {
 			return true
 		}
-		/*tryCount--*/
 	}
-	/*return false*/
 }
 
-//func getByte(w uint64, idx int) uint8 {
-//	shift := idx << 3
-//	return uint8((w >> shift) & 0xff)
-//}
-//
-//func storeByte(addr *uint64, idx int, newByte uint8) {
-//	shift := idx << 3
-//	mask := uint64(0xff) << shift
-//
-//	for {
-//		oldVal := atomic.LoadUint64(addr)
-//		newVal := (oldVal &^ mask) | (uint64(newByte) << shift)
-//		if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
-//			return
-//		}
-//	}
-//}
-//
-//func setOp(meta uint64, idx int, value bool) uint64 {
-//	if value {
-//		return meta | 1<<(idx+opByteShift)
-//	} else {
-//		return meta & (^(1 << (idx + opByteShift)))
-//	}
-//}
-//
-//func getOp(meta uint64, idx int) bool {
-//	return (meta>>opByteShift)&(1<<idx) != 0
-//}
-//
-//func casOp(addr *uint64, idx int, oldValue, newValue bool, tryCount int) bool {
-//	for tryCount != 0{
-//		oldMeta := atomic.LoadUint64(addr)
-//		currentStatus := getOp(oldMeta, idx)
-//		if currentStatus != oldValue {
-//			return false
-//		}
-//		newMeta := setOp(oldMeta, idx, newValue)
-//		if atomic.CompareAndSwapUint64(addr, oldMeta, newMeta) {
-//			return true
-//		}
-//		tryCount--
-//	}
-//}
+func storeOp(addr *uint64, idx int, value bool) {
+	if value {
+		atomic.OrUint64(addr, 1<<(idx+opByteShift))
+	} else {
+		atomic.AndUint64(addr, ^(1 << (idx + opByteShift)))
+	}
+}
 
 func clearOp(meta uint64) uint64 {
 	return meta & (^opByteMask)

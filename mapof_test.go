@@ -786,7 +786,7 @@ func TestMapOfCalcLen(t *testing.T) {
 	for i := 0; i < 1000000; i++ {
 		tableLen = calcTableLen(i)
 		sizeLen = calcSizeLen(i)
-		parallelism = calcParallelism(i, minParallelBatchItems, minItemsPerGoroutine)
+		parallelism = calcParallelism(i, minParallelResizeThreshold)
 		if tableLen != lastTableLen || sizeLen != lastSizeLen || parallelism != lastParallelism {
 			t.Log(i, tableLen, sizeLen, parallelism)
 			lastTableLen, lastSizeLen, lastParallelism = tableLen, sizeLen, parallelism
