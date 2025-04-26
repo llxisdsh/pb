@@ -115,6 +115,7 @@ type MapOf[K comparable, V any] struct {
 		resizeWg     unsafe.Pointer
 		totalGrowths uint32
 		totalShrinks uint32
+		seed         uintptr
 		keyHash      hashFunc
 		valEqual     equalFunc
 		minTableLen  int
@@ -125,6 +126,7 @@ type MapOf[K comparable, V any] struct {
 	resizeWg     unsafe.Pointer // *sync.WaitGroup
 	totalGrowths uint32
 	totalShrinks uint32
+	seed         uintptr
 	keyHash      hashFunc
 	valEqual     equalFunc
 	minTableLen  int  // WithPresize
@@ -261,7 +263,6 @@ type mapOfTable struct {
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
 		buckets []bucketOf
 		size    []counterStripe
-		seed    uintptr
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	buckets []bucketOf
@@ -270,11 +271,6 @@ type mapOfTable struct {
 	// occupies min(buckets_memory/1024, 64KB) of memory
 	// when the compile option `mapof_opt_enablepadding` is enabled
 	size []counterStripe
-	// A new seed forces rehashing on each resize to prevent collision attacks.
-	// Using a fixed seed avoids rehashing but requires storing hash values,
-	// which adds a cache miss during resize. This overhead often exceeds rehashing cost.
-	// Trade-off: Regenerate seed on every resize.
-	seed uintptr
 }
 
 func newMapOfTable(tableLen int) *mapOfTable {
@@ -286,7 +282,6 @@ func newMapOfTable(tableLen int) *mapOfTable {
 	t := &mapOfTable{
 		buckets: buckets,
 		size:    make([]counterStripe, calcSizeLen(tableLen)),
-		seed:    uintptr(rand.Uint64()),
 	}
 	return t
 }
@@ -369,6 +364,7 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 	for _, o := range options {
 		o(c)
 	}
+	m.seed = uintptr(rand.Uint64())
 	m.keyHash, m.valEqual = defaultHasherUsingBuiltIn[K, V]()
 	if keyHash != nil {
 		m.keyHash = func(pointer unsafe.Pointer, u uintptr) uintptr {
@@ -441,7 +437,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	}
 
 	// inline findEntry
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h2val := h2(hash)
 	h2w := broadcast(h2val)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash)
@@ -501,7 +497,7 @@ func (m *MapOf[K, V]) processEntry(
 			// Wait for the current resize operation to complete
 			wg.Wait()
 			table = (*mapOfTable)(loadPointer(&m.table))
-			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
+			hash = m.keyHash(noescape(unsafe.Pointer(key)), m.seed)
 			continue
 		}
 
@@ -512,7 +508,7 @@ func (m *MapOf[K, V]) processEntry(
 		if newTable := (*mapOfTable)(loadPointer(&m.table)); table != newTable {
 			rootb.unlock()
 			table = newTable
-			hash = m.keyHash(noescape(unsafe.Pointer(key)), table.seed)
+			hash = m.keyHash(noescape(unsafe.Pointer(key)), m.seed)
 			continue
 		}
 
@@ -708,7 +704,9 @@ func (m *MapOf[K, V]) resize(
 				copyWg.Add(1)
 				go func(start, end int) {
 					for i := start; i < end && i < tableLen; i++ {
-						copied := copyBucketOfParallel[K, V](&table.buckets[i], newTable, m.keyHash)
+						copied := copyBucketOfParallel[K, V](
+							&table.buckets[i], newTable,
+							m.keyHash, m.seed)
 						if copied > 0 {
 							newTable.addSize(uintptr(i), copied)
 						}
@@ -720,7 +718,9 @@ func (m *MapOf[K, V]) resize(
 		} else {
 			// Serial processing
 			for i := 0; i < tableLen; i++ {
-				copied := copyBucketOf[K, V](&table.buckets[i], newTable, m.keyHash)
+				copied := copyBucketOf[K, V](
+					&table.buckets[i], newTable,
+					m.keyHash, m.seed)
 				newTable.addSizePlain(uintptr(i), copied)
 			}
 		}
@@ -757,6 +757,7 @@ func copyBucketOf[K comparable, V any](
 	srcBucket *bucketOf,
 	destTable *mapOfTable,
 	hasher hashFunc,
+	seed uintptr,
 ) (copied int) {
 	srcBucket.lock()
 	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
@@ -766,7 +767,7 @@ func copyBucketOf[K comparable, V any](
 				// recalculating it here, which would speed up the resize process.
 				// However, for simple integer keys, this approach would actually slow down
 				// the load operation. Therefore, recalculating the hash value is the better approach.
-				hash := hasher(noescape(unsafe.Pointer(&e.Key)), destTable.seed)
+				hash := hasher(noescape(unsafe.Pointer(&e.Key)), seed)
 				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
 				destb := &destTable.buckets[bidx]
 				appendToBucketOf(e, destb, h2(hash))
@@ -816,12 +817,13 @@ func copyBucketOfParallel[K comparable, V any](
 	srcBucket *bucketOf,
 	destTable *mapOfTable,
 	hasher hashFunc,
+	seed uintptr,
 ) (copied int) {
 	srcBucket.lock()
 	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 		for i := 0; i < entriesPerMapOfBucket; i++ {
 			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
-				hash := hasher(noescape(unsafe.Pointer(&e.Key)), destTable.seed)
+				hash := hasher(noescape(unsafe.Pointer(&e.Key)), seed)
 				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
 				destb := &destTable.buckets[bidx]
 				// Locking the buckets of the target table is necessary during parallel copying,
@@ -844,7 +846,7 @@ func (m *MapOf[K, V]) Store(key K, value V) {
 	if table == nil {
 		table = m.initSlow()
 	}
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
 		// deduplicates identical values
@@ -867,7 +869,7 @@ func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 	if table == nil {
 		table = m.initSlow()
 	}
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
 		// deduplicates identical values
@@ -890,10 +892,10 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	table := (*mapOfTable)(loadPointer(&m.table))
 	if table == nil {
 		table = m.initSlow()
-		hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 		return m.mockSyncMap(table, hash, &key, nil, &value, true)
 	}
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
 		e := m.findEntry(table, hash, &key)
@@ -911,7 +913,7 @@ func (m *MapOf[K, V]) Delete(key K) {
 	if table == nil {
 		return
 	}
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
 		e := m.findEntry(table, hash, &key)
@@ -930,7 +932,7 @@ func (m *MapOf[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 	if table == nil {
 		return *new(V), false
 	}
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
 		e := m.findEntry(table, hash, &key)
@@ -952,7 +954,7 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 	if m.valEqual == nil {
 		panic("called CompareAndSwap when value is not of comparable type")
 	}
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
 		e := m.findEntry(table, hash, &key)
@@ -985,7 +987,7 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 	if m.valEqual == nil {
 		panic("called CompareAndDelete when value is not of comparable type")
 	}
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
 		e := m.findEntry(table, hash, &key)
@@ -1069,7 +1071,7 @@ func (m *MapOf[K, V]) LoadOrStoreFn(
 	table := (*mapOfTable)(loadPointer(&m.table))
 	if table == nil {
 		table = m.initSlow()
-		hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 		return m.processEntry(table, hash, &key,
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				if loaded != nil {
@@ -1081,7 +1083,7 @@ func (m *MapOf[K, V]) LoadOrStoreFn(
 		)
 	}
 
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
 		if e := m.findEntry(table, hash, &key); e != nil {
@@ -1112,7 +1114,7 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 	if table == nil {
 		table = m.initSlow()
 	}
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
 		// deduplicates identical values
@@ -1156,7 +1158,7 @@ func (m *MapOf[K, V]) LoadOrCompute(
 	table := (*mapOfTable)(loadPointer(&m.table))
 	if table == nil {
 		table = m.initSlow()
-		hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 		return m.processEntry(table, hash, &key,
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				if loaded != nil {
@@ -1171,7 +1173,7 @@ func (m *MapOf[K, V]) LoadOrCompute(
 		)
 	}
 
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
 		if e := m.findEntry(table, hash, &key); e != nil {
@@ -1240,7 +1242,7 @@ func (m *MapOf[K, V]) Compute(
 	if table == nil {
 		table = m.initSlow()
 	}
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1296,7 +1298,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 	table := (*mapOfTable)(loadPointer(&m.table))
 	if table == nil {
 		table = m.initSlow()
-		hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 		return m.processEntry(table, hash, &key,
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				if loaded != nil {
@@ -1307,7 +1309,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 		)
 	}
 
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
 		if e := m.findEntry(table, hash, &key); e != nil {
@@ -1361,7 +1363,7 @@ func (m *MapOf[K, V]) ProcessEntry(
 		table = m.initSlow()
 	}
 
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	return m.processEntry(table, hash, &key, fn)
 }
 
@@ -1506,7 +1508,7 @@ func (m *MapOf[K, V]) HasKey(key K) bool {
 	if table == nil {
 		return false
 	}
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), table.seed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	return m.findEntry(table, hash, &key) != nil
 }
 
@@ -1666,7 +1668,7 @@ func (m *MapOf[K, V]) batchProcessImmutableEntries(
 
 	m.batchProcess(table, len(immutableEntries), growFactor, func(table *mapOfTable, start, end int) {
 		for i := start; i < end; i++ {
-			hash := m.keyHash(noescape(unsafe.Pointer(&immutableEntries[i].Key)), table.seed)
+			hash := m.keyHash(noescape(unsafe.Pointer(&immutableEntries[i].Key)), m.seed)
 			values[i], status[i] = m.processEntry(table, hash, &immutableEntries[i].Key,
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 					return processFn(immutableEntries[i], loaded)
@@ -1717,7 +1719,7 @@ func (m *MapOf[K, V]) batchProcessEntries(
 
 	m.batchProcess(table, len(entries), growFactor, func(table *mapOfTable, start, end int) {
 		for i := start; i < end; i++ {
-			hash := m.keyHash(noescape(unsafe.Pointer(&entries[i].Key)), table.seed)
+			hash := m.keyHash(noescape(unsafe.Pointer(&entries[i].Key)), m.seed)
 			values[i], status[i] = m.processEntry(table, hash, &entries[i].Key,
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 					return processFn(&entries[i], loaded)
@@ -1764,7 +1766,7 @@ func (m *MapOf[K, V]) batchProcessKeys(
 
 	m.batchProcess(table, len(keys), growFactor, func(table *mapOfTable, start, end int) {
 		for i := start; i < end; i++ {
-			hash := m.keyHash(noescape(unsafe.Pointer(&keys[i])), table.seed)
+			hash := m.keyHash(noescape(unsafe.Pointer(&keys[i])), m.seed)
 			values[i], status[i] = m.processEntry(table, hash, &keys[i],
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 					return processFn(keys[i], loaded)
@@ -1871,7 +1873,7 @@ func (m *MapOf[K, V]) FromMap(source map[K]V) {
 		func(table *mapOfTable, _, _ int) {
 			// Directly iterate and process all key-value pairs
 			for k, v := range source {
-				hash := m.keyHash(noescape(unsafe.Pointer(&k)), table.seed)
+				hash := m.keyHash(noescape(unsafe.Pointer(&k)), m.seed)
 				m.processEntry(table, hash, &k,
 					func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 						return &EntryOf[K, V]{Value: v}, v, e != nil
@@ -1957,7 +1959,7 @@ func (m *MapOf[K, V]) Merge(
 	m.batchProcess(table, otherSize, 1.0,
 		func(table *mapOfTable, _, _ int) {
 			other.RangeEntry(func(other *EntryOf[K, V]) bool {
-				hash := m.keyHash(noescape(unsafe.Pointer(&other.Key)), table.seed)
+				hash := m.keyHash(noescape(unsafe.Pointer(&other.Key)), m.seed)
 				m.processEntry(table, hash, &other.Key,
 					func(this *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 						if this == nil {
@@ -1982,7 +1984,8 @@ func (m *MapOf[K, V]) Merge(
 //   - The clone operation is not atomic with respect to concurrent modifications.
 //   - The returned map will have the same configuration as the original.
 func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
-	if m.IsZero() {
+	table := (*mapOfTable)(loadPointer(&m.table))
+	if table == nil {
 		return &MapOf[K, V]{}
 	}
 
@@ -1990,6 +1993,7 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 	clone := &MapOf[K, V]{
 		keyHash:     m.keyHash,
 		valEqual:    m.valEqual,
+		seed:        m.seed,
 		minTableLen: m.minTableLen,
 		growOnly:    m.growOnly,
 	}
@@ -1997,13 +2001,13 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 	// Pre-fetch size to optimize initial capacity
 	size := m.Size()
 	if size > 0 {
-		table := newMapOfTable(clone.minTableLen)
-		clone.table = unsafe.Pointer(table)
+		cloneTable := newMapOfTable(clone.minTableLen)
+		clone.table = unsafe.Pointer(cloneTable)
 		clone.batchProcess(table, size, 1.0,
 			func(table *mapOfTable, _, _ int) {
 				// Directly iterate and process all key-value pairs
 				m.RangeEntry(func(e *EntryOf[K, V]) bool {
-					hash := clone.keyHash(noescape(unsafe.Pointer(&e.Key)), table.seed)
+					hash := clone.keyHash(noescape(unsafe.Pointer(&e.Key)), clone.seed)
 					clone.processEntry(table, hash, &e.Key,
 						func(_ *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 							return e, e.Value, false
