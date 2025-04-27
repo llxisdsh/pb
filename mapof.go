@@ -159,6 +159,24 @@ func NewMapOfWithHasher[K comparable, V any](
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
 	m := &MapOf[K, V]{}
+	m.Init(keyHash, valEqual, options...)
+	return m
+}
+
+// NewMapOfWithHasherUnsafe provides functionality similar to NewMapOfWithHasher,
+// but uses unsafe versions of keyHash and valEqual.
+// The following example uses an unbalanced and unsafe version:
+//
+//	 m := NewMapOfWithHasherUnsafe[int, int](
+//		func(ptr unsafe.Pointer, _ uintptr) uintptr {
+//			return *(*uintptr)(ptr)
+//		}, nil)
+func NewMapOfWithHasherUnsafe[K comparable, V any](
+	keyHash func(ptr unsafe.Pointer, seed uintptr) uintptr,
+	valEqual func(ptr unsafe.Pointer, ptr2 unsafe.Pointer) bool,
+	options ...func(*MapConfig),
+) *MapOf[K, V] {
+	m := &MapOf[K, V]{}
 	m.init(keyHash, valEqual, options...)
 	return m
 }
@@ -347,16 +365,31 @@ func (table *mapOfTable) isZero() bool {
 // Notes:
 //   - This function is not thread-safe and can only be used before the MapOf is utilized.
 //   - If this function is not called, MapOf will use the default configuration.
-func (m *MapOf[K, V]) Init(keyHash func(key K, seed uintptr) uintptr,
+func (m *MapOf[K, V]) Init(
+	keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
-	options ...func(*MapConfig)) {
-
-	m.init(keyHash, valEqual, options...)
+	options ...func(*MapConfig),
+) {
+	var hs hashFunc
+	var eq equalFunc
+	if keyHash != nil {
+		hs = func(pointer unsafe.Pointer, u uintptr) uintptr {
+			return keyHash(*(*K)(pointer), u)
+		}
+	}
+	if valEqual != nil {
+		eq = func(val unsafe.Pointer, val2 unsafe.Pointer) bool {
+			return valEqual(*(*V)(val), *(*V)(val2))
+		}
+	}
+	m.init(hs, eq, options...)
 }
 
-func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
-	valEqual func(val, val2 V) bool,
-	options ...func(*MapConfig)) *mapOfTable {
+func (m *MapOf[K, V]) init(
+	hs hashFunc,
+	eq equalFunc,
+	options ...func(*MapConfig),
+) *mapOfTable {
 
 	c := &MapConfig{
 		sizeHint: defaultMinMapTableLen * entriesPerMapOfBucket,
@@ -364,17 +397,14 @@ func (m *MapOf[K, V]) init(keyHash func(key K, seed uintptr) uintptr,
 	for _, o := range options {
 		o(c)
 	}
+
 	m.seed = uintptr(rand.Uint64())
 	m.keyHash, m.valEqual = defaultHasherUsingBuiltIn[K, V]()
-	if keyHash != nil {
-		m.keyHash = func(pointer unsafe.Pointer, u uintptr) uintptr {
-			return keyHash(*(*K)(pointer), u)
-		}
+	if hs != nil {
+		m.keyHash = hs
 	}
-	if valEqual != nil {
-		m.valEqual = func(val unsafe.Pointer, val2 unsafe.Pointer) bool {
-			return valEqual(*(*V)(val), *(*V)(val2))
-		}
+	if eq != nil {
+		m.valEqual = eq
 	}
 
 	m.minTableLen = calcTableLen(c.sizeHint)
@@ -1990,9 +2020,9 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 
 	// Create a new MapOf with the same configuration as the original
 	clone := &MapOf[K, V]{
+		seed:        m.seed,
 		keyHash:     m.keyHash,
 		valEqual:    m.valEqual,
-		seed:        m.seed,
 		minTableLen: m.minTableLen,
 		growOnly:    m.growOnly,
 	}
