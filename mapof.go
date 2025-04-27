@@ -609,8 +609,7 @@ func (m *MapOf[K, V]) processEntry(
 		table.addSize(bidx, 1)
 
 		// Check if the table needs to grow
-		growThreshold := int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
-		if table.sumSize() >= growThreshold {
+		if table.sumSize() >= int(float64(len(table.buckets)*entriesPerMapOfBucket)*mapLoadFactor) {
 			m.resize(table, mapGrowHint)
 		}
 
