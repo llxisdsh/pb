@@ -16,10 +16,9 @@ import (
 
 const (
 	// opByteIdx reserve the meta highest byte for extended status flags (OpByte)
-	opByteIdx          = 7
-	opByteMask  uint64 = 0xff00000000000000
-	opByteShift        = opByteIdx * 8
-	opLockBit          = 7
+	opByteIdx         = 7
+	opByteMask uint64 = 0xff00000000000000
+	opLockMask uint64 = 1 << (opByteIdx*8 + 7)
 
 	// entriesPerMapOfBucket defines the number of MapOf entries per bucket.
 	// This value is automatically calculated to fit within a cache line,
@@ -261,11 +260,11 @@ func (b *bucketOf) lock() {
 }
 
 func (b *bucketOf) tryLock() bool {
-	return casOp(&b.meta, opLockBit, false, true)
+	return casOp(&b.meta, opLockMask, false, true)
 }
 
 func (b *bucketOf) unlock() {
-	storeOp(&b.meta, opLockBit, false)
+	storeOp(&b.meta, opLockMask, false)
 }
 
 // mapOfTable represents the internal hash table structure.
@@ -2314,37 +2313,37 @@ func casPointer(addr *unsafe.Pointer, oldPtr, newPtr unsafe.Pointer) bool {
 //		}
 //	}
 
-func setOp(meta uint64, idx int, value bool) uint64 {
+func setOp(meta uint64, mask uint64, value bool) uint64 {
 	if value {
-		return meta | 1<<(idx+opByteShift)
+		return meta | mask
 	} else {
-		return meta & (^(1 << (idx + opByteShift)))
+		return meta & ^mask
 	}
 }
 
-func getOp(meta uint64, idx int) bool {
-	return (meta>>opByteShift)&(1<<idx) != 0
+func getOp(meta uint64, mask uint64) bool {
+	return meta&mask != 0
 }
 
-func casOp(addr *uint64, idx int, old, new bool) bool {
+func casOp(addr *uint64, mask uint64, old, new bool) bool {
 	for {
 		cur := atomic.LoadUint64(addr)
-		op := getOp(cur, idx)
+		op := getOp(cur, mask)
 		if op != old {
 			return false
 		}
-		nv := setOp(cur, idx, new)
+		nv := setOp(cur, mask, new)
 		if atomic.CompareAndSwapUint64(addr, cur, nv) {
 			return true
 		}
 	}
 }
 
-func storeOp(addr *uint64, idx int, value bool) {
+func storeOp(addr *uint64, mask uint64, value bool) {
 	if value {
-		atomic.OrUint64(addr, 1<<(idx+opByteShift))
+		atomic.OrUint64(addr, mask)
 	} else {
-		atomic.AndUint64(addr, ^(1 << (idx + opByteShift)))
+		atomic.AndUint64(addr, ^mask)
 	}
 }
 
