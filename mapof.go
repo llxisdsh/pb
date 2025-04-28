@@ -1271,12 +1271,12 @@ func (m *MapOf[K, V]) Compute(
 				if op == UpdateOp {
 					// Since we're already inside the lock (where overhead is inevitable),
 					// it's better to let users handle same-value filtering with CancelOp instead.
-					//if enableFastPath {
-					//	if m.valEqual != nil &&
-					//		m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(&newValue))) {
-					//		return loaded, loaded.Value, true
-					//	}
-					//}
+					if enableFastPath {
+						if m.valEqual != nil &&
+							m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(&newValue))) {
+							return loaded, loaded.Value, true
+						}
+					}
 					return &EntryOf[K, V]{Value: newValue}, newValue, true
 				}
 				if op == DeleteOp {
