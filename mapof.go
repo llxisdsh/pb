@@ -209,13 +209,6 @@ func WithGrowOnly() func(*MapConfig) {
 	}
 }
 
-// WithParallel enables automatic parallel execution of the resize and batch functions.
-// Deprecated: Auto-activated
-func WithParallel() func(*MapConfig) {
-	return func(c *MapConfig) {
-	}
-}
-
 // EntryOf is an immutable map entry.
 type EntryOf[K comparable, V any] struct {
 	Key   K
@@ -859,7 +852,7 @@ func copyBucketOfParallel[K comparable, V any](
 				// when copying in a single goroutine, it's not necessary, but due to the spinning of the mutex,
 				// it remains extremely fast.
 				destb.lock()
-				appendToBucketOf[K, V](e, destb, h2(hash))
+				appendToBucketOf(e, destb, h2(hash))
 				destb.unlock()
 				copied++
 			}

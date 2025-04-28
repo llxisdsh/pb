@@ -460,11 +460,11 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 	}
 }
 
-//
 //func TestMapOfConcurrentInsert(t *testing.T) {
 //	const total = 100_000_000
 //
 //	m := NewMapOf[int, int](WithPresize(total), WithParallel())
+//
 //	numCPU := runtime.GOMAXPROCS(0)
 //
 //	var wg sync.WaitGroup
@@ -475,18 +475,14 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 //	batchSize := total / numCPU
 //
 //	for i := 0; i < numCPU; i++ {
-//		go func(workerID int) {
-//			defer wg.Done()
+//		go func(start, end int) {
+//			//defer wg.Done()
 //
-//			startIdx := workerID * batchSize
-//			endIdx := startIdx + batchSize
-//			if workerID == numCPU-1 {
-//				endIdx = total
-//			}
-//			for j := startIdx; j < endIdx; j++ {
+//			for j := start; j < end; j++ {
 //				m.Store(j, j)
 //			}
-//		}(i)
+//			wg.Done()
+//		}(i*batchSize, min((i+1)*batchSize, total))
 //	}
 //
 //	wg.Wait()
