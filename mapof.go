@@ -1270,12 +1270,14 @@ func (m *MapOf[K, V]) Compute(
 			if loaded != nil {
 				newValue, op := valueFn(loaded.Value, true)
 				if op == UpdateOp {
-					if enableFastPath {
-						if m.valEqual != nil &&
-							m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(&newValue))) {
-							return loaded, loaded.Value, true
-						}
-					}
+					// Since we're already inside the lock (where overhead is inevitable),
+					// it's better to let users handle same-value filtering with CancelOp instead.
+					//if enableFastPath {
+					//	if m.valEqual != nil &&
+					//		m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(&newValue))) {
+					//		return loaded, loaded.Value, true
+					//	}
+					//}
 					return &EntryOf[K, V]{Value: newValue}, newValue, true
 				}
 				if op == DeleteOp {
@@ -1585,6 +1587,7 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 //     >0: Estimates new items as itemCount * growFactor.
 //     <=0: No estimation for new items.
 //   - processor: The function to process each item.
+//   - canParallel: Whether parallel processing is supported
 func (m *MapOf[K, V]) batchProcess(
 	table *mapOfTable,
 	itemCount int,
