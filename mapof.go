@@ -723,7 +723,7 @@ func (m *MapOf[K, V]) resize(
 			for c := 0; c < chunks; c++ {
 				copyWg.Add(1)
 				go func(start, end int) {
-					for i := start; i < end && i < tableLen; i++ {
+					for i := start; i < end; i++ {
 						copied := copyBucketOfParallel[K, V](
 							&table.buckets[i], newTable,
 							m.keyHash, m.seed)
