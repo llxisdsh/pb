@@ -233,7 +233,7 @@ type bucketOf struct {
 // Spinlock state is embedded in the Meta field for cache locality.
 //
 // Partially references:
-// [https://github.com/facebook/folly/blob/main/folly/synchronization/detail/Sleeper.h]
+// [https://github.com/facebook/folly/blob/main/folly/synchronization/PicoSpinLock.h]
 func (b *bucketOf) lock() {
 	if b.tryLock() {
 		return
@@ -289,11 +289,10 @@ func newMapOfTable(tableLen int) *mapOfTable {
 		buckets[i].meta = emptyMeta
 	}
 
-	t := &mapOfTable{
+	return &mapOfTable{
 		buckets: buckets,
 		size:    make([]counterStripe, calcSizeLen(tableLen)),
 	}
-	return t
 }
 
 // calcTableLen computes the bucket count for the table
@@ -762,16 +761,14 @@ func (m *MapOf[K, V]) resize(
 //   - Suggested degree of parallelism (number of goroutines).
 func calcParallelism(items, threshold int) int {
 	// If the items is too small, use single-threaded processing.
+	// Adjusts the parallel process trigger threshold using a scaling factor.
+	// example: items < threshold * 2
 	if items < threshold {
 		return 1
 	}
 
 	// If there is only one processor, use single-threaded processing.
-	numCPU := runtime.GOMAXPROCS(0)
-	if numCPU <= 1 {
-		return 1
-	}
-	return max(min(items/threshold, numCPU), 1)
+	return max(min(items/threshold, runtime.GOMAXPROCS(0)), 1)
 }
 
 func copyBucketOf[K comparable, V any](
@@ -1608,7 +1605,7 @@ func (m *MapOf[K, V]) batchProcess(
 			// Retry the resize until it succeeds
 			var ok bool
 			for {
-				growThreshold := int(float64(len(table.buckets)) * float64(entriesPerMapOfBucket) * mapLoadFactor)
+				growThreshold := int(float64(len(table.buckets)*entriesPerMapOfBucket) * mapLoadFactor)
 				sizeHint := table.sumSize() + newItemsEstimate
 				if sizeHint <= growThreshold {
 					break
@@ -2065,12 +2062,12 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 		nentries := 0
 		rootb := &table.buckets[i]
 		rootb.lock()
-		for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
+		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			stats.TotalBuckets++
 			nentriesLocal := 0
 			stats.Capacity += entriesPerMapOfBucket
 			for i := 0; i < entriesPerMapOfBucket; i++ {
-				if loadPointer(&b.entries[i]) != nil {
+				if b.entries[i] != nil {
 					stats.Size++
 					nentriesLocal++
 				}
