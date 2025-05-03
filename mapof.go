@@ -239,7 +239,7 @@ func (b *bucketOf) lock() {
 		return
 	}
 
-	const enableSpin = false // Disabled: PAUSE saves power but degrades total throughput
+	const enableSpin = true // Disabled: PAUSE saves power but degrades total throughput
 	const yieldSleep = 500 * time.Microsecond
 	spins := 0
 	for {
@@ -719,9 +719,8 @@ func (m *MapOf[K, V]) resize(
 			var copyWg sync.WaitGroup
 			// Simply evenly distributed
 			chunkSize := (tableLen + chunks - 1) / chunks
-
+			copyWg.Add(chunks)
 			for c := 0; c < chunks; c++ {
-				copyWg.Add(1)
 				go func(start, end int) {
 					for i := start; i < end; i++ {
 						copied := copyBucketOfParallel[K, V](
@@ -769,6 +768,34 @@ func calcParallelism(items, threshold int) int {
 
 	// If there is only one processor, use single-threaded processing.
 	return max(min(items/threshold, runtime.GOMAXPROCS(0)), 1)
+}
+
+// copyBucketOfParallel unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
+func copyBucketOfParallel[K comparable, V any](
+	srcBucket *bucketOf,
+	destTable *mapOfTable,
+	hasher hashFunc,
+	seed uintptr,
+) (copied int) {
+	srcBucket.lock()
+	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
+		for i := 0; i < entriesPerMapOfBucket; i++ {
+			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+				hash := hasher(noescape(unsafe.Pointer(&e.Key)), seed)
+				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
+				destb := &destTable.buckets[bidx]
+				// Locking the buckets of the target table is necessary during parallel copying,
+				// when copying in a single goroutine, it's not necessary, but due to the spinning of the mutex,
+				// it remains extremely fast.
+				destb.lock()
+				appendToBucketOf(e, destb, h2(hash))
+				destb.unlock()
+				copied++
+			}
+		}
+	}
+	srcBucket.unlock()
+	return copied
 }
 
 func copyBucketOf[K comparable, V any](
@@ -828,34 +855,6 @@ func appendToBucketOf[K comparable, V any](
 			destb = next
 		}
 	}
-}
-
-// copyBucketOfParallel unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
-func copyBucketOfParallel[K comparable, V any](
-	srcBucket *bucketOf,
-	destTable *mapOfTable,
-	hasher hashFunc,
-	seed uintptr,
-) (copied int) {
-	srcBucket.lock()
-	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
-		for i := 0; i < entriesPerMapOfBucket; i++ {
-			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
-				hash := hasher(noescape(unsafe.Pointer(&e.Key)), seed)
-				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
-				destb := &destTable.buckets[bidx]
-				// Locking the buckets of the target table is necessary during parallel copying,
-				// when copying in a single goroutine, it's not necessary, but due to the spinning of the mutex,
-				// it remains extremely fast.
-				destb.lock()
-				appendToBucketOf(e, destb, h2(hash))
-				destb.unlock()
-				copied++
-			}
-		}
-	}
-	srcBucket.unlock()
-	return copied
 }
 
 // Store inserts or updates a key-value pair, compatible with `sync.Map`.
@@ -1628,20 +1627,13 @@ func (m *MapOf[K, V]) batchProcess(
 		chunkSize := (itemCount + chunks - 1) / chunks
 
 		var wg sync.WaitGroup
+		wg.Add(chunks)
 		for i := 0; i < chunks; i++ {
-			start := i * chunkSize
-			end := min((i+1)*chunkSize, itemCount)
-			if start >= end {
-				break
-			}
-
-			wg.Add(1)
 			go func(start, end int) {
 				defer wg.Done()
 				processor(table, start, end)
-			}(start, end)
+			}(i*chunkSize, min((i+1)*chunkSize, itemCount))
 		}
-
 		wg.Wait()
 		return
 	}
