@@ -459,8 +459,8 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 
 	// inline findEntry
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-	h2val := h2(hash)
-	h2w := broadcast(h2val)
+	h2v := h2(hash)
+	h2w := broadcast(h2v)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash)
 	rootb := &table.buckets[bidx]
 	for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
@@ -478,8 +478,8 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 }
 
 func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key *K) *EntryOf[K, V] {
-	h2val := h2(hash)
-	h2w := broadcast(h2val)
+	h2v := h2(hash)
+	h2w := broadcast(h2v)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash)
 	rootb := &table.buckets[bidx]
 	for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
@@ -504,8 +504,6 @@ func (m *MapOf[K, V]) processEntry(
 ) (V, bool) {
 
 	for {
-		h2v := h2(hash)
-		h2w := broadcast(h2v)
 		bidx := uintptr(len(table.buckets)-1) & h1(hash)
 		rootb := &table.buckets[bidx]
 
@@ -518,7 +516,6 @@ func (m *MapOf[K, V]) processEntry(
 			// Wait for the current resize operation to complete
 			wg.Wait()
 			table = (*mapOfTable)(loadPointer(&m.table))
-			hash = m.keyHash(noescape(unsafe.Pointer(key)), m.seed)
 			continue
 		}
 
@@ -529,7 +526,6 @@ func (m *MapOf[K, V]) processEntry(
 		if newTable := (*mapOfTable)(loadPointer(&m.table)); table != newTable {
 			rootb.unlock()
 			table = newTable
-			hash = m.keyHash(noescape(unsafe.Pointer(key)), m.seed)
 			continue
 		}
 
@@ -543,6 +539,8 @@ func (m *MapOf[K, V]) processEntry(
 			lastBucket  *bucketOf
 		)
 
+		h2v := h2(hash)
+		h2w := broadcast(h2v)
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			lastBucket = b
 			metaw := b.meta
