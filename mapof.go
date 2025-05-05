@@ -44,9 +44,9 @@ const (
 	// defaultMinMapTableLen defines the minimum table size (number of buckets).
 	// The minimum map capacity can be calculated as entriesPerMapOfBucket*defaultMinMapTableLen.
 	defaultMinMapTableLen = 32
-	// minParallelResizeThreshold defines the minimum table size required to trigger parallel resizing.
+	// minBucketsPerGoroutine defines the minimum table size required to trigger parallel resizing.
 	// Tables smaller than this threshold will use single-threaded resizing for better efficiency.
-	minParallelResizeThreshold = 64
+	minBucketsPerGoroutine = 64
 	// minParallelBatchItems defines the minimum number of items required for parallel batch processing.
 	// Below this threshold, serial processing is used to avoid the overhead of goroutine creation.
 	minParallelBatchItems = 256
@@ -502,9 +502,12 @@ func (m *MapOf[K, V]) processEntry(
 	key *K,
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (V, bool) {
+	h1v := h1(hash)
+	h2v := h2(hash)
+	h2w := broadcast(h2v)
 
 	for {
-		bidx := uintptr(len(table.buckets)-1) & h1(hash)
+		bidx := uintptr(len(table.buckets)-1) & h1v
 		rootb := &table.buckets[bidx]
 
 		rootb.lock()
@@ -539,8 +542,6 @@ func (m *MapOf[K, V]) processEntry(
 			lastBucket  *bucketOf
 		)
 
-		h2v := h2(hash)
-		h2w := broadcast(h2v)
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			lastBucket = b
 			metaw := b.meta
@@ -712,7 +713,7 @@ func (m *MapOf[K, V]) resize(
 	newTable := newMapOfTable(newTableLen)
 	if hint != mapClearHint {
 		// Calculate the parallel count
-		chunks := calcParallelism(tableLen, minParallelResizeThreshold)
+		chunks := calcParallelism(tableLen, minBucketsPerGoroutine)
 		if chunks > 1 {
 			var copyWg sync.WaitGroup
 			// Simply evenly distributed
@@ -720,26 +721,14 @@ func (m *MapOf[K, V]) resize(
 			copyWg.Add(chunks)
 			for c := 0; c < chunks; c++ {
 				go func(start, end int) {
-					for i := start; i < end; i++ {
-						copied := copyBucketOfParallel[K, V](
-							&table.buckets[i], newTable,
-							m.keyHash, m.seed)
-						if copied > 0 {
-							newTable.addSize(uintptr(i), copied)
-						}
-					}
+					copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed)
 					copyWg.Done()
 				}(c*chunkSize, min((c+1)*chunkSize, tableLen))
 			}
 			copyWg.Wait()
 		} else {
 			// Serial processing
-			for i := 0; i < tableLen; i++ {
-				copied := copyBucketOf[K, V](
-					&table.buckets[i], newTable,
-					m.keyHash, m.seed)
-				newTable.addSizePlain(uintptr(i), copied)
-			}
+			copyBucketOf[K, V](table, 0, tableLen, newTable, m.keyHash, m.seed)
 		}
 	}
 	storePointer(&m.table, unsafe.Pointer(newTable))
@@ -768,89 +757,115 @@ func calcParallelism(items, threshold int) int {
 	return max(min(items/threshold, runtime.GOMAXPROCS(0)), 1)
 }
 
-// copyBucketOfParallel unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
-func copyBucketOfParallel[K comparable, V any](
-	srcBucket *bucketOf,
+// copyBucketOfLock unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
+func copyBucketOfLock[K comparable, V any](
+	table *mapOfTable,
+	start, end int,
 	destTable *mapOfTable,
 	hasher hashFunc,
 	seed uintptr,
-) (copied int) {
-	srcBucket.lock()
-	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
-		for i := 0; i < entriesPerMapOfBucket; i++ {
-			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
-				hash := hasher(noescape(unsafe.Pointer(&e.Key)), seed)
-				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
-				destb := &destTable.buckets[bidx]
-				// Locking the buckets of the target table is necessary during parallel copying,
-				// when copying in a single goroutine, it's not necessary, but due to the spinning of the mutex,
-				// it remains extremely fast.
-				destb.lock()
-				appendToBucketOf(e, destb, h2(hash))
-				destb.unlock()
-				copied++
+) {
+	for i := start; i < end; i++ {
+		srcBucket := &table.buckets[i]
+		copied := 0
+		srcBucket.lock()
+		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
+			for i := 0; i < entriesPerMapOfBucket; i++ {
+				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+					// We could store the hash value in the Entry during processEntry to avoid
+					// recalculating it here, which would speed up the resize process.
+					// However, for simple integer keys, this approach would actually slow down
+					// the load operation. Therefore, recalculating the hash value is the better approach.
+					hash := hasher(noescape(unsafe.Pointer(&e.Key)), seed)
+					bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
+					destb := &destTable.buckets[bidx]
+					h2v := h2(hash)
+
+					destb.lock()
+					b := destb
+				appendToBucket:
+					for {
+						for i := 0; i < entriesPerMapOfBucket; i++ {
+							if b.entries[i] == nil {
+								b.meta = setByte(b.meta, h2v, i)
+								b.entries[i] = unsafe.Pointer(e)
+								break appendToBucket
+							}
+						}
+						next := (*bucketOf)(b.next)
+						if next == nil {
+							b.next = unsafe.Pointer(&bucketOf{
+								meta:    setByte(emptyMeta, h2v, 0),
+								entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(e)},
+							})
+							break appendToBucket
+						}
+						b = next
+					}
+					destb.unlock()
+
+					copied++
+				}
 			}
 		}
+		srcBucket.unlock()
+		if copied != 0 {
+			destTable.addSize(uintptr(i), copied)
+		}
 	}
-	srcBucket.unlock()
-	return copied
 }
 
 func copyBucketOf[K comparable, V any](
-	srcBucket *bucketOf,
+	table *mapOfTable,
+	start, end int,
 	destTable *mapOfTable,
 	hasher hashFunc,
 	seed uintptr,
-) (copied int) {
-	srcBucket.lock()
-	for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
-		for i := 0; i < entriesPerMapOfBucket; i++ {
-			if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
-				// We could store the hash value in the Entry during processEntry to avoid
-				// recalculating it here, which would speed up the resize process.
-				// However, for simple integer keys, this approach would actually slow down
-				// the load operation. Therefore, recalculating the hash value is the better approach.
-				hash := hasher(noescape(unsafe.Pointer(&e.Key)), seed)
-				bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
-				destb := &destTable.buckets[bidx]
-				appendToBucketOf(e, destb, h2(hash))
-				copied++
-			}
-		}
-	}
-	srcBucket.unlock()
-	return copied
-}
-
-// appendToBucketOf appends an entry pointer to a bucket chain.
-//
-// Parameters:
-//   - e: Pointer to the entry to be appended.
-//   - destb: Pointer to the bucket where the entry should be appended.
-//   - h2: The h2 hash value for the entry.
-func appendToBucketOf[K comparable, V any](
-	e *EntryOf[K, V],
-	destb *bucketOf,
-	h2 uint8,
 ) {
-	// NewTable pointer has not been published, so atomic writes are not necessary.
-	for {
-		for i := 0; i < entriesPerMapOfBucket; i++ {
-			if destb.entries[i] == nil {
-				destb.meta = setByte(destb.meta, h2, i)
-				destb.entries[i] = unsafe.Pointer(e)
-				return
+	for i := start; i < end; i++ {
+		srcBucket := &table.buckets[i]
+		copied := 0
+		srcBucket.lock()
+		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
+			for i := 0; i < entriesPerMapOfBucket; i++ {
+				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+					// We could store the hash value in the Entry during processEntry to avoid
+					// recalculating it here, which would speed up the resize process.
+					// However, for simple integer keys, this approach would actually slow down
+					// the load operation. Therefore, recalculating the hash value is the better approach.
+					hash := hasher(noescape(unsafe.Pointer(&e.Key)), seed)
+					bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
+					destb := &destTable.buckets[bidx]
+					h2v := h2(hash)
+
+					b := destb
+				appendToBucket:
+					for {
+						for i := 0; i < entriesPerMapOfBucket; i++ {
+							if b.entries[i] == nil {
+								b.meta = setByte(b.meta, h2v, i)
+								b.entries[i] = unsafe.Pointer(e)
+								break appendToBucket
+							}
+						}
+						next := (*bucketOf)(b.next)
+						if next == nil {
+							b.next = unsafe.Pointer(&bucketOf{
+								meta:    setByte(emptyMeta, h2v, 0),
+								entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(e)},
+							})
+							break appendToBucket
+						}
+						b = next
+					}
+
+					copied++
+				}
 			}
 		}
-
-		if next := (*bucketOf)(destb.next); next == nil {
-			destb.next = unsafe.Pointer(&bucketOf{
-				meta:    setByte(emptyMeta, h2, 0),
-				entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(e)},
-			})
-			return
-		} else {
-			destb = next
+		srcBucket.unlock()
+		if copied != 0 {
+			destTable.addSizePlain(uintptr(i), copied)
 		}
 	}
 }

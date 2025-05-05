@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"math/bits"
-	rand1 "math/rand"
 	"math/rand/v2"
 	"reflect"
 	"runtime"
@@ -460,52 +459,52 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 	}
 }
 
-//func TestMapOfConcurrentInsert(t *testing.T) {
-//	const total = 100_000_000
-//
-//	m := NewMapOf[int, int](WithPresize(total), WithParallel())
-//
-//	numCPU := runtime.GOMAXPROCS(0)
-//
-//	var wg sync.WaitGroup
-//	wg.Add(numCPU)
-//
-//	start := time.Now()
-//
-//	batchSize := total / numCPU
-//
-//	for i := 0; i < numCPU; i++ {
-//		go func(start, end int) {
-//			//defer wg.Done()
-//
-//			for j := start; j < end; j++ {
-//				m.Store(j, j)
-//			}
-//			wg.Done()
-//		}(i*batchSize, min((i+1)*batchSize, total))
-//	}
-//
-//	wg.Wait()
-//
-//	elapsed := time.Since(start)
-//
-//	size := m.Size()
-//	if size != total {
-//		t.Errorf("Expected size %d, got %d", total, size)
-//	}
-//
-//	t.Logf("Inserted %d items in %v", total, elapsed)
-//	t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
-//	t.Logf("Throughput: %.2f million ops/sec", float64(total)/(elapsed.Seconds()*1000000))
-//
-//	// rand check
-//	for i := 0; i < 1000; i++ {
-//		idx := i * (total / 1000)
-//		if val, ok := m.Load(idx); !ok || val != idx {
-//			t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val, ok)
-//		}
-//	}
-//}
+func TestMapOfConcurrentInsert(t *testing.T) {
+	const total = 100_000_000
+
+	m := NewMapOf[int, int](WithPresize(total))
+
+	numCPU := runtime.GOMAXPROCS(0)
+
+	var wg sync.WaitGroup
+	wg.Add(numCPU)
+
+	start := time.Now()
+
+	batchSize := total / numCPU
+
+	for i := 0; i < numCPU; i++ {
+		go func(start, end int) {
+			//defer wg.Done()
+
+			for j := start; j < end; j++ {
+				m.Store(j, j)
+			}
+			wg.Done()
+		}(i*batchSize, min((i+1)*batchSize, total))
+	}
+
+	wg.Wait()
+
+	elapsed := time.Since(start)
+
+	size := m.Size()
+	if size != total {
+		t.Errorf("Expected size %d, got %d", total, size)
+	}
+
+	t.Logf("Inserted %d items in %v", total, elapsed)
+	t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
+	t.Logf("Throughput: %.2f million ops/sec", float64(total)/(elapsed.Seconds()*1000000))
+
+	// rand check
+	for i := 0; i < 1000; i++ {
+		idx := i * (total / 1000)
+		if val, ok := m.Load(idx); !ok || val != idx {
+			t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val, ok)
+		}
+	}
+}
 
 func TestMapOfMisc(t *testing.T) {
 	//var a *SyncMap[int, int] = NewSyncMap[int, int]()
@@ -782,7 +781,7 @@ func TestMapOfCalcLen(t *testing.T) {
 	for i := 0; i < 1000000; i++ {
 		tableLen = calcTableLen(i)
 		sizeLen = calcSizeLen(i)
-		parallelism = calcParallelism(i, minParallelResizeThreshold)
+		parallelism = calcParallelism(i, minBucketsPerGoroutine)
 		if tableLen != lastTableLen || sizeLen != lastSizeLen || parallelism != lastParallelism {
 			t.Log(i, tableLen, sizeLen, parallelism)
 			lastTableLen, lastSizeLen, lastParallelism = tableLen, sizeLen, parallelism
@@ -2699,9 +2698,9 @@ func TestMapOfParallelResize_GrowOnly(t *testing.T) {
 }
 
 func parallelRandTypedResizer(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
-	r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
+	//r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
-		coin := r.Int63n(2)
+		coin := rand.Int64N(2)
 		for j := 0; j < numEntries; j++ {
 			if coin == 1 {
 				m.Store(strconv.Itoa(j), j)
@@ -2745,9 +2744,9 @@ func TestMapOfParallelResize(t *testing.T) {
 }
 
 func parallelRandTypedClearer(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
-	r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
+	//r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
-		coin := r.Int63n(2)
+		coin := rand.Int64N(2)
 		for j := 0; j < numEntries; j++ {
 			if coin == 1 {
 				m.Store(strconv.Itoa(j), j)
@@ -2827,9 +2826,9 @@ func TestMapOfParallelStores(t *testing.T) {
 }
 
 func parallelRandTypedStorer(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
-	r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
+	//r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
-		j := r.Intn(numEntries)
+		j := rand.IntN(numEntries)
 		if v, loaded := m.LoadOrStore(strconv.Itoa(j), j); loaded {
 			if v != j {
 				t.Errorf("value was not expected for %d: %d", j, v)
@@ -2840,9 +2839,9 @@ func parallelRandTypedStorer(t *testing.T, m *MapOf[string, int], numIters, numE
 }
 
 func parallelRandTypedDeleter(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
-	r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
+	//r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
-		j := r.Intn(numEntries)
+		j := rand.IntN(numEntries)
 		if v, loaded := m.LoadAndDelete(strconv.Itoa(j)); loaded {
 			if v != j {
 				t.Errorf("value was not expected for %d: %d", j, v)
