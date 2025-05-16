@@ -24,9 +24,9 @@ const (
 	// This value is automatically calculated to fit within a cache line,
 	// but will not exceed 8, which is the upper limit supported by the meta field.
 	entriesPerMapOfBucket = min(opByteIdx, (int(CacheLineSize)-int(unsafe.Sizeof(struct {
+		meta uint64
 		// entries [entriesPerMapOfBucket]unsafe.Pointer
 		next unsafe.Pointer
-		meta uint64
 	}{})))/int(unsafe.Sizeof(unsafe.Pointer(nil))))
 
 	emptyMeta     uint64 = 0x8080808080808080 >> (64 - min(entriesPerMapOfBucket*8, 64))
@@ -56,6 +56,13 @@ const (
 	// enableFastPath optimizes read-only operations by fast-returning results,
 	// avoiding expensive lock contention and write barriers. In extreme cases, reduces latency by up to 100x.
 	enableFastPath = true
+
+	// enableHashSpread controls whether to apply hash spreading for non-integer keys.
+	// When enabled, it improves hash distribution by XORing the original hash with its high bits
+	// before calculating bucket indices (h1) and metadata values (h2).
+	// This reduces collisions for complex key types like strings, but adds a small computational overhead.
+	// For integer keys, spreading is not applied as their natural distribution is already sufficient.
+	enableHashSpread = false
 )
 
 // MapOf is a high-performance concurrent map implementation that offers significant
@@ -119,6 +126,7 @@ type MapOf[K comparable, V any] struct {
 		valEqual     equalFunc
 		minTableLen  int
 		growOnly     bool
+		intKey       bool
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	table        unsafe.Pointer // *mapOfTable
@@ -130,6 +138,7 @@ type MapOf[K comparable, V any] struct {
 	valEqual     equalFunc
 	minTableLen  int  // WithPresize
 	growOnly     bool // WithGrowOnly
+	intKey       bool
 }
 
 // NewMapOf creates a new MapOf instance. Direct initialization is also supported.
@@ -216,16 +225,17 @@ type EntryOf[K comparable, V any] struct {
 
 // bucketOf represents a single bucket in the hash table.
 type bucketOf struct {
+	meta uint64 // meta for fast entry lookups using SWAR, must be 64-bit aligned
+
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
+		meta    uint64
 		entries [entriesPerMapOfBucket]unsafe.Pointer
 		next    unsafe.Pointer
-		meta    uint64
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	entries [entriesPerMapOfBucket]unsafe.Pointer // entries Pointers to *EntryOf instances
 	next    unsafe.Pointer                        // next Pointer to the next bucket (*bucketOf) in the chain
-	meta    uint64                                // meta for fast entry lookups using SWAR, must be 64-bit aligned
 }
 
 // lock acquires the lock for the bucket.
@@ -390,7 +400,7 @@ func (m *MapOf[K, V]) init(
 	}
 
 	m.seed = uintptr(rand.Uint64())
-	m.keyHash, m.valEqual = defaultHasherUsingBuiltIn[K, V]()
+	m.keyHash, m.valEqual, m.intKey = defaultHasher[K, V]()
 	if hs != nil {
 		m.keyHash = hs
 	}
@@ -461,7 +471,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
-	bidx := uintptr(len(table.buckets)-1) & h1(hash)
+	bidx := uintptr(len(table.buckets)-1) & h1(hash, m.intKey)
 	rootb := &table.buckets[bidx]
 	for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
@@ -480,7 +490,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key *K) *EntryOf[K, V] {
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
-	bidx := uintptr(len(table.buckets)-1) & h1(hash)
+	bidx := uintptr(len(table.buckets)-1) & h1(hash, m.intKey)
 	rootb := &table.buckets[bidx]
 	for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
@@ -502,7 +512,7 @@ func (m *MapOf[K, V]) processEntry(
 	key *K,
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (V, bool) {
-	h1v := h1(hash)
+	h1v := h1(hash, m.intKey)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 
@@ -721,14 +731,14 @@ func (m *MapOf[K, V]) resize(
 			copyWg.Add(chunks)
 			for c := 0; c < chunks; c++ {
 				go func(start, end int) {
-					copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed)
+					copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
 					copyWg.Done()
 				}(c*chunkSize, min((c+1)*chunkSize, tableLen))
 			}
 			copyWg.Wait()
 		} else {
 			// Serial processing
-			copyBucketOf[K, V](table, 0, tableLen, newTable, m.keyHash, m.seed)
+			copyBucketOf[K, V](table, 0, tableLen, newTable, m.keyHash, m.seed, m.intKey)
 		}
 	}
 	storePointer(&m.table, unsafe.Pointer(newTable))
@@ -764,6 +774,7 @@ func copyBucketOfLock[K comparable, V any](
 	destTable *mapOfTable,
 	hasher hashFunc,
 	seed uintptr,
+	intKey bool,
 ) {
 	for i := start; i < end; i++ {
 		srcBucket := &table.buckets[i]
@@ -777,7 +788,7 @@ func copyBucketOfLock[K comparable, V any](
 					// However, for simple integer keys, this approach would actually slow down
 					// the load operation. Therefore, recalculating the hash value is the better approach.
 					hash := hasher(noescape(unsafe.Pointer(&e.Key)), seed)
-					bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
+					bidx := uintptr(len(destTable.buckets)-1) & h1(hash, intKey)
 					destb := &destTable.buckets[bidx]
 					h2v := h2(hash)
 
@@ -821,6 +832,7 @@ func copyBucketOf[K comparable, V any](
 	destTable *mapOfTable,
 	hasher hashFunc,
 	seed uintptr,
+	intKey bool,
 ) {
 	for i := start; i < end; i++ {
 		srcBucket := &table.buckets[i]
@@ -834,7 +846,7 @@ func copyBucketOf[K comparable, V any](
 					// However, for simple integer keys, this approach would actually slow down
 					// the load operation. Therefore, recalculating the hash value is the better approach.
 					hash := hasher(noescape(unsafe.Pointer(&e.Key)), seed)
-					bidx := uintptr(len(destTable.buckets)-1) & h1(hash)
+					bidx := uintptr(len(destTable.buckets)-1) & h1(hash, intKey)
 					destb := &destTable.buckets[bidx]
 					h2v := h2(hash)
 
@@ -2022,6 +2034,7 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 		valEqual:    m.valEqual,
 		minTableLen: m.minTableLen,
 		growOnly:    m.growOnly,
+		intKey:      m.intKey,
 	}
 
 	// Pre-fetch size to optimize initial capacity
@@ -2154,13 +2167,44 @@ func (s *MapStats) ToString() string {
 	return sb.String()
 }
 
+// spread improves hash distribution by XORing the original hash with its high bits.
+// This function increases randomness in the lower bits of the hash value,
+// which helps reduce collisions when calculating bucket indices.
+// It's particularly effective for hash values where significant bits
+// are concentrated in the upper positions.
+func spread(h uintptr) uintptr {
+	return h ^ (h >> 16)
+}
+
 // h1 extracts the bucket index from a hash value.
-func h1(h uintptr) uintptr {
-	return h >> 7
+// It uses different shift values based on the key type to optimize performance:
+//   - For integer keys (intKey=true): Uses a right shift of 2 bits (divide by 4),
+//     which provides good distribution for sequential integers while matching
+//     the average bucket capacity (with load factor 0.75 and bucket size 6,
+//     each bucket handles ~4.5 elements).
+//   - For non-integer keys (intKey=false): Uses a right shift of 7 bits (divide by 128),
+//     which provides better distribution for hash values from complex types like strings,
+//     where the high bits contain more entropy and the distribution is already randomized
+//     by the hash function.
+//
+// The different approaches balance memory usage, lookup performance, and collision rates
+// for different key types.
+func h1(h uintptr, intKey bool) uintptr {
+	if intKey {
+		return h >> 2
+	} else {
+		if enableHashSpread {
+			return spread(h) >> 7
+		}
+		return h >> 7
+	}
 }
 
 // h2 extracts the byte-level hash for in-bucket lookups.
 func h2(h uintptr) uint8 {
+	if enableHashSpread {
+		return uint8(spread(h) & 0x7f)
+	}
 	return uint8(h & 0x7f)
 }
 
@@ -2400,6 +2444,47 @@ func runtime_doSpin()
 
 type hashFunc func(unsafe.Pointer, uintptr) uintptr
 type equalFunc func(unsafe.Pointer, unsafe.Pointer) bool
+
+func defaultHasher[K comparable, V any]() (keyHash hashFunc, valEqual equalFunc, intKey bool) {
+	keyHash, valEqual = defaultHasherUsingBuiltIn[K, V]()
+
+	switch any(*new(K)).(type) {
+	case uint, int, uintptr:
+		return func(value unsafe.Pointer, seed uintptr) uintptr {
+			return *(*uintptr)(value)
+		}, valEqual, true
+
+	case uint64, int64:
+		if bits.UintSize == 32 {
+			return func(value unsafe.Pointer, seed uintptr) uintptr {
+				v := *(*uint64)(value)
+				return uintptr(v) ^ uintptr(v>>32)
+			}, valEqual, true
+		}
+
+		return func(value unsafe.Pointer, seed uintptr) uintptr {
+			return uintptr(*(*uint64)(value))
+		}, valEqual, true
+
+	case uint32, int32:
+		return func(value unsafe.Pointer, seed uintptr) uintptr {
+			return uintptr(*(*uint32)(value))
+		}, valEqual, true
+
+	case uint16, int16:
+		return func(value unsafe.Pointer, seed uintptr) uintptr {
+			return uintptr(*(*uint16)(value))
+		}, valEqual, true
+
+	case uint8, int8:
+		return func(value unsafe.Pointer, seed uintptr) uintptr {
+			return uintptr(*(*uint8)(value))
+		}, valEqual, true
+
+	default:
+		return keyHash, valEqual, false
+	}
+}
 
 // defaultHasherUsingBuiltIn obtains Go's built-in hash and equality functions
 // for the specified types using reflection.
