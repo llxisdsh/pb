@@ -311,29 +311,31 @@ func TestInsert_pb_MapOf(t *testing.T) {
 ```
 </details>
 
-| Implementation & Case         | Throughput<br>(M ops/s) | Performance Scale      |
-|-------------------------------|------------------------:|------------------------|
-| `pb_MapOf (pre/64)`           |                  146.41 | ━━━━━━━━━━━━━━━━━━━━━━ |
-| `xsync_MapV4 (pre/64)`        |                   65.00 | ━━━━━━━━━              |
-| `pb_MapOf (64)`               |                   34.88 | ━━━━━━                 |
-| `zhangyunhao116_skipmap (64)` |                   23.40 | ━━━━━                  |
-| `xsync_MapV4 (64)`            |                   22.83 | ━━━━━                  |
-| `pb_MapOf (pre/1)`            |                   20.11 | ━━━━                   |
-| `pb_HashTrieMap (64)`         |                   18.57 | ━━━                    |
-| `original_syncMap (64)`       |                   13.55 | ━━                     |
-| `xsync_MapV4 (pre/1)`         |                    5.80 | ━                      |
-| `zhangyunhao116_skipmap (1)`  |                    3.56 | ━                      |
-| `alphadose_haxmap (pre/64)`   |                    2.91 | ━                      |
-| `pb_HashTrieMap (1)`          |                    1.74 | ━                      |
-| `original_syncMap (1)`        |                    1.43 | ━                      |
-| `alphadose_haxmap (pre/1)`    |                    1.02 | ━                      |
-| `alphadose_haxmap (1)`        |                    0.94 | ━                      |
-| `alphadose_haxmap (64)`       |                    0.55 | ━                      |
+| Implementation & Case       | Throughput<br>(M ops/s) | Performance Scale      |
+|-----------------------------|------------------------:|------------------------|
+| pb_MapOf (64/pre)           |                  146.41 | ━━━━━━━━━━━━━━━━━━━━━━ |
+| xsync_MapV4 (64/pre)        |                   65.00 | ━━━━━━━━━              |
+| pb_MapOf (64)               |                   34.88 | ━━━━━━                 |
+| zhangyunhao116_skipmap (64) |                   23.40 | ━━━━━                  |
+| xsync_MapV4 (64)            |                   22.83 | ━━━━━                  |
+| pb_MapOf (1/pre)            |                   20.11 | ━━━━                   |
+| pb_HashTrieMap (64)         |                   18.57 | ━━━                    |
+| original_syncMap (64)       |                   13.55 | ━━                     |
+| pb_MapOf (1)                |                   13.39 | ━━                     |
+| xsync_MapV4 (1/pre)         |                    5.80 | ━                      |
+| xsync_MapV4 (1)             |                    4.82 | ━                      |
+| zhangyunhao116_skipmap (1)  |                    3.56 | ━                      |
+| alphadose_haxmap (64/pre)   |                    2.91 | ━                      |
+| pb_HashTrieMap (1)          |                    1.74 | ━                      |
+| original_syncMap (1)        |                    1.43 | ━                      |
+| alphadose_haxmap (1/pre)    |                    1.02 | ━                      |
+| alphadose_haxmap (1)        |                    0.94 | ━                      |
+| alphadose_haxmap (64)       |                    0.55 | ━                      |
 
 - (1): 1 goroutine without pre-allocation
+- (1/pre): 1 goroutine with pre-allocation
 - (64): 64 goroutines without pre-allocation
-- (pre/1): 1 goroutine with pre-allocation
-- (pre/64): 64 goroutines with pre-allocation
+- (64/pre): 64 goroutines with pre-allocation
 
 ## Usage
 
