@@ -68,8 +68,8 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 ## Benchmarks
 
 Benchmark results (1,000,000 records) show `pb.MapOf` consistently outperforms other implementations, 
-achieving the fastest operations for Store (2.189 ns/op), LoadOrStore (1.814 ns/op), Load (0.8523 ns/op) 
-and Mixed (1.234 ns/op)
+achieving the fastest operations for Store (0.6740 ns/op), LoadOrStore (0.5898 ns/op), Load (0.1982 ns/op) 
+and Mixed (0.4623 ns/op)
 
 ```
 goos: windows
