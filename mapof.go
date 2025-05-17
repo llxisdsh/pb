@@ -50,6 +50,8 @@ const (
 	// minParallelBatchItems defines the minimum number of items required for parallel batch processing.
 	// Below this threshold, serial processing is used to avoid the overhead of goroutine creation.
 	minParallelBatchItems = 256
+	// resizeTimeThresholdPercent threshold for resize time ratio that triggers growth factor adjustment.
+	resizeTimeThresholdPercent = 0.1
 )
 
 const (
@@ -281,8 +283,10 @@ func (b *bucketOf) unlock() {
 type mapOfTable struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
-		buckets []bucketOf
-		size    []counterStripe
+		buckets     []bucketOf
+		size        []counterStripe
+		resizeStart int64
+		resizeDur   int64
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	buckets []bucketOf
@@ -291,6 +295,9 @@ type mapOfTable struct {
 	// occupies min(buckets_memory/1024, 64KB) of memory
 	// when the compile option `mapof_opt_enablepadding` is enabled
 	size []counterStripe
+
+	resizeStart int64
+	resizeDur   int64
 }
 
 func newMapOfTable(tableLen int) *mapOfTable {
@@ -703,11 +710,14 @@ func (m *MapOf[K, V]) resize(
 	}
 	tableLen := len(table.buckets)
 
+	resizeStart := runtimeNano()
+
 	var newTableLen int
 	if hint == mapGrowHint {
 		if len(sizeHint) == 0 {
-			// Grow the table with factor of 2.
-			newTableLen = tableLen << 1
+			factor := calcGrowthFactor(table.resizeDur, resizeStart-table.resizeStart)
+			newTableLen = tableLen * factor
+			//fmt.Printf("factor: %v, newTableLen: %v\n", factor, newTableLen)
 		} else {
 			// Grow the table to sizeHint.
 			newTableLen = calcTableLen(sizeHint[0])
@@ -741,10 +751,24 @@ func (m *MapOf[K, V]) resize(
 			copyBucketOf[K, V](table, 0, tableLen, newTable, m.keyHash, m.seed, m.intKey)
 		}
 	}
+
+	newTable.resizeStart = resizeStart
+	newTable.resizeDur = runtimeNano() - resizeStart
 	storePointer(&m.table, unsafe.Pointer(newTable))
 	storePointer(&m.resizeWg, nil)
 	wg.Done()
 	return newTable, true
+}
+
+func calcGrowthFactor(resizeDur, totalDur int64) int {
+	factor := 2
+	if resizeDur > 0 && totalDur > 0 {
+		resizeRate := float64(resizeDur) / float64(totalDur)
+		if resizeRate > resizeTimeThresholdPercent {
+			factor = 4
+		}
+	}
+	return factor
 }
 
 // calcParallelism calculates the number of goroutines for parallel processing.
@@ -2436,11 +2460,11 @@ func runtime_canSpin(i int) bool
 //go:nosplit
 func runtime_doSpin()
 
-//// nolint:all
-////
-////go:linkname runtimeNano runtime.nanotime
-////go:nosplit
-//func runtimeNano() int64
+// nolint:all
+//
+//go:linkname runtimeNano runtime.nanotime
+//go:nosplit
+func runtimeNano() int64
 
 type hashFunc func(unsafe.Pointer, uintptr) uintptr
 type equalFunc func(unsafe.Pointer, unsafe.Pointer) bool
