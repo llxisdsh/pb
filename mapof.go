@@ -51,7 +51,7 @@ const (
 	// Below this threshold, serial processing is used to avoid the overhead of goroutine creation.
 	minParallelBatchItems = 256
 	// resizeTimeThresholdPercent threshold for resize time ratio that triggers growth factor adjustment.
-	resizeTimeThresholdPercent = 0.1
+	resizeTimeThresholdPercent = 0.7
 )
 
 const (
@@ -296,8 +296,8 @@ type mapOfTable struct {
 	// when the compile option `mapof_opt_enablepadding` is enabled
 	size []counterStripe
 
-	resizeStart int64
-	resizeDur   int64
+	resizeEnd int64
+	resizeDur int64
 }
 
 func newMapOfTable(tableLen int) *mapOfTable {
@@ -307,8 +307,9 @@ func newMapOfTable(tableLen int) *mapOfTable {
 	}
 
 	return &mapOfTable{
-		buckets: buckets,
-		size:    make([]counterStripe, calcSizeLen(tableLen)),
+		buckets:   buckets,
+		size:      make([]counterStripe, calcSizeLen(tableLen)),
+		resizeEnd: runtimeNano(),
 	}
 }
 
@@ -715,8 +716,9 @@ func (m *MapOf[K, V]) resize(
 	var newTableLen int
 	if hint == mapGrowHint {
 		if len(sizeHint) == 0 {
-			factor := calcGrowthFactor(table.resizeDur, resizeStart-table.resizeStart)
+			factor := calcGrowthFactor(table.resizeDur, resizeStart-table.resizeEnd)
 			newTableLen = tableLen * factor
+			//newTableLen = tableLen << 1
 			//fmt.Printf("factor: %v, newTableLen: %v\n", factor, newTableLen)
 		} else {
 			// Grow the table to sizeHint.
@@ -752,21 +754,18 @@ func (m *MapOf[K, V]) resize(
 		}
 	}
 
-	newTable.resizeStart = resizeStart
-	newTable.resizeDur = runtimeNano() - resizeStart
+	newTable.resizeEnd = runtimeNano()
+	newTable.resizeDur = newTable.resizeEnd - resizeStart
 	storePointer(&m.table, unsafe.Pointer(newTable))
 	storePointer(&m.resizeWg, nil)
 	wg.Done()
 	return newTable, true
 }
 
-func calcGrowthFactor(resizeDur, totalDur int64) int {
+func calcGrowthFactor(resizeDur, processDur int64) int {
 	factor := 2
-	if resizeDur > 0 && totalDur > 0 {
-		resizeRate := float64(resizeDur) / float64(totalDur)
-		if resizeRate > resizeTimeThresholdPercent {
-			factor = 4
-		}
+	if processDur == 0 || float64(resizeDur)/float64(processDur) >= resizeTimeThresholdPercent {
+		factor = 4
 	}
 	return factor
 }
@@ -800,9 +799,9 @@ func copyBucketOfLock[K comparable, V any](
 	seed uintptr,
 	intKey bool,
 ) {
+	copied := 0
 	for i := start; i < end; i++ {
 		srcBucket := &table.buckets[i]
-		copied := 0
 		srcBucket.lock()
 		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 			for i := 0; i < entriesPerMapOfBucket; i++ {
@@ -844,9 +843,9 @@ func copyBucketOfLock[K comparable, V any](
 			}
 		}
 		srcBucket.unlock()
-		if copied != 0 {
-			destTable.addSize(uintptr(i), copied)
-		}
+	}
+	if copied != 0 {
+		destTable.addSize(0, copied)
 	}
 }
 
@@ -858,9 +857,9 @@ func copyBucketOf[K comparable, V any](
 	seed uintptr,
 	intKey bool,
 ) {
+	copied := 0
 	for i := start; i < end; i++ {
 		srcBucket := &table.buckets[i]
-		copied := 0
 		srcBucket.lock()
 		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 			for i := 0; i < entriesPerMapOfBucket; i++ {
@@ -900,9 +899,9 @@ func copyBucketOf[K comparable, V any](
 			}
 		}
 		srcBucket.unlock()
-		if copied != 0 {
-			destTable.addSizePlain(uintptr(i), copied)
-		}
+	}
+	if copied != 0 {
+		destTable.addSizePlain(0, copied)
 	}
 }
 
