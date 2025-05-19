@@ -29,8 +29,10 @@ const (
 		next unsafe.Pointer
 	}{})))/int(unsafe.Sizeof(unsafe.Pointer(nil))))
 
-	emptyMeta     uint64 = 0x8080808080808080 >> (64 - min(entriesPerMapOfBucket*8, 64))
-	emptyMetaSlot uint8  = 0x80
+	emptyMeta     uint64 = 0
+	emptyMetaSlot uint8  = 0
+	metaMask      uint64 = 0x8080808080808080 >> (64 - min(entriesPerMapOfBucket*8, 64))
+	metaSlotMask  uint8  = 0x80
 )
 
 const (
@@ -50,8 +52,6 @@ const (
 	// minParallelBatchItems defines the minimum number of items required for parallel batch processing.
 	// Below this threshold, serial processing is used to avoid the overhead of goroutine creation.
 	minParallelBatchItems = 256
-	// resizeTimeThresholdPercent threshold for resize time ratio that triggers growth factor adjustment.
-	resizeTimeThresholdPercent = 0.7
 )
 
 const (
@@ -283,10 +283,8 @@ func (b *bucketOf) unlock() {
 type mapOfTable struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
-		buckets     []bucketOf
-		size        []counterStripe
-		resizeStart int64
-		resizeDur   int64
+		buckets []bucketOf
+		size    []counterStripe
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	buckets []bucketOf
@@ -295,21 +293,12 @@ type mapOfTable struct {
 	// occupies min(buckets_memory/1024, 64KB) of memory
 	// when the compile option `mapof_opt_enablepadding` is enabled
 	size []counterStripe
-
-	resizeEnd int64
-	resizeDur int64
 }
 
 func newMapOfTable(tableLen int) *mapOfTable {
-	buckets := make([]bucketOf, tableLen)
-	for i := range buckets {
-		buckets[i].meta = emptyMeta
-	}
-
 	return &mapOfTable{
-		buckets:   buckets,
-		size:      make([]counterStripe, calcSizeLen(tableLen)),
-		resizeEnd: runtimeNano(),
+		buckets: make([]bucketOf, tableLen),
+		size:    make([]counterStripe, calcSizeLen(tableLen)),
 	}
 }
 
@@ -359,6 +348,10 @@ func (table *mapOfTable) isZero() bool {
 		}
 	}
 	return true
+}
+
+func (table *mapOfTable) capacity() int {
+	return len(table.buckets) * entriesPerMapOfBucket
 }
 
 // Init the MapOf, Allows custom key hasher (keyHash)
@@ -565,7 +558,7 @@ func (m *MapOf[K, V]) processEntry(
 			metaw := b.meta
 
 			if emptyBucket == nil {
-				emptyw := metaw & emptyMeta
+				emptyw := (^metaw) & metaMask // emptyw := markZeroBytes(metaw)
 				if emptyw != 0 {
 					emptyBucket = b
 					emptyIdx = firstMarkedByteIndex(emptyw)
@@ -711,15 +704,10 @@ func (m *MapOf[K, V]) resize(
 	}
 	tableLen := len(table.buckets)
 
-	resizeStart := runtimeNano()
-
 	var newTableLen int
 	if hint == mapGrowHint {
 		if len(sizeHint) == 0 {
-			factor := calcGrowthFactor(table.resizeDur, resizeStart-table.resizeEnd)
-			newTableLen = tableLen * factor
-			//newTableLen = tableLen << 1
-			//fmt.Printf("factor: %v, newTableLen: %v\n", factor, newTableLen)
+			newTableLen = tableLen << 1
 		} else {
 			// Grow the table to sizeHint.
 			newTableLen = calcTableLen(sizeHint[0])
@@ -754,20 +742,10 @@ func (m *MapOf[K, V]) resize(
 		}
 	}
 
-	newTable.resizeEnd = runtimeNano()
-	newTable.resizeDur = newTable.resizeEnd - resizeStart
 	storePointer(&m.table, unsafe.Pointer(newTable))
 	storePointer(&m.resizeWg, nil)
 	wg.Done()
 	return newTable, true
-}
-
-func calcGrowthFactor(resizeDur, processDur int64) int {
-	factor := 2
-	if processDur == 0 || float64(resizeDur)/float64(processDur) >= resizeTimeThresholdPercent {
-		factor = 4
-	}
-	return factor
 }
 
 // calcParallelism calculates the number of goroutines for parallel processing.
@@ -2226,9 +2204,9 @@ func h1(h uintptr, intKey bool) uintptr {
 // h2 extracts the byte-level hash for in-bucket lookups.
 func h2(h uintptr) uint8 {
 	if enableHashSpread {
-		return uint8(spread(h) & 0x7f)
+		return uint8(spread(h)) | metaSlotMask
 	}
-	return uint8(h & 0x7f)
+	return uint8(h) | metaSlotMask
 }
 
 // broadcast replicates a byte value across all bytes of an uint64.
@@ -2252,8 +2230,18 @@ func firstMarkedByteIndex(w uint64) int {
 // markZeroBytes implements SWAR (SIMD Within A Register) byte search.
 // It may produce false positives (e.g., for 0x0100), so results should be verified.
 // Returns an uint64 with the most significant bit of each byte set if that byte is zero.
+//
+// Notes:
+//
+//   - This SWAR algorithm identifies byte positions containing zero values.
+//   - The operation (w - 0x0101010101010101) triggers underflow for zero-value bytes,
+//     causing their most significant bit (MSB) to flip to 1.
+//   - The subsequent & (^w) operation isolates the MSB markers specifically for bytes
+//     that were originally zero.
+//   - Finally, & emptyMetaMask filters to only consider relevant data slots,
+//     using the mask-defined marker bits (MSB of each byte).
 func markZeroBytes(w uint64) uint64 {
-	return (w - 0x0101010101010101) & (^w) & emptyMeta
+	return (w - 0x0101010101010101) & (^w) & metaMask
 }
 
 // setByte sets the byte at index idx in the uint64 w to the value b.
@@ -2459,11 +2447,11 @@ func runtime_canSpin(i int) bool
 //go:nosplit
 func runtime_doSpin()
 
-// nolint:all
-//
-//go:linkname runtimeNano runtime.nanotime
-//go:nosplit
-func runtimeNano() int64
+//// nolint:all
+////
+////go:linkname runtimeNano runtime.nanotime
+////go:nosplit
+//func runtimeNano() int64
 
 type hashFunc func(unsafe.Pointer, uintptr) uintptr
 type equalFunc func(unsafe.Pointer, unsafe.Pointer) bool

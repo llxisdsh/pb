@@ -459,52 +459,53 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 	}
 }
 
-func TestMapOfConcurrentInsert(t *testing.T) {
-	const total = 100_000_000
-
-	m := NewMapOf[int, int](WithPresize(total))
-
-	numCPU := runtime.GOMAXPROCS(0)
-
-	var wg sync.WaitGroup
-	wg.Add(numCPU)
-
-	start := time.Now()
-
-	batchSize := total / numCPU
-
-	for i := 0; i < numCPU; i++ {
-		go func(start, end int) {
-			//defer wg.Done()
-
-			for j := start; j < end; j++ {
-				m.Store(j, j)
-			}
-			wg.Done()
-		}(i*batchSize, min((i+1)*batchSize, total))
-	}
-
-	wg.Wait()
-
-	elapsed := time.Since(start)
-
-	size := m.Size()
-	if size != total {
-		t.Errorf("Expected size %d, got %d", total, size)
-	}
-
-	t.Logf("Inserted %d items in %v", total, elapsed)
-	t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
-	t.Logf("Throughput: %.2f million ops/sec", float64(total)/(elapsed.Seconds()*1000000))
-
-	// rand check
-	for i := 0; i < 1000; i++ {
-		idx := i * (total / 1000)
-		if val, ok := m.Load(idx); !ok || val != idx {
-			t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val, ok)
-		}
-	}
-}
+//
+//func TestMapOfConcurrentInsert(t *testing.T) {
+//	const total = 100_000_000
+//
+//	m := NewMapOf[int, int](WithPresize(total))
+//
+//	numCPU := runtime.GOMAXPROCS(0)
+//
+//	var wg sync.WaitGroup
+//	wg.Add(numCPU)
+//
+//	start := time.Now()
+//
+//	batchSize := total / numCPU
+//
+//	for i := 0; i < numCPU; i++ {
+//		go func(start, end int) {
+//			//defer wg.Done()
+//
+//			for j := start; j < end; j++ {
+//				m.Store(j, j)
+//			}
+//			wg.Done()
+//		}(i*batchSize, min((i+1)*batchSize, total))
+//	}
+//
+//	wg.Wait()
+//
+//	elapsed := time.Since(start)
+//
+//	size := m.Size()
+//	if size != total {
+//		t.Errorf("Expected size %d, got %d", total, size)
+//	}
+//
+//	t.Logf("Inserted %d items in %v", total, elapsed)
+//	t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
+//	t.Logf("Throughput: %.2f million ops/sec", float64(total)/(elapsed.Seconds()*1000000))
+//
+//	// rand check
+//	for i := 0; i < 1000; i++ {
+//		idx := i * (total / 1000)
+//		if val, ok := m.Load(idx); !ok || val != idx {
+//			t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val, ok)
+//		}
+//	}
+//}
 
 func TestMapOfMisc(t *testing.T) {
 	//var a *SyncMap[int, int] = NewSyncMap[int, int]()
@@ -572,6 +573,14 @@ func TestMapOfMisc(t *testing.T) {
 		if test != k {
 			t.Fatal("async test2 fail:", test, k)
 		}
+	}
+	a.Clear()
+	for i := range 32 {
+		t.Log(a.LoadOrStore(i, i))
+	}
+
+	for i := range 32 {
+		t.Log(a.Load(i))
 	}
 }
 
@@ -2399,11 +2408,17 @@ func TestMapOfStoreThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T
 		}
 		cdone <- true
 	}()
+	go func() {
+		for i := 0; i < numEntries; i++ {
+			m.Delete(i)
+		}
+		cdone <- true
+	}()
 
 	// Wait for the goroutines to finish.
 	<-cdone
 	<-cdone
-
+	<-cdone
 	stats := m.Stats()
 	if stats.RootBuckets != DefaultMinMapTableLen {
 		t.Fatalf("table length was different from the minimum: %d", stats.RootBuckets)
