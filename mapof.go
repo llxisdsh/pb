@@ -251,7 +251,7 @@ func (b *bucketOf) lock() {
 		return
 	}
 
-	const enableSpin = true // Disabled: PAUSE saves power but degrades total throughput
+	const enableSpin = true // Notes: PAUSE saves power but degrades total throughput
 	const yieldSleep = 500 * time.Microsecond
 	spins := 0
 	for {
@@ -730,10 +730,13 @@ func (m *MapOf[K, V]) resize(
 			chunkSize := (tableLen + chunks - 1) / chunks
 			copyWg.Add(chunks)
 			for c := 0; c < chunks; c++ {
-				go func(start, end int) {
-					copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
-					copyWg.Done()
-				}(c*chunkSize, min((c+1)*chunkSize, tableLen))
+				go copyBucketParallel[K, V](
+					table, c*chunkSize, min((c+1)*chunkSize, tableLen),
+					newTable,
+					m.keyHash, m.seed, m.intKey,
+					hint == mapGrowHint,
+					&copyWg,
+				)
 			}
 			copyWg.Wait()
 		} else {
@@ -746,6 +749,24 @@ func (m *MapOf[K, V]) resize(
 	storePointer(&m.resizeWg, nil)
 	wg.Done()
 	return newTable, true
+}
+
+func copyBucketParallel[K comparable, V any](
+	table *mapOfTable,
+	start, end int,
+	destTable *mapOfTable,
+	hasher hashFunc,
+	seed uintptr,
+	intKey bool,
+	growth bool,
+	copyWg *sync.WaitGroup,
+) {
+	if growth {
+		copyBucketOf[K, V](table, start, end, destTable, hasher, seed, intKey)
+	} else {
+		copyBucketOfLock[K, V](table, start, end, destTable, hasher, seed, intKey)
+	}
+	copyWg.Done()
 }
 
 // calcParallelism calculates the number of goroutines for parallel processing.
@@ -823,7 +844,7 @@ func copyBucketOfLock[K comparable, V any](
 		srcBucket.unlock()
 	}
 	if copied != 0 {
-		destTable.addSize(0, copied)
+		destTable.addSize(uintptr(start), copied)
 	}
 }
 
@@ -879,7 +900,7 @@ func copyBucketOf[K comparable, V any](
 		srcBucket.unlock()
 	}
 	if copied != 0 {
-		destTable.addSizePlain(0, copied)
+		destTable.addSizePlain(uintptr(start), copied)
 	}
 }
 
