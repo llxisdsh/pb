@@ -48,7 +48,8 @@ const (
 	defaultMinMapTableLen = 32
 	// minBucketsPerGoroutine defines the minimum table size required to trigger parallel resizing.
 	// Tables smaller than this threshold will use single-threaded resizing for better efficiency.
-	minBucketsPerGoroutine = 4
+	minBucketsPerGoroutine         = 4
+	minBucketsPerParallelGoroutine = 64
 	// minParallelBatchItems defines the minimum number of items required for parallel batch processing.
 	// Below this threshold, serial processing is used to avoid the overhead of goroutine creation.
 	minParallelBatchItems = 256
@@ -72,6 +73,10 @@ const (
 	// to reduce contention latency. This improves performance for short waits but
 	// may slightly reduce throughput under high contention.
 	enableSpin = true
+
+	// enableParallelResize enables concurrent resizing using worker goroutines.
+	// Trade-off: Faster but uses more memory. Disable for low-CPU environments.
+	enableParallelResize = true
 )
 
 // MapOf is a high-performance concurrent map implementation that offers significant
@@ -282,9 +287,10 @@ type resizeState struct {
 	wg        sync.WaitGroup
 	newWg     sync.WaitGroup
 	chunkSize int
-	chunks    uint32
-	process   atomic.Uint32
-	completed atomic.Uint32
+	works     atomic.Int32
+	chunks    int32
+	process   atomic.Int32
+	completed atomic.Int32
 }
 
 // mapOfTable represents the internal hash table structure.
@@ -699,6 +705,10 @@ func (m *MapOf[K, V]) resize(
 		rs.newWg.Add(1)
 	}
 
+	if enableParallelResize {
+		rs.works.Add(1)
+	}
+
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
 	if !m.resizeState.CompareAndSwap(nil, rs) {
 		// Someone else started resize. Wait for it to finish.
@@ -740,15 +750,18 @@ func (m *MapOf[K, V]) resize(
 	newTable := newMapOfTable(newTableLen)
 
 	if hint != mapClearHint {
-		chunkSize, chunks := calcParallelism(tableLen, minBucketsPerGoroutine)
+		cpus := runtime.NumCPU()
+		chunkSize, chunksInt := calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
+		chunks := int32(chunksInt)
 		rs.chunkSize = chunkSize
-		rs.chunks = uint32(chunks)
+		rs.chunks = chunks
 		table.newTable.Store(newTable)
 		rs.newWg.Done()
 
+		// start copying
 		for {
 			process := rs.process.Add(1)
-			if process > uint32(chunks) {
+			if process > chunks {
 				break
 			}
 			process--
@@ -760,10 +773,33 @@ func (m *MapOf[K, V]) resize(
 				copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
 			}
 			rs.completed.Add(1)
+
+			if enableParallelResize {
+				process = rs.process.Load()
+				if process > chunks {
+					break
+				}
+				remainingLen := tableLen - int(process)*chunkSize
+				needHelpers := remainingLen / minBucketsPerParallelGoroutine
+				works := int(rs.works.Load())
+				addHelpers := needHelpers - works
+
+				if addHelpers > 0 && works < cpus {
+					remainingCpus := cpus - works
+					spawnHelpers := min(addHelpers, remainingCpus)
+					if spawnHelpers > 0 {
+						// fmt.Printf("tableLen: %v, spawnHelpers: %v\n", tableLen, spawnHelpers)
+						rs.works.Add(int32(spawnHelpers))
+						for i := 0; i < spawnHelpers; i++ {
+							go m.helpCopy(rs)
+						}
+					}
+				}
+			}
 		}
 
 		var spins int
-		for rs.completed.Load() < uint32(chunks) {
+		for rs.completed.Load() < chunks {
 			delay(&spins)
 		}
 	}
@@ -775,12 +811,18 @@ func (m *MapOf[K, V]) resize(
 }
 
 func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
+	if enableParallelResize {
+		rs.works.Add(1)
+	}
 	rs.newWg.Wait()
+	m.helpCopy(rs)
+	rs.wg.Wait()
+}
 
+func (m *MapOf[K, V]) helpCopy(rs *resizeState) {
 	table := rs.table
 	newTable := table.newTable.Load()
 	if newTable == nil {
-		rs.wg.Wait()
 		return
 	}
 
@@ -788,14 +830,12 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 	chunks := rs.chunks
 	chunkSize := rs.chunkSize
 	isGrowth := len(newTable.buckets) > tableLen
-
 	for {
 		process := rs.process.Add(1)
 		if process > chunks {
 			break
 		}
 		process--
-
 		start := int(process) * chunkSize
 		end := min(start+chunkSize, tableLen)
 		if isGrowth {
@@ -805,8 +845,6 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 		}
 		rs.completed.Add(1)
 	}
-
-	rs.wg.Wait()
 }
 
 // calcParallelism calculates the number of goroutines for parallel processing.
@@ -814,19 +852,18 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 // Parameters:
 //   - items: Number of items to process.
 //   - threshold: Minimum threshold to enable parallel processing.
+//   - number of available CPU cores
 //
 // Returns:
 //   - chunks: Suggested degree of parallelism (number of goroutines).
 //   - chunkSize: Number of items processed per goroutine
-func calcParallelism(items, threshold int) (chunkSize, chunks int) {
+func calcParallelism(items, threshold, cpus int) (chunkSize, chunks int) {
 	// If the items is too small, use single-threaded processing.
 	// Adjusts the parallel process trigger threshold using a scaling factor.
 	// example: items < threshold * 2
 	if items <= threshold {
 		return items, 1
 	}
-
-	cpus := runtime.GOMAXPROCS(0)
 
 	chunks = items / threshold
 	if chunks > cpus {
@@ -852,7 +889,9 @@ func copyBucketOfLock[K comparable, V any](
 		srcBucket := &table.buckets[i]
 		srcBucket.lock()
 		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
-			for i := 0; i < entriesPerMapOfBucket; i++ {
+			metaw := b.meta
+			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
+				i := firstMarkedByteIndex(markedw)
 				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
 					// We could store the hash value in the Entry during processEntry to avoid
 					// recalculating it here, which would speed up the resize process.
@@ -867,12 +906,13 @@ func copyBucketOfLock[K comparable, V any](
 					b := destb
 				appendToBucket:
 					for {
-						for i := 0; i < entriesPerMapOfBucket; i++ {
-							if b.entries[i] == nil {
-								b.meta = setByte(b.meta, h2v, i)
-								b.entries[i] = unsafe.Pointer(e)
-								break appendToBucket
-							}
+						metaw := b.meta
+						emptyw := (^metaw) & metaMask
+						if emptyw != 0 {
+							emptyIdx := firstMarkedByteIndex(emptyw)
+							b.meta = setByte(metaw, h2v, emptyIdx)
+							b.entries[emptyIdx] = unsafe.Pointer(e)
+							break appendToBucket
 						}
 						next := (*bucketOf)(b.next)
 						if next == nil {
@@ -910,7 +950,9 @@ func copyBucketOf[K comparable, V any](
 		srcBucket := &table.buckets[i]
 		srcBucket.lock()
 		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
-			for i := 0; i < entriesPerMapOfBucket; i++ {
+			metaw := b.meta
+			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
+				i := firstMarkedByteIndex(markedw)
 				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
 					// We could store the hash value in the Entry during processEntry to avoid
 					// recalculating it here, which would speed up the resize process.
@@ -924,12 +966,13 @@ func copyBucketOf[K comparable, V any](
 					b := destb
 				appendToBucket:
 					for {
-						for i := 0; i < entriesPerMapOfBucket; i++ {
-							if b.entries[i] == nil {
-								b.meta = setByte(b.meta, h2v, i)
-								b.entries[i] = unsafe.Pointer(e)
-								break appendToBucket
-							}
+						metaw := b.meta
+						emptyw := (^metaw) & metaMask
+						if emptyw != 0 {
+							emptyIdx := firstMarkedByteIndex(emptyw)
+							b.meta = setByte(metaw, h2v, emptyIdx)
+							b.entries[emptyIdx] = unsafe.Pointer(e)
+							break appendToBucket
 						}
 						next := (*bucketOf)(b.next)
 						if next == nil {
@@ -1512,7 +1555,9 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 		rootb := &table.buckets[i]
 		rootb.lock()
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
-			for i := 0; i < entriesPerMapOfBucket; i++ {
+			metaw := b.meta
+			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
+				i := firstMarkedByteIndex(markedw)
 				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
 					entries = append(entries, e)
 				}
@@ -1713,7 +1758,7 @@ func (m *MapOf[K, V]) batchProcess(
 	chunks := 1
 	var chunkSize int
 	if canParallel {
-		chunkSize, chunks = calcParallelism(itemCount, minParallelBatchItems)
+		chunkSize, chunks = calcParallelism(itemCount, minParallelBatchItems, runtime.GOMAXPROCS(0))
 	}
 
 	if chunks > 1 {
