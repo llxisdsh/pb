@@ -313,15 +313,15 @@ func TestInsert_pb_MapOf(t *testing.T) {
 
 | Implementation & Case       | Throughput<br>(M ops/s) | Performance Scale      |
 |-----------------------------|------------------------:|------------------------|
-| pb_MapOf (64/pre)           |                  145.88 | ━━━━━━━━━━━━━━━━━━━━━━ |
+| pb_MapOf (64/pre)           |                  146.52 | ━━━━━━━━━━━━━━━━━━━━━━ |
 | xsync_MapV4 (64/pre)        |                   65.00 | ━━━━━━━━━              |
-| pb_MapOf (64)               |                   39.50 | ━━━━━━                 |
+| pb_MapOf (64)               |                   39.84 | ━━━━━━                 |
 | zhangyunhao116_skipmap (64) |                   23.40 | ━━━━━                  |
 | xsync_MapV4 (64)            |                   22.83 | ━━━━━                  |
-| pb_MapOf (1/pre)            |                   20.54 | ━━━━                   |
+| pb_MapOf (1/pre)            |                   21.30 | ━━━━                   |
 | pb_HashTrieMap (64)         |                   18.57 | ━━━                    |
-| pb_MapOf (1)                |                   14.38 | ━━                     |
 | original_syncMap (64)       |                   13.55 | ━━                     |
+| pb_MapOf (1)                |                   12.68 | ━━                     |
 | xsync_MapV4 (1/pre)         |                    5.80 | ━                      |
 | xsync_MapV4 (1)             |                    4.82 | ━                      |
 | zhangyunhao116_skipmap (1)  |                    3.56 | ━                      |

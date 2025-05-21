@@ -76,7 +76,7 @@ const (
 
 	// enableParallelResize enables concurrent resizing using worker goroutines.
 	// Trade-off: Faster but uses more memory. Disable for low-CPU environments.
-	enableParallelResize = true
+	enableParallelResize = false
 )
 
 // MapOf is a high-performance concurrent map implementation that offers significant
