@@ -57,6 +57,8 @@ type structKey struct {
 func TestMap_BucketOfStructSize(t *testing.T) {
 	t.Logf("CacheLineSize : %d", CacheLineSize)
 	t.Logf("entriesPerMapOfBucket : %d", entriesPerMapOfBucket)
+	t.Log("resizeState size:", unsafe.Sizeof(resizeState{}))
+
 	size := unsafe.Sizeof(counterStripe{})
 	t.Log("counterStripe size:", size)
 	if //goland:noinspection GoBoolExpressions
@@ -790,7 +792,7 @@ func TestMapOfCalcLen(t *testing.T) {
 	for i := 0; i < 1000000; i++ {
 		tableLen = calcTableLen(i)
 		sizeLen = calcSizeLen(i)
-		parallelism = calcParallelism(i, minBucketsPerGoroutine)
+		_, parallelism = calcParallelism(i, minBucketsPerGoroutine)
 		if tableLen != lastTableLen || sizeLen != lastSizeLen || parallelism != lastParallelism {
 			t.Log(i, tableLen, sizeLen, parallelism)
 			lastTableLen, lastSizeLen, lastParallelism = tableLen, sizeLen, parallelism

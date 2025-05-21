@@ -19,7 +19,6 @@ const (
 	opByteIdx         = 7
 	opByteMask uint64 = 0xff00000000000000
 	opLockMask uint64 = 1 << (opByteIdx*8 + 7)
-	opCopyMask uint64 = 1 << (opByteIdx*8 + 6)
 
 	// entriesPerMapOfBucket defines the number of MapOf entries per bucket.
 	// This value is automatically calculated to fit within a cache line,
@@ -49,7 +48,7 @@ const (
 	defaultMinMapTableLen = 32
 	// minBucketsPerGoroutine defines the minimum table size required to trigger parallel resizing.
 	// Tables smaller than this threshold will use single-threaded resizing for better efficiency.
-	minBucketsPerGoroutine = 64
+	minBucketsPerGoroutine = 4
 	// minParallelBatchItems defines the minimum number of items required for parallel batch processing.
 	// Below this threshold, serial processing is used to avoid the overhead of goroutine creation.
 	minParallelBatchItems = 256
@@ -66,6 +65,13 @@ const (
 	// This reduces collisions for complex key types like strings, but adds a small computational overhead.
 	// For integer keys, spreading is not applied as their natural distribution is already sufficient.
 	enableHashSpread = false
+
+	// enableSpin controls whether spinning is enabled in custom synchronization logic
+	// (e.g., bucket locks or other wait mechanisms). When true, waiting operations
+	// will call runtime_doSpin() directly, which uses the CPU's PAUSE instruction
+	// to reduce contention latency. This improves performance for short waits but
+	// may slightly reduce throughput under high contention.
+	enableSpin = true
 )
 
 // MapOf is a high-performance concurrent map implementation that offers significant
@@ -142,12 +148,6 @@ type MapOf[K comparable, V any] struct {
 	minTableLen  int  // WithPresize
 	growOnly     bool // WithGrowOnly
 	intKey       bool
-}
-
-// resizeState represents the current state of a resizing operation
-type resizeState struct {
-	wg       sync.WaitGroup
-	newTable *mapOfTable
 }
 
 // NewMapOf creates a new MapOf instance. Direct initialization is also supported.
@@ -254,27 +254,17 @@ type bucketOf struct {
 // Partially references:
 // [https://github.com/facebook/folly/blob/main/folly/synchronization/PicoSpinLock.h]
 func (b *bucketOf) lock() {
-	if b.tryLock() {
+	cur := atomic.LoadUint64(&b.meta)
+	if atomic.CompareAndSwapUint64(&b.meta, cur&(^opLockMask), cur|opLockMask) {
 		return
 	}
+	b.slowLock()
+}
 
-	const enableSpin = true // Notes: PAUSE saves power but degrades total throughput
-	const yieldSleep = 500 * time.Microsecond
+func (b *bucketOf) slowLock() {
 	spins := 0
-	for {
-		if //goland:noinspection ALL
-		enableSpin && runtime_canSpin(spins) {
-			runtime_doSpin()
-			spins++
-		} else {
-			// time.Sleep with non-zero duration (≈Millisecond level) works effectively
-			// as backoff under high concurrency.
-			time.Sleep(yieldSleep)
-			spins = 0
-		}
-		if b.tryLock() {
-			return
-		}
+	for !b.tryLock() {
+		delay(&spins)
 	}
 }
 
@@ -286,24 +276,24 @@ func (b *bucketOf) unlock() {
 	storeOp(&b.meta, opLockMask, false)
 }
 
-func (b *bucketOf) isCopied() bool {
-	return loadOp(&b.meta, opCopyMask)
-}
-
-func (b *bucketOf) setCopied() {
-	storeOp(&b.meta, opCopyMask, true)
-}
-
-func (b *bucketOf) isCopiedInLock() bool {
-	return getOp(b.meta, opCopyMask)
+// resizeState represents the current state of a resizing operation
+type resizeState struct {
+	table     *mapOfTable
+	wg        sync.WaitGroup
+	newWg     sync.WaitGroup
+	chunkSize int
+	chunks    uint32
+	process   atomic.Uint32
+	completed atomic.Uint32
 }
 
 // mapOfTable represents the internal hash table structure.
 type mapOfTable struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
-		buckets []bucketOf
-		size    []counterStripe
+		buckets  []bucketOf
+		size     []counterStripe
+		newTable atomic.Pointer[mapOfTable]
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	buckets []bucketOf
@@ -312,6 +302,9 @@ type mapOfTable struct {
 	// occupies min(buckets_memory/1024, 64KB) of memory
 	// when the compile option `mapof_opt_enablepadding` is enabled
 	size []counterStripe
+
+	// temporarily store the resized new table
+	newTable atomic.Pointer[mapOfTable]
 }
 
 func newMapOfTable(tableLen int) *mapOfTable {
@@ -548,7 +541,7 @@ func (m *MapOf[K, V]) processEntry(
 		if rs := m.resizeState.Load(); rs != nil {
 			rootb.unlock()
 			// Wait for the current resize operation to complete
-			rs.wg.Wait()
+			m.helpCopyAndWait(rs)
 			table = m.table.Load()
 			continue
 		}
@@ -684,33 +677,35 @@ const (
 //   - sizeHint: If provided, specifies the target size for growth.
 //
 // Returns:
-//   - *mapOfTable: The most up-to-date table reference.
 //   - bool: True if this goroutine performed the resize, false if another goroutine already did it.
 //
 //go:noinline
 func (m *MapOf[K, V]) resize(
 	knownTable *mapOfTable,
 	hint mapResizeHint,
-	sizeHint ...int) (*mapOfTable, bool) {
+	sizeHint ...int) bool {
 
 	rs := m.resizeState.Load()
 	if rs != nil {
-		rs.wg.Wait()
-		// Now the table should be initialized
-		return m.table.Load(), false
+		m.helpCopyAndWait(rs)
+		return false
 	}
 
 	// Create a new WaitGroup for the current resize operation
 	rs = new(resizeState)
+	rs.table = knownTable
 	rs.wg.Add(1)
+	if hint != mapClearHint {
+		rs.newWg.Add(1)
+	}
 
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
 	if !m.resizeState.CompareAndSwap(nil, rs) {
 		// Someone else started resize. Wait for it to finish.
 		if rs = m.resizeState.Load(); rs != nil {
-			rs.wg.Wait()
+			m.helpCopyAndWait(rs)
 		}
-		return m.table.Load(), false
+		return false
 	}
 
 	// Although the table is always changed when resizeWg is not nil,
@@ -720,73 +715,98 @@ func (m *MapOf[K, V]) resize(
 		// If the table has already been changed, return directly
 		m.resizeState.Store(nil)
 		rs.wg.Done()
-		return table, false
+		return false
 	}
 	tableLen := len(table.buckets)
 
 	var newTableLen int
 	if hint == mapGrowHint {
 		if len(sizeHint) == 0 {
+			// Growth the table with factor of 2
 			newTableLen = tableLen << 1
 		} else {
-			// Grow the table to sizeHint.
+			// Grow the table to sizeHint
 			newTableLen = calcTableLen(sizeHint[0])
 		}
 		m.totalGrowths.Add(1)
 	} else if hint == mapShrinkHint {
-		// Shrink the table with factor of 2.
+		// Shrink the table with factor of 2
 		newTableLen = tableLen >> 1
 		m.totalShrinks.Add(1)
 	} else {
 		newTableLen = m.minTableLen
 	}
+
 	newTable := newMapOfTable(newTableLen)
+
 	if hint != mapClearHint {
-		// Calculate the parallel count
-		chunks := calcParallelism(tableLen, minBucketsPerGoroutine)
-		if chunks > 1 {
-			var copyWg sync.WaitGroup
-			// Simply evenly distributed
-			chunkSize := (tableLen + chunks - 1) / chunks
-			copyWg.Add(chunks)
-			for c := 0; c < chunks; c++ {
-				go copyBucketParallel[K, V](
-					table, c*chunkSize, min((c+1)*chunkSize, tableLen),
-					newTable,
-					m.keyHash, m.seed, m.intKey,
-					hint == mapGrowHint,
-					&copyWg,
-				)
+		chunkSize, chunks := calcParallelism(tableLen, minBucketsPerGoroutine)
+		rs.chunkSize = chunkSize
+		rs.chunks = uint32(chunks)
+		table.newTable.Store(newTable)
+		rs.newWg.Done()
+
+		for {
+			process := rs.process.Add(1)
+			if process > uint32(chunks) {
+				break
 			}
-			copyWg.Wait()
-		} else {
-			// Serial processing
-			copyBucketOf[K, V](table, 0, tableLen, newTable, m.keyHash, m.seed, m.intKey)
+			process--
+			start := int(process) * chunkSize
+			end := min(start+chunkSize, tableLen)
+			if hint == mapGrowHint {
+				copyBucketOf[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
+			} else {
+				copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
+			}
+			rs.completed.Add(1)
+		}
+
+		var spins int
+		for rs.completed.Load() < uint32(chunks) {
+			delay(&spins)
 		}
 	}
 
 	m.table.Store(newTable)
 	m.resizeState.Store(nil)
 	rs.wg.Done()
-	return newTable, true
+	return true
 }
 
-func copyBucketParallel[K comparable, V any](
-	table *mapOfTable,
-	start, end int,
-	destTable *mapOfTable,
-	hasher hashFunc,
-	seed uintptr,
-	intKey bool,
-	growth bool,
-	copyWg *sync.WaitGroup,
-) {
-	if growth {
-		copyBucketOf[K, V](table, start, end, destTable, hasher, seed, intKey)
-	} else {
-		copyBucketOfLock[K, V](table, start, end, destTable, hasher, seed, intKey)
+func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
+	rs.newWg.Wait()
+
+	table := rs.table
+	newTable := table.newTable.Load()
+	if newTable == nil {
+		rs.wg.Wait()
+		return
 	}
-	copyWg.Done()
+
+	tableLen := len(table.buckets)
+	chunks := rs.chunks
+	chunkSize := rs.chunkSize
+	isGrowth := len(newTable.buckets) > tableLen
+
+	for {
+		process := rs.process.Add(1)
+		if process > chunks {
+			break
+		}
+		process--
+
+		start := int(process) * chunkSize
+		end := min(start+chunkSize, tableLen)
+		if isGrowth {
+			copyBucketOf[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
+		} else {
+			copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
+		}
+		rs.completed.Add(1)
+	}
+
+	rs.wg.Wait()
 }
 
 // calcParallelism calculates the number of goroutines for parallel processing.
@@ -796,17 +816,26 @@ func copyBucketParallel[K comparable, V any](
 //   - threshold: Minimum threshold to enable parallel processing.
 //
 // Returns:
-//   - Suggested degree of parallelism (number of goroutines).
-func calcParallelism(items, threshold int) int {
+//   - chunks: Suggested degree of parallelism (number of goroutines).
+//   - chunkSize: Number of items processed per goroutine
+func calcParallelism(items, threshold int) (chunkSize, chunks int) {
 	// If the items is too small, use single-threaded processing.
 	// Adjusts the parallel process trigger threshold using a scaling factor.
 	// example: items < threshold * 2
-	if items < threshold {
-		return 1
+	if items <= threshold {
+		return items, 1
 	}
 
-	// If there is only one processor, use single-threaded processing.
-	return max(min(items/threshold, runtime.GOMAXPROCS(0)), 1)
+	cpus := runtime.GOMAXPROCS(0)
+
+	chunks = items / threshold
+	if chunks > cpus {
+		chunks = cpus
+	}
+
+	chunkSize = (items + chunks - 1) / chunks
+
+	return chunkSize, chunks
 }
 
 // copyBucketOfLock unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
@@ -920,7 +949,7 @@ func copyBucketOf[K comparable, V any](
 		srcBucket.unlock()
 	}
 	if copied != 0 {
-		destTable.addSizePlain(uintptr(start), copied)
+		destTable.addSize(uintptr(start), copied)
 	}
 }
 
@@ -1459,11 +1488,8 @@ func (m *MapOf[K, V]) Clear() {
 	if table == nil {
 		return
 	}
-	var ok bool
-	for {
-		if table, ok = m.resize(table, mapClearHint); ok {
-			return
-		}
+	for !m.resize(table, mapClearHint) {
+		table = m.table.Load()
 	}
 }
 
@@ -1669,30 +1695,28 @@ func (m *MapOf[K, V]) batchProcess(
 		// Pre-growth check
 		if newItemsEstimate > 0 {
 			// Retry the resize until it succeeds
-			var ok bool
 			for {
 				growThreshold := int(float64(len(table.buckets)*entriesPerMapOfBucket) * mapLoadFactor)
 				sizeHint := table.sumSize() + newItemsEstimate
 				if sizeHint <= growThreshold {
 					break
 				}
-				if table, ok = m.resize(table, mapGrowHint, sizeHint); ok {
+				if m.resize(table, mapGrowHint, sizeHint) {
 					break
 				}
+				table = m.table.Load()
 			}
 		}
 	}
 
 	// Calculate the parallel count
 	chunks := 1
+	var chunkSize int
 	if canParallel {
-		chunks = calcParallelism(itemCount, minParallelBatchItems)
+		chunkSize, chunks = calcParallelism(itemCount, minParallelBatchItems)
 	}
 
 	if chunks > 1 {
-		// Calculate data volume for each goroutine
-		chunkSize := (itemCount + chunks - 1) / chunks
-
 		var wg sync.WaitGroup
 		wg.Add(chunks)
 		for i := 0; i < chunks; i++ {
@@ -2321,6 +2345,20 @@ func nextPowOf2(n int) int {
 	v |= v >> 32
 	v++
 	return int(v)
+}
+
+func delay(spins *int) {
+	const yieldSleep = 500 * time.Microsecond
+	if //goland:noinspection ALL
+	enableSpin && runtime_canSpin(*spins) {
+		runtime_doSpin()
+		*spins++
+	} else {
+		// time.Sleep with non-zero duration (≈Millisecond level) works effectively
+		// as backoff under high concurrency.
+		time.Sleep(yieldSleep)
+		*spins = 0
+	}
 }
 
 func loadPointer(addr *unsafe.Pointer) unsafe.Pointer {
