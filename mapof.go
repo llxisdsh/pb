@@ -984,6 +984,7 @@ func copyBucketOf[K comparable, V any](
 		srcBucket.unlock()
 	}
 	if copied != 0 {
+		// copyBucketOf is used during multi-threaded growth, requiring a thread-safe addSize.
 		destTable.addSize(uintptr(start), copied)
 	}
 }
