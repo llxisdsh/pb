@@ -48,8 +48,8 @@ const (
 	defaultMinMapTableLen = 32
 	// minBucketsPerGoroutine defines the minimum table size required to trigger parallel resizing.
 	// Tables smaller than this threshold will use single-threaded resizing for better efficiency.
-	minBucketsPerGoroutine         = 4
-	minBucketsPerParallelGoroutine = 64
+	minBucketsPerGoroutine       = 4
+	minBucketsPerHelperGoroutine = 64
 	// minParallelBatchItems defines the minimum number of items required for parallel batch processing.
 	// Below this threshold, serial processing is used to avoid the overhead of goroutine creation.
 	minParallelBatchItems = 256
@@ -342,12 +342,12 @@ func (table *mapOfTable) addSize(bucketIdx uintptr, delta int) {
 	atomic.AddUintptr(&table.size[cidx].c, uintptr(delta))
 }
 
-// addSizePlain adds delta to the size counter without atomic operations.
-// This method should only be used when thread safety is guaranteed by the caller.
-func (table *mapOfTable) addSizePlain(bucketIdx uintptr, delta int) {
-	cidx := uintptr(len(table.size)-1) & bucketIdx
-	table.size[cidx].c += uintptr(delta)
-}
+//// addSizePlain adds delta to the size counter without atomic operations.
+//// This method should only be used when thread safety is guaranteed by the caller.
+//func (table *mapOfTable) addSizePlain(bucketIdx uintptr, delta int) {
+//	cidx := uintptr(len(table.size)-1) & bucketIdx
+//	table.size[cidx].c += uintptr(delta)
+//}
 
 // sumSize calculates the total number of entries in the table by summing all counter stripes.
 func (table *mapOfTable) sumSize() int {
@@ -366,10 +366,6 @@ func (table *mapOfTable) isZero() bool {
 		}
 	}
 	return true
-}
-
-func (table *mapOfTable) capacity() int {
-	return len(table.buckets) * entriesPerMapOfBucket
 }
 
 // Init the MapOf, Allows custom key hasher (keyHash)
@@ -437,8 +433,6 @@ func (m *MapOf[K, V]) init(
 
 // initSlow may be called concurrently by multiple goroutines, so it requires
 // synchronization with a "lock" mechanism.
-//
-//go:noinline
 func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	rs := m.resizeState.Load()
 	if rs != nil {
@@ -577,7 +571,7 @@ func (m *MapOf[K, V]) processEntry(
 			metaw := b.meta
 
 			if emptyBucket == nil {
-				emptyw := (^metaw) & metaMask // emptyw := markZeroBytes(metaw)
+				emptyw := (^metaw) & metaMask
 				if emptyw != 0 {
 					emptyBucket = b
 					emptyIdx = firstMarkedByteIndex(emptyw)
@@ -684,8 +678,6 @@ const (
 //
 // Returns:
 //   - bool: True if this goroutine performed the resize, false if another goroutine already did it.
-//
-//go:noinline
 func (m *MapOf[K, V]) resize(
 	knownTable *mapOfTable,
 	hint mapResizeHint,
@@ -780,7 +772,7 @@ func (m *MapOf[K, V]) resize(
 					break
 				}
 				remainingLen := tableLen - int(process)*chunkSize
-				needHelpers := remainingLen / minBucketsPerParallelGoroutine
+				needHelpers := remainingLen / minBucketsPerHelperGoroutine
 				works := int(rs.works.Load())
 				addHelpers := needHelpers - works
 
@@ -2361,6 +2353,42 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 	return (w &^ (0xff << shift)) | (uint64(b) << shift)
 }
 
+//func casByte(addr *uint64, idx int, old, new uint8 /*, tryCount int*/) bool {
+//	shift := idx << 3
+//	clearMask := ^(uint64(0xff) << shift)
+//	newVal := uint64(new) << shift
+//	for /*tryCount != 0*/ {
+//		cur := atomic.LoadUint64(addr)
+//		if uint8((cur>>shift)&0xff) != old {
+//			return false
+//		}
+//
+//		nv := (cur & clearMask) | newVal
+//		if atomic.CompareAndSwapUint64(addr, cur, nv) {
+//			return true
+//		}
+//		/*tryCount--*/
+//	}
+//	/*return false*/
+//}
+//	func getByte(w uint64, idx int) uint8 {
+//		shift := idx << 3
+//		return uint8((w >> shift) & 0xff)
+//	}
+//
+//	func storeByte(addr *uint64, idx int, newByte uint8) {
+//		shift := idx << 3
+//		mask := uint64(0xff) << shift
+//
+//		for {
+//			oldVal := atomic.LoadUint64(addr)
+//			newVal := (oldVal &^ mask) | (uint64(newByte) << shift)
+//			if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
+//				return
+//			}
+//		}
+//	}
+
 // nextPowOf2 calculates the smallest power of 2 that is greater than or equal to n.
 // Compatible with both 32-bit and 64-bit systems.
 func nextPowOf2(n int) int {
@@ -2454,45 +2482,9 @@ func storeUint64(addr *uint64, val uint64) {
 	}
 }
 
-func casPointer(addr *unsafe.Pointer, oldPtr, newPtr unsafe.Pointer) bool {
-	return atomic.CompareAndSwapPointer(addr, oldPtr, newPtr)
-}
-
-//func casByte(addr *uint64, idx int, old, new uint8 /*, tryCount int*/) bool {
-//	shift := idx << 3
-//	clearMask := ^(uint64(0xff) << shift)
-//	newVal := uint64(new) << shift
-//	for /*tryCount != 0*/ {
-//		cur := atomic.LoadUint64(addr)
-//		if uint8((cur>>shift)&0xff) != old {
-//			return false
-//		}
-//
-//		nv := (cur & clearMask) | newVal
-//		if atomic.CompareAndSwapUint64(addr, cur, nv) {
-//			return true
-//		}
-//		/*tryCount--*/
-//	}
-//	/*return false*/
+//func casPointer(addr *unsafe.Pointer, oldPtr, newPtr unsafe.Pointer) bool {
+//	return atomic.CompareAndSwapPointer(addr, oldPtr, newPtr)
 //}
-//	func getByte(w uint64, idx int) uint8 {
-//		shift := idx << 3
-//		return uint8((w >> shift) & 0xff)
-//	}
-//
-//	func storeByte(addr *uint64, idx int, newByte uint8) {
-//		shift := idx << 3
-//		mask := uint64(0xff) << shift
-//
-//		for {
-//			oldVal := atomic.LoadUint64(addr)
-//			newVal := (oldVal &^ mask) | (uint64(newByte) << shift)
-//			if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
-//				return
-//			}
-//		}
-//	}
 
 func setOp(meta uint64, mask uint64, value bool) uint64 {
 	if value {
@@ -2506,10 +2498,14 @@ func getOp(meta uint64, mask uint64) bool {
 	return meta&mask != 0
 }
 
-func loadOp(addr *uint64, mask uint64) bool {
-	cur := atomic.LoadUint64(addr)
-	return getOp(cur, mask)
+func clearOp(meta uint64) uint64 {
+	return meta & (^opByteMask)
 }
+
+//func loadOp(addr *uint64, mask uint64) bool {
+//	cur := atomic.LoadUint64(addr)
+//	return getOp(cur, mask)
+//}
 
 func casOp(addr *uint64, mask uint64, old, new bool) bool {
 	for {
@@ -2531,10 +2527,6 @@ func storeOp(addr *uint64, mask uint64, value bool) {
 	} else {
 		atomic.AndUint64(addr, ^mask)
 	}
-}
-
-func clearOp(meta uint64) uint64 {
-	return meta & (^opByteMask)
 }
 
 // noescape hides a pointer from escape analysis.  noescape is
