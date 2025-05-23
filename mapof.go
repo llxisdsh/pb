@@ -131,35 +131,35 @@ const (
 type MapOf[K comparable, V any] struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
-		table        atomic.Pointer[mapOfTable]
-		resizeState  atomic.Pointer[resizeState]
-		totalGrowths atomic.Uint32
-		totalShrinks atomic.Uint32
-		seed         uintptr
-		keyHash      hashFunc
-		valEqual     equalFunc
-		minTableLen  int
-		growOnly     bool
-		intKey       bool
+		table         atomic.Pointer[mapOfTable]
+		resizeState   atomic.Pointer[resizeState]
+		totalGrowths  atomic.Uint32
+		totalShrinks  atomic.Uint32
+		seed          uintptr
+		keyHash       hashFunc
+		valEqual      equalFunc
+		minTableLen   int
+		shrinkEnabled bool
+		intKey        bool
 	}{})%CacheLineSize) % CacheLineSize]byte
 
-	table        atomic.Pointer[mapOfTable]
-	resizeState  atomic.Pointer[resizeState]
-	totalGrowths atomic.Uint32
-	totalShrinks atomic.Uint32
-	seed         uintptr
-	keyHash      hashFunc
-	valEqual     equalFunc
-	minTableLen  int  // WithPresize
-	growOnly     bool // WithGrowOnly
-	intKey       bool
+	table         atomic.Pointer[mapOfTable]
+	resizeState   atomic.Pointer[resizeState]
+	totalGrowths  atomic.Uint32
+	totalShrinks  atomic.Uint32
+	seed          uintptr
+	keyHash       hashFunc
+	valEqual      equalFunc
+	minTableLen   int  // WithPresize
+	shrinkEnabled bool // WithShrinkEnabled
+	intKey        bool
 }
 
 // NewMapOf creates a new MapOf instance. Direct initialization is also supported.
 //
 // Parameters:
 //   - WithPresize option for initial capacity
-//   - WithGrowOnly option to disable shrinking
+//   - WithShrinkEnabled option to enable shrinking
 func NewMapOf[K comparable, V any](
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
@@ -174,7 +174,7 @@ func NewMapOf[K comparable, V any](
 //   - valEqual: nil uses the built-in comparison, but if the value is not of a comparable type,
 //     using the Compare series of functions will cause a panic
 //   - WithPresize option for initial capacity
-//   - WithGrowOnly option to disable shrinking
+//   - WithShrinkEnabled option to enable shrinking
 func NewMapOfWithHasher[K comparable, V any](
 	keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
@@ -205,8 +205,8 @@ func NewMapOfWithHasherUnsafe[K comparable, V any](
 
 // MapConfig defines configurable MapOf options.
 type MapConfig struct {
-	sizeHint int
-	growOnly bool
+	sizeHint      int
+	shrinkEnabled bool
 }
 
 // WithPresize configures new MapOf instance with capacity enough
@@ -225,9 +225,20 @@ func WithPresize(sizeHint int) func(*MapConfig) {
 // new keys are added, but does not shrink when keys are deleted.
 // The only exception to this rule is the Clear method which
 // shrinks the hash table back to the initial capacity.
+//
+// Deprecated: WithGrowOnly is now obsolete (default grow-only mode avoids performance jitter),
+// Explicitly enable WithShrinkEnabled() if shrinking is required
 func WithGrowOnly() func(*MapConfig) {
 	return func(c *MapConfig) {
-		c.growOnly = true
+	}
+}
+
+// WithShrinkEnabled configures automatic map shrinking when the load factor falls below
+// the threshold (default: 1/mapShrinkFraction).
+// Disabled by default to prioritize performance.
+func WithShrinkEnabled() func(*MapConfig) {
+	return func(c *MapConfig) {
+		c.shrinkEnabled = true
 	}
 }
 
@@ -287,8 +298,8 @@ type resizeState struct {
 	wg        sync.WaitGroup
 	newWg     sync.WaitGroup
 	chunkSize int
-	works     atomic.Int32
 	chunks    int32
+	works     atomic.Int32
 	process   atomic.Int32
 	completed atomic.Int32
 }
@@ -376,7 +387,7 @@ func (table *mapOfTable) isZero() bool {
 //   - valEqual: nil uses the built-in comparison, but if the value is not of a comparable type,
 //     using the Compare series of functions will cause a panic
 //   - WithPresize option for initial capacity
-//   - WithGrowOnly option to disable shrinking
+//   - WithShrinkEnabled option to enable shrinking
 //
 // Notes:
 //   - This function is not thread-safe and can only be used before the MapOf is utilized.
@@ -424,7 +435,7 @@ func (m *MapOf[K, V]) init(
 	}
 
 	m.minTableLen = calcTableLen(c.sizeHint)
-	m.growOnly = c.growOnly
+	m.shrinkEnabled = c.shrinkEnabled
 
 	table := newMapOfTable(m.minTableLen)
 	m.table.Store(table)
@@ -520,17 +531,16 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key *K) *EntryO
 }
 
 func (m *MapOf[K, V]) processEntry(
-	table *mapOfTable,
 	hash uintptr,
 	key *K,
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (V, bool) {
-
 	h1v := h1(hash, m.intKey)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 
 	for {
+		table := m.table.Load()
 		bidx := uintptr(len(table.buckets)-1) & h1v
 		rootb := &table.buckets[bidx]
 
@@ -542,7 +552,6 @@ func (m *MapOf[K, V]) processEntry(
 			rootb.unlock()
 			// Wait for the current resize operation to complete
 			m.helpCopyAndWait(rs)
-			table = m.table.Load()
 			continue
 		}
 
@@ -550,9 +559,8 @@ func (m *MapOf[K, V]) processEntry(
 		// goroutine after acquiring the bucket lock
 		// This is necessary because another goroutine may have completed a resize operation
 		// between the first check and acquiring the bucket lock
-		if newTable := m.table.Load(); table != newTable {
+		if m.table.Load() != table {
 			rootb.unlock()
-			table = newTable
 			continue
 		}
 
@@ -618,12 +626,12 @@ func (m *MapOf[K, V]) processEntry(
 			table.addSize(bidx, -1)
 
 			// Check if table shrinking is needed
-			if clearOp(newmetaw) == emptyMeta {
+			if clearOp(newmetaw) == emptyMeta && m.shrinkEnabled {
+				table = m.table.Load()
 				tableLen := len(table.buckets)
-				if !m.growOnly &&
-					m.minTableLen < tableLen &&
+				if m.minTableLen < tableLen &&
 					table.sumSize() <= (tableLen*entriesPerMapOfBucket)/mapShrinkFraction {
-					m.resize(table, mapShrinkHint)
+					m.tryResize(mapShrinkHint, tableLen>>1)
 				}
 			}
 			return value, status
@@ -653,8 +661,10 @@ func (m *MapOf[K, V]) processEntry(
 		table.addSize(bidx, 1)
 
 		// Check if the table needs to grow
-		if table.sumSize() >= int(float64(len(table.buckets)*entriesPerMapOfBucket)*mapLoadFactor) {
-			m.resize(table, mapGrowHint)
+		table = m.table.Load()
+		tableLen := len(table.buckets)
+		if table.sumSize() >= int(float64(tableLen*entriesPerMapOfBucket)*mapLoadFactor) {
+			m.tryResize(mapGrowHint, tableLen<<1)
 		}
 
 		return value, status
@@ -669,19 +679,36 @@ const (
 	mapClearHint  mapResizeHint = 2
 )
 
-// resize returns the current table and indicates whether it was created by the calling goroutine
-//
-// Parameters:
-//   - knownTable: The previously obtained table reference.
-//   - hint: The type of resize operation to perform.
-//   - sizeHint: If provided, specifies the target size for growth.
-//
-// Returns:
-//   - bool: True if this goroutine performed the resize, false if another goroutine already did it.
 func (m *MapOf[K, V]) resize(
-	knownTable *mapOfTable,
 	hint mapResizeHint,
-	sizeHint ...int) bool {
+	sizeHint int,
+) {
+	for {
+		table := m.table.Load()
+		tableLen := len(table.buckets)
+		if hint == mapGrowHint {
+			if tableLen >= sizeHint {
+				return
+			}
+		} else if hint == mapShrinkHint {
+			if tableLen <= sizeHint {
+				return
+			}
+		} else {
+			if tableLen == sizeHint && table.isZero() {
+				return
+			}
+		}
+		if m.tryResize(hint, sizeHint) {
+			return
+		}
+	}
+}
+
+func (m *MapOf[K, V]) tryResize(
+	hint mapResizeHint,
+	sizeHint int,
+) bool {
 
 	rs := m.resizeState.Load()
 	if rs != nil {
@@ -690,12 +717,11 @@ func (m *MapOf[K, V]) resize(
 	}
 
 	// Create a new WaitGroup for the current resize operation
-	rs = new(resizeState)
-	rs.table = knownTable
+	table := m.table.Load()
+	rs = &resizeState{}
+	rs.table = table
 	rs.wg.Add(1)
-	if hint != mapClearHint {
-		rs.newWg.Add(1)
-	}
+	rs.newWg.Add(1)
 
 	if enableParallelResize {
 		rs.works.Add(1)
@@ -712,40 +738,28 @@ func (m *MapOf[K, V]) resize(
 
 	// Although the table is always changed when resizeWg is not nil,
 	// it might have been changed before that.
-	table := m.table.Load()
-	if table != knownTable {
+	if m.table.Load() != table {
 		// If the table has already been changed, return directly
 		m.resizeState.Store(nil)
+		rs.newWg.Done()
 		rs.wg.Done()
 		return false
 	}
-	tableLen := len(table.buckets)
 
-	var newTableLen int
-	if hint == mapGrowHint {
-		if len(sizeHint) == 0 {
-			// Growth the table with factor of 2
-			newTableLen = tableLen << 1
-		} else {
-			// Grow the table to sizeHint
-			newTableLen = calcTableLen(sizeHint[0])
-		}
-		m.totalGrowths.Add(1)
-	} else if hint == mapShrinkHint {
-		// Shrink the table with factor of 2
-		newTableLen = tableLen >> 1
-		m.totalShrinks.Add(1)
-	} else {
-		newTableLen = m.minTableLen
-	}
-
+	newTableLen := sizeHint
 	newTable := newMapOfTable(newTableLen)
-
-	// start copying
 	var completed bool
 	if hint == mapClearHint {
 		completed = true
+		rs.newWg.Done()
 	} else {
+		tableLen := len(table.buckets)
+		isGrowth := sizeHint > tableLen
+		if isGrowth {
+			m.totalGrowths.Add(1)
+		} else {
+			m.totalShrinks.Add(1)
+		}
 		cpus := runtime.NumCPU()
 		chunkSize, chunksInt := calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
 		chunks := int32(chunksInt)
@@ -762,7 +776,7 @@ func (m *MapOf[K, V]) resize(
 			process--
 			start := int(process) * chunkSize
 			end := min(start+chunkSize, tableLen)
-			if hint == mapGrowHint {
+			if isGrowth {
 				copyBucketOf[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
 			} else {
 				copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
@@ -785,7 +799,6 @@ func (m *MapOf[K, V]) resize(
 					remainingCpus := cpus - works
 					spawnHelpers := min(addHelpers, remainingCpus)
 					if spawnHelpers > 0 {
-						// fmt.Printf("tableLen: %v, spawnHelpers: %v\n", tableLen, spawnHelpers)
 						rs.works.Add(int32(spawnHelpers))
 						for i := 0; i < spawnHelpers; i++ {
 							go m.helpCopy(rs)
@@ -1023,7 +1036,7 @@ func (m *MapOf[K, V]) Store(key K, value V) {
 		}
 	}
 
-	m.mockSyncMap(table, hash, &key, nil, &value, false)
+	m.mockSyncMap(hash, &key, nil, &value, false)
 }
 
 // Swap stores a key-value pair and returns the previous value if any, compatible with `sync.Map`.
@@ -1046,7 +1059,7 @@ func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 		}
 	}
 
-	return m.mockSyncMap(table, hash, &key, nil, &value, false)
+	return m.mockSyncMap(hash, &key, nil, &value, false)
 }
 
 // LoadOrStore retrieves an existing value or stores a new one if the key doesn't exist,
@@ -1056,7 +1069,7 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	if table == nil {
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		return m.mockSyncMap(table, hash, &key, nil, &value, true)
+		return m.mockSyncMap(hash, &key, nil, &value, true)
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
@@ -1067,7 +1080,7 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 		}
 	}
 
-	return m.mockSyncMap(table, hash, &key, nil, &value, true)
+	return m.mockSyncMap(hash, &key, nil, &value, true)
 }
 
 // Delete removes a key-value pair, compatible with `sync.Map`.
@@ -1085,7 +1098,7 @@ func (m *MapOf[K, V]) Delete(key K) {
 		}
 	}
 
-	m.mockSyncMap(table, hash, &key, nil, nil, false)
+	m.mockSyncMap(hash, &key, nil, nil, false)
 }
 
 // LoadAndDelete retrieves the value for a key and deletes it from the map,
@@ -1104,7 +1117,7 @@ func (m *MapOf[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 		}
 	}
 
-	return m.mockSyncMap(table, hash, &key, nil, nil, false)
+	return m.mockSyncMap(hash, &key, nil, nil, false)
 }
 
 // CompareAndSwap atomically replaces an existing value with a new value
@@ -1136,7 +1149,7 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 		}
 	}
 
-	_, swapped = m.mockSyncMap(table, hash, &key, &old, &new, false)
+	_, swapped = m.mockSyncMap(hash, &key, &old, &new, false)
 	return swapped
 }
 
@@ -1164,19 +1177,18 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 		}
 	}
 
-	_, deleted = m.mockSyncMap(table, hash, &key, &old, nil, false)
+	_, deleted = m.mockSyncMap(hash, &key, &old, nil, false)
 	return deleted
 }
 
 func (m *MapOf[K, V]) mockSyncMap(
-	table *mapOfTable,
 	hash uintptr,
 	key *K,
 	cmpValue *V,
 	newValue *V,
 	loadOrStore bool,
 ) (value V, status bool) {
-	return m.processEntry(table, hash, key,
+	return m.processEntry(hash, key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				if loadOrStore {
@@ -1235,7 +1247,7 @@ func (m *MapOf[K, V]) LoadOrStoreFn(
 	if table == nil {
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		return m.processEntry(table, hash, &key,
+		return m.processEntry(hash, &key,
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				if loaded != nil {
 					return loaded, loaded.Value, true
@@ -1254,7 +1266,7 @@ func (m *MapOf[K, V]) LoadOrStoreFn(
 		}
 	}
 
-	return m.processEntry(table, hash, &key,
+	return m.processEntry(hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return loaded, loaded.Value, true
@@ -1290,7 +1302,7 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 		}
 	}
 
-	return m.processEntry(table, hash, &key,
+	return m.processEntry(hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return &EntryOf[K, V]{Value: value}, loaded.Value, true
@@ -1322,7 +1334,7 @@ func (m *MapOf[K, V]) LoadOrCompute(
 	if table == nil {
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		return m.processEntry(table, hash, &key,
+		return m.processEntry(hash, &key,
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				if loaded != nil {
 					return loaded, loaded.Value, true
@@ -1344,7 +1356,7 @@ func (m *MapOf[K, V]) LoadOrCompute(
 		}
 	}
 
-	return m.processEntry(table, hash, &key,
+	return m.processEntry(hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return loaded, loaded.Value, true
@@ -1406,7 +1418,7 @@ func (m *MapOf[K, V]) Compute(
 		table = m.initSlow()
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-	return m.processEntry(table, hash, &key,
+	return m.processEntry(hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				newValue, op := valueFn(loaded.Value, true)
@@ -1426,11 +1438,12 @@ func (m *MapOf[K, V]) Compute(
 				}
 				return loaded, loaded.Value, true
 			}
-			newValue, op := valueFn(*new(V), false)
+			var zeroV V
+			newValue, op := valueFn(zeroV, false)
 			if op == UpdateOp {
 				return &EntryOf[K, V]{Value: newValue}, newValue, true
 			}
-			return nil, *new(V), false
+			return nil, zeroV, false
 		},
 	)
 }
@@ -1464,7 +1477,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 	if table == nil {
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		return m.processEntry(table, hash, &key,
+		return m.processEntry(hash, &key,
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				if loaded != nil {
 					return loaded, loaded.Value, true
@@ -1482,7 +1495,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 		}
 	}
 
-	return m.processEntry(table, hash, &key,
+	return m.processEntry(hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return loaded, loaded.Value, true
@@ -1529,7 +1542,7 @@ func (m *MapOf[K, V]) ProcessEntry(
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-	return m.processEntry(table, hash, &key, fn)
+	return m.processEntry(hash, &key, fn)
 }
 
 // Clear compatible with `sync.Map`
@@ -1538,9 +1551,7 @@ func (m *MapOf[K, V]) Clear() {
 	if table == nil {
 		return
 	}
-	for !m.resize(table, mapClearHint) {
-		table = m.table.Load()
-	}
+	m.resize(mapClearHint, m.minTableLen)
 }
 
 // RangeEntry iterates over all entries in the map.
@@ -1556,29 +1567,19 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 		return
 	}
 
-	// Pre-allocate array big enough to fit entries for most hash tables.
-	entries := make([]*EntryOf[K, V], 0, 16*entriesPerMapOfBucket)
 	for i := range table.buckets {
 		rootb := &table.buckets[i]
-		rootb.lock()
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				i := firstMarkedByteIndex(markedw)
 				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
-					entries = append(entries, e)
+					if !yield(e) {
+						return
+					}
 				}
 			}
 		}
-		rootb.unlock()
-		// Call the function for all copied entries.
-		for j := range entries {
-			if !yield(entries[j]) {
-				return
-			}
-			entries[j] = nil // fast gc
-		}
-		entries = entries[:0]
 	}
 }
 
@@ -1721,7 +1722,6 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 // It processes a group of keys or key-value pairs by applying the specified processing function to each item.
 //
 // Parameters:
-//   - table: The current hash table.
 //   - itemCount: The number of items to be processed.
 //   - growFactor: Capacity change coefficient:
 //     >0: Estimates new items as itemCount * growFactor.
@@ -1729,12 +1729,12 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 //   - processor: The function to process each item.
 //   - canParallel: Whether parallel processing is supported
 func (m *MapOf[K, V]) batchProcess(
-	table *mapOfTable,
 	itemCount int,
 	growFactor float64,
-	processor func(table *mapOfTable, start, end int),
+	processor func(start, end int),
 	canParallel bool,
 ) {
+	table := m.table.Load()
 	if table == nil {
 		table = m.initSlow()
 	}
@@ -1746,17 +1746,10 @@ func (m *MapOf[K, V]) batchProcess(
 
 		// Pre-growth check
 		if newItemsEstimate > 0 {
-			// Retry the resize until it succeeds
-			for {
-				growThreshold := int(float64(len(table.buckets)*entriesPerMapOfBucket) * mapLoadFactor)
-				sizeHint := table.sumSize() + newItemsEstimate
-				if sizeHint <= growThreshold {
-					break
-				}
-				if m.resize(table, mapGrowHint, sizeHint) {
-					break
-				}
-				table = m.table.Load()
+			growThreshold := int(float64(len(table.buckets)*entriesPerMapOfBucket) * mapLoadFactor)
+			sizeHint := table.sumSize() + newItemsEstimate
+			if sizeHint > growThreshold {
+				m.resize(mapGrowHint, calcTableLen(sizeHint))
 			}
 		}
 	}
@@ -1774,7 +1767,7 @@ func (m *MapOf[K, V]) batchProcess(
 		for i := 0; i < chunks; i++ {
 			go func(start, end int) {
 				defer wg.Done()
-				processor(table, start, end)
+				processor(start, end)
 			}(i*chunkSize, min((i+1)*chunkSize, itemCount))
 		}
 		wg.Wait()
@@ -1782,7 +1775,7 @@ func (m *MapOf[K, V]) batchProcess(
 	}
 
 	// Serial processing
-	processor(table, 0, itemCount)
+	processor(0, itemCount)
 }
 
 // BatchProcessImmutableEntries batch processes multiple immutable key-value pairs with a custom function.
@@ -1820,12 +1813,10 @@ func (m *MapOf[K, V]) batchProcessImmutableEntries(
 	values = make([]V, len(immutableEntries))
 	status = make([]bool, len(immutableEntries))
 
-	table := m.table.Load()
-
-	m.batchProcess(table, len(immutableEntries), growFactor, func(table *mapOfTable, start, end int) {
+	m.batchProcess(len(immutableEntries), growFactor, func(start, end int) {
 		for i := start; i < end; i++ {
 			hash := m.keyHash(noescape(unsafe.Pointer(&immutableEntries[i].Key)), m.seed)
-			values[i], status[i] = m.processEntry(table, hash, &immutableEntries[i].Key,
+			values[i], status[i] = m.processEntry(hash, &immutableEntries[i].Key,
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 					return processFn(immutableEntries[i], loaded)
 				},
@@ -1871,12 +1862,10 @@ func (m *MapOf[K, V]) batchProcessEntries(
 	values = make([]V, len(entries))
 	status = make([]bool, len(entries))
 
-	table := m.table.Load()
-
-	m.batchProcess(table, len(entries), growFactor, func(table *mapOfTable, start, end int) {
+	m.batchProcess(len(entries), growFactor, func(start, end int) {
 		for i := start; i < end; i++ {
 			hash := m.keyHash(noescape(unsafe.Pointer(&entries[i].Key)), m.seed)
-			values[i], status[i] = m.processEntry(table, hash, &entries[i].Key,
+			values[i], status[i] = m.processEntry(hash, &entries[i].Key,
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 					return processFn(&entries[i], loaded)
 				},
@@ -1918,12 +1907,10 @@ func (m *MapOf[K, V]) batchProcessKeys(
 	values = make([]V, len(keys))
 	status = make([]bool, len(keys))
 
-	table := m.table.Load()
-
-	m.batchProcess(table, len(keys), growFactor, func(table *mapOfTable, start, end int) {
+	m.batchProcess(len(keys), growFactor, func(start, end int) {
 		for i := start; i < end; i++ {
 			hash := m.keyHash(noescape(unsafe.Pointer(&keys[i])), m.seed)
-			values[i], status[i] = m.processEntry(table, hash, &keys[i],
+			values[i], status[i] = m.processEntry(hash, &keys[i],
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 					return processFn(keys[i], loaded)
 				},
@@ -2023,14 +2010,12 @@ func (m *MapOf[K, V]) FromMap(source map[K]V) {
 		return
 	}
 
-	table := m.table.Load()
-
-	m.batchProcess(table, len(source), 1.0,
-		func(table *mapOfTable, _, _ int) {
+	m.batchProcess(len(source), 1.0,
+		func(int, int) {
 			// Directly iterate and process all key-value pairs
 			for k, v := range source {
 				hash := m.keyHash(noescape(unsafe.Pointer(&k)), m.seed)
-				m.processEntry(table, hash, &k,
+				m.processEntry(hash, &k,
 					func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 						return &EntryOf[K, V]{Value: v}, v, e != nil
 					},
@@ -2109,14 +2094,13 @@ func (m *MapOf[K, V]) Merge(
 	}
 
 	// Pre-fetch target table to avoid multiple checks in loop
-	table := m.table.Load()
 	otherSize := other.Size()
 
-	m.batchProcess(table, otherSize, 1.0,
-		func(table *mapOfTable, _, _ int) {
+	m.batchProcess(otherSize, 1.0,
+		func(int, int) {
 			other.RangeEntry(func(other *EntryOf[K, V]) bool {
 				hash := m.keyHash(noescape(unsafe.Pointer(&other.Key)), m.seed)
-				m.processEntry(table, hash, &other.Key,
+				m.processEntry(hash, &other.Key,
 					func(this *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 						if this == nil {
 							// Key doesn't exist in current Map, add directly
@@ -2147,12 +2131,12 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 
 	// Create a new MapOf with the same configuration as the original
 	clone := &MapOf[K, V]{
-		seed:        m.seed,
-		keyHash:     m.keyHash,
-		valEqual:    m.valEqual,
-		minTableLen: m.minTableLen,
-		growOnly:    m.growOnly,
-		intKey:      m.intKey,
+		seed:          m.seed,
+		keyHash:       m.keyHash,
+		valEqual:      m.valEqual,
+		minTableLen:   m.minTableLen,
+		shrinkEnabled: m.shrinkEnabled,
+		intKey:        m.intKey,
 	}
 
 	// Pre-fetch size to optimize initial capacity
@@ -2160,12 +2144,12 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 	if size > 0 {
 		cloneTable := newMapOfTable(clone.minTableLen)
 		clone.table.Store(cloneTable)
-		clone.batchProcess(table, size, 1.0,
-			func(table *mapOfTable, _, _ int) {
+		clone.batchProcess(size, 1.0,
+			func(int, int) {
 				// Directly iterate and process all key-value pairs
 				m.RangeEntry(func(e *EntryOf[K, V]) bool {
 					hash := clone.keyHash(noescape(unsafe.Pointer(&e.Key)), clone.seed)
-					clone.processEntry(table, hash, &e.Key,
+					clone.processEntry(hash, &e.Key,
 						func(_ *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 							return e, e.Value, false
 						},
