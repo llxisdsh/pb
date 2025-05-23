@@ -2574,9 +2574,9 @@ func runtime_doSpin()
 
 //// nolint:all
 ////
-////go:linkname runtimeNano runtime.nanotime
+////go:linkname runtime_nanotime runtime.nanotime
 ////go:nosplit
-//func runtimeNano() int64
+//func runtime_nanotime() int64
 
 type hashFunc func(unsafe.Pointer, uintptr) uintptr
 type equalFunc func(unsafe.Pointer, unsafe.Pointer) bool
