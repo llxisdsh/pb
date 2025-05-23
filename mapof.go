@@ -333,7 +333,7 @@ func calcTableLen(sizeHint int) int {
 // calcSizeLen computes the size count for the table
 // return value must be a power of 2
 func calcSizeLen(tableLen int) int {
-	return nextPowOf2(min(runtime.GOMAXPROCS(0), max(1, tableLen>>10)))
+	return nextPowOf2(min(runtime.GOMAXPROCS(0), tableLen>>10))
 }
 
 // addSize atomically adds delta to the size counter for the given bucket index.
@@ -874,10 +874,7 @@ func calcParallelism(items, threshold, cpus int) (chunkSize, chunks int) {
 		return items, 1
 	}
 
-	chunks = items / threshold
-	if chunks > cpus {
-		chunks = cpus
-	}
+	chunks = min(items/threshold, cpus)
 
 	chunkSize = (items + chunks - 1) / chunks
 
