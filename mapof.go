@@ -741,7 +741,11 @@ func (m *MapOf[K, V]) resize(
 
 	newTable := newMapOfTable(newTableLen)
 
-	if hint != mapClearHint {
+	// start copying
+	var completed bool
+	if hint == mapClearHint {
+		completed = true
+	} else {
 		cpus := runtime.NumCPU()
 		chunkSize, chunksInt := calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
 		chunks := int32(chunksInt)
@@ -750,7 +754,6 @@ func (m *MapOf[K, V]) resize(
 		table.newTable.Store(newTable)
 		rs.newWg.Done()
 
-		// start copying
 		for {
 			process := rs.process.Add(1)
 			if process > chunks {
@@ -764,8 +767,10 @@ func (m *MapOf[K, V]) resize(
 			} else {
 				copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
 			}
-			rs.completed.Add(1)
-
+			if rs.completed.Add(1) == chunks {
+				completed = true
+				break
+			}
 			if enableParallelResize {
 				process = rs.process.Load()
 				if process > chunks {
@@ -789,16 +794,15 @@ func (m *MapOf[K, V]) resize(
 				}
 			}
 		}
-
-		var spins int
-		for rs.completed.Load() < chunks {
-			delay(&spins)
-		}
 	}
 
-	m.table.Store(newTable)
-	m.resizeState.Store(nil)
-	rs.wg.Done()
+	if completed {
+		m.table.Store(newTable)
+		m.resizeState.Store(nil)
+		rs.wg.Done()
+	} else {
+		rs.wg.Wait()
+	}
 	return true
 }
 
@@ -807,15 +811,18 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 		rs.works.Add(1)
 	}
 	rs.newWg.Wait()
-	m.helpCopy(rs)
-	rs.wg.Wait()
+	completed := m.helpCopy(rs)
+	if !completed {
+		rs.wg.Wait()
+	}
 }
 
-func (m *MapOf[K, V]) helpCopy(rs *resizeState) {
+func (m *MapOf[K, V]) helpCopy(rs *resizeState) (completed bool) {
 	table := rs.table
 	newTable := table.newTable.Load()
 	if newTable == nil {
-		return
+		// hint == mapClearHint
+		return false
 	}
 
 	tableLen := len(table.buckets)
@@ -835,8 +842,18 @@ func (m *MapOf[K, V]) helpCopy(rs *resizeState) {
 		} else {
 			copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
 		}
-		rs.completed.Add(1)
+		if rs.completed.Add(1) == chunks {
+			completed = true
+			break
+		}
 	}
+
+	if completed {
+		m.table.Store(rs.table.newTable.Load())
+		m.resizeState.Store(nil)
+		rs.wg.Done()
+	}
+	return completed
 }
 
 // calcParallelism calculates the number of goroutines for parallel processing.
@@ -2372,23 +2389,24 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 //	}
 //	/*return false*/
 //}
-//	func getByte(w uint64, idx int) uint8 {
-//		shift := idx << 3
-//		return uint8((w >> shift) & 0xff)
-//	}
 //
-//	func storeByte(addr *uint64, idx int, newByte uint8) {
-//		shift := idx << 3
-//		mask := uint64(0xff) << shift
+//func getByte(w uint64, idx int) uint8 {
+//	shift := idx << 3
+//	return uint8((w >> shift) & 0xff)
+//}
 //
-//		for {
-//			oldVal := atomic.LoadUint64(addr)
-//			newVal := (oldVal &^ mask) | (uint64(newByte) << shift)
-//			if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
-//				return
-//			}
+//func storeByte(addr *uint64, idx int, newByte uint8) {
+//	shift := idx << 3
+//	mask := uint64(0xff) << shift
+//
+//	for {
+//		oldVal := atomic.LoadUint64(addr)
+//		newVal := (oldVal &^ mask) | (uint64(newByte) << shift)
+//		if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
+//			return
 //		}
 //	}
+//}
 
 // nextPowOf2 calculates the smallest power of 2 that is greater than or equal to n.
 // Compatible with both 32-bit and 64-bit systems.
@@ -2439,9 +2457,6 @@ func loadPointer(addr *unsafe.Pointer) unsafe.Pointer {
 	if //goland:noinspection ALL
 	atomicLevel == 0 {
 		return atomic.LoadPointer(addr)
-	} else if //goland:noinspection ALL
-	atomicLevel == 1 {
-		return *addr
 	} else {
 		return *addr
 	}
@@ -2451,9 +2466,6 @@ func loadUint64(addr *uint64) uint64 {
 	if //goland:noinspection ALL
 	atomicLevel == 0 {
 		return atomic.LoadUint64(addr)
-	} else if //goland:noinspection ALL
-	atomicLevel == 1 {
-		return *addr
 	} else {
 		return *addr
 	}
@@ -2461,10 +2473,7 @@ func loadUint64(addr *uint64) uint64 {
 
 func storePointer(addr *unsafe.Pointer, val unsafe.Pointer) {
 	if //goland:noinspection ALL
-	atomicLevel == 0 {
-		atomic.StorePointer(addr, val)
-	} else if //goland:noinspection ALL
-	atomicLevel == 1 {
+	atomicLevel < 2 {
 		atomic.StorePointer(addr, val)
 	} else {
 		*addr = val
@@ -2473,10 +2482,7 @@ func storePointer(addr *unsafe.Pointer, val unsafe.Pointer) {
 
 func storeUint64(addr *uint64, val uint64) {
 	if //goland:noinspection ALL
-	atomicLevel == 0 {
-		atomic.StoreUint64(addr, val)
-	} else if //goland:noinspection ALL
-	atomicLevel == 1 {
+	atomicLevel < 2 {
 		atomic.StoreUint64(addr, val)
 	} else {
 		*addr = val
