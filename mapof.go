@@ -849,7 +849,7 @@ func (m *MapOf[K, V]) helpCopy(rs *resizeState) (completed bool) {
 	}
 
 	if completed {
-		m.table.Store(rs.table.newTable.Load())
+		m.table.Store(newTable)
 		m.resizeState.Store(nil)
 		rs.wg.Done()
 	}
