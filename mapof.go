@@ -53,6 +53,9 @@ const (
 	// minParallelBatchItems defines the minimum number of items required for parallel batch processing.
 	// Below this threshold, serial processing is used to avoid the overhead of goroutine creation.
 	minParallelBatchItems = 256
+	// asyncResizeThreshold defines the minimum number of buckets required
+	// to trigger an asynchronous resize operation.
+	asyncResizeThreshold = int(128 * 1024 / CacheLineSize)
 )
 
 const (
@@ -266,6 +269,7 @@ type bucketOf struct {
 // lock acquires the lock for the bucket.
 // Replace Mutex with a spinlock to avoid bucket false-sharing overhead.
 // Spinlock state is embedded in the Meta field for cache locality.
+// This function can be inlined.
 //
 // Partially references:
 // [https://github.com/facebook/folly/blob/main/folly/synchronization/PicoSpinLock.h]
@@ -294,9 +298,9 @@ func (b *bucketOf) unlock() {
 
 // resizeState represents the current state of a resizing operation
 type resizeState struct {
-	table     *mapOfTable
 	wg        sync.WaitGroup
 	newWg     sync.WaitGroup
+	table     *mapOfTable
 	chunkSize int
 	chunks    int32
 	works     atomic.Int32
@@ -531,16 +535,17 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key *K) *EntryO
 }
 
 func (m *MapOf[K, V]) processEntry(
+	table *mapOfTable,
 	hash uintptr,
 	key *K,
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (V, bool) {
+
 	h1v := h1(hash, m.intKey)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 
 	for {
-		table := m.table.Load()
 		bidx := uintptr(len(table.buckets)-1) & h1v
 		rootb := &table.buckets[bidx]
 
@@ -548,10 +553,12 @@ func (m *MapOf[K, V]) processEntry(
 
 		// This is the first check, checking if there is a resize operation in progress
 		// before acquiring the bucket lock
-		if rs := m.resizeState.Load(); rs != nil {
+		if rs := m.resizeState.Load(); rs != nil &&
+			rs.table != nil /*skip init*/ {
 			rootb.unlock()
 			// Wait for the current resize operation to complete
 			m.helpCopyAndWait(rs)
+			table = m.table.Load()
 			continue
 		}
 
@@ -559,8 +566,9 @@ func (m *MapOf[K, V]) processEntry(
 		// goroutine after acquiring the bucket lock
 		// This is necessary because another goroutine may have completed a resize operation
 		// between the first check and acquiring the bucket lock
-		if m.table.Load() != table {
+		if newTable := m.table.Load(); table != newTable {
 			rootb.unlock()
+			table = newTable
 			continue
 		}
 
@@ -627,11 +635,10 @@ func (m *MapOf[K, V]) processEntry(
 
 			// Check if table shrinking is needed
 			if clearOp(newmetaw) == emptyMeta && m.shrinkEnabled {
-				table = m.table.Load()
 				tableLen := len(table.buckets)
 				if m.minTableLen < tableLen &&
 					table.sumSize() <= (tableLen*entriesPerMapOfBucket)/mapShrinkFraction {
-					m.tryResize(mapShrinkHint, tableLen>>1)
+					m.tryResize(table, mapShrinkHint, tableLen>>1)
 				}
 			}
 			return value, status
@@ -661,10 +668,9 @@ func (m *MapOf[K, V]) processEntry(
 		table.addSize(bidx, 1)
 
 		// Check if the table needs to grow
-		table = m.table.Load()
 		tableLen := len(table.buckets)
 		if table.sumSize() >= int(float64(tableLen*entriesPerMapOfBucket)*mapLoadFactor) {
-			m.tryResize(mapGrowHint, tableLen<<1)
+			m.tryResize(table, mapGrowHint, tableLen<<1)
 		}
 
 		return value, status
@@ -679,9 +685,17 @@ const (
 	mapClearHint  mapResizeHint = 2
 )
 
+type resizeWaitHint int
+
+const (
+	waitAll      resizeWaitHint = 0
+	waitNewTable resizeWaitHint = 1
+)
+
 func (m *MapOf[K, V]) resize(
 	hint mapResizeHint,
 	sizeHint int,
+	waitHint resizeWaitHint,
 ) {
 	for {
 		table := m.table.Load()
@@ -699,33 +713,37 @@ func (m *MapOf[K, V]) resize(
 				return
 			}
 		}
-		if m.tryResize(hint, sizeHint) {
+		ok, rs := m.tryResize(table, hint, sizeHint)
+		if ok {
+			if rs != nil {
+				if waitHint == waitNewTable {
+					rs.newWg.Wait()
+				} else {
+					rs.wg.Wait()
+				}
+			}
 			return
 		}
 	}
 }
 
 func (m *MapOf[K, V]) tryResize(
+	table *mapOfTable,
 	hint mapResizeHint,
-	sizeHint int,
-) bool {
+	newTableLen int,
+) (bool, *resizeState) {
 
 	rs := m.resizeState.Load()
 	if rs != nil {
 		m.helpCopyAndWait(rs)
-		return false
+		return false, nil
 	}
 
 	// Create a new WaitGroup for the current resize operation
-	table := m.table.Load()
-	rs = &resizeState{}
-	rs.table = table
+	rs = new(resizeState)
 	rs.wg.Add(1)
 	rs.newWg.Add(1)
-
-	if enableParallelResize {
-		rs.works.Add(1)
-	}
+	rs.table = table
 
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
 	if !m.resizeState.CompareAndSwap(nil, rs) {
@@ -733,90 +751,58 @@ func (m *MapOf[K, V]) tryResize(
 		if rs = m.resizeState.Load(); rs != nil {
 			m.helpCopyAndWait(rs)
 		}
-		return false
+		return false, nil
 	}
 
 	// Although the table is always changed when resizeWg is not nil,
 	// it might have been changed before that.
 	if m.table.Load() != table {
 		// If the table has already been changed, return directly
+		rs.newWg.Done()
 		m.resizeState.Store(nil)
-		rs.newWg.Done()
 		rs.wg.Done()
-		return false
+		return false, nil
 	}
 
-	newTableLen := sizeHint
-	newTable := newMapOfTable(newTableLen)
-	var completed bool
 	if hint == mapClearHint {
-		completed = true
+		newTable := newMapOfTable(newTableLen)
 		rs.newWg.Done()
-	} else {
-		tableLen := len(table.buckets)
-		isGrowth := sizeHint > tableLen
-		if isGrowth {
-			m.totalGrowths.Add(1)
-		} else {
-			m.totalShrinks.Add(1)
-		}
-		cpus := runtime.NumCPU()
-		chunkSize, chunksInt := calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
-		chunks := int32(chunksInt)
-		rs.chunkSize = chunkSize
-		rs.chunks = chunks
-		table.newTable.Store(newTable)
-		rs.newWg.Done()
-
-		for {
-			process := rs.process.Add(1)
-			if process > chunks {
-				break
-			}
-			process--
-			start := int(process) * chunkSize
-			end := min(start+chunkSize, tableLen)
-			if isGrowth {
-				copyBucketOf[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
-			} else {
-				copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
-			}
-			if rs.completed.Add(1) == chunks {
-				completed = true
-				break
-			}
-			if enableParallelResize {
-				process = rs.process.Load()
-				if process > chunks {
-					break
-				}
-				remainingLen := tableLen - int(process)*chunkSize
-				needHelpers := remainingLen / minBucketsPerHelperGoroutine
-				works := int(rs.works.Load())
-				addHelpers := needHelpers - works
-
-				if addHelpers > 0 && works < cpus {
-					remainingCpus := cpus - works
-					spawnHelpers := min(addHelpers, remainingCpus)
-					if spawnHelpers > 0 {
-						rs.works.Add(int32(spawnHelpers))
-						for i := 0; i < spawnHelpers; i++ {
-							go m.helpCopy(rs)
-						}
-					}
-				}
-			}
-		}
-	}
-
-	if completed {
 		m.table.Store(newTable)
 		m.resizeState.Store(nil)
 		rs.wg.Done()
+		return true, nil
 	} else {
-		rs.wg.Wait()
+		if newTableLen < asyncResizeThreshold {
+			m.finalizeResize(table, newTableLen, rs)
+			return true, nil
+		} else {
+			go m.finalizeResize(table, newTableLen, rs)
+			return true, rs
+		}
 	}
-	return true
+}
+
+func (m *MapOf[K, V]) finalizeResize(
+	table *mapOfTable, newTableLen int, rs *resizeState) {
+
+	tableLen := len(table.buckets)
+	isGrowth := newTableLen > tableLen
+	cpus := runtime.NumCPU()
+	chunkSize, chunksInt := calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
+	chunks := int32(chunksInt)
+	rs.chunkSize = chunkSize
+	rs.chunks = chunks
+
+	newTable := newMapOfTable(newTableLen)
+	table.newTable.Store(newTable)
+	rs.newWg.Done()
+	if isGrowth {
+		m.totalGrowths.Add(1)
+	} else {
+		m.totalShrinks.Add(1)
+	}
+
+	m.helpCopyAndWait(rs)
 }
 
 func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
@@ -832,9 +818,13 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 
 func (m *MapOf[K, V]) helpCopy(rs *resizeState) (completed bool) {
 	table := rs.table
+	if table == nil {
+		// skip init
+		return false
+	}
 	newTable := table.newTable.Load()
 	if newTable == nil {
-		// hint == mapClearHint
+		// skip mapClearHint
 		return false
 	}
 
@@ -858,6 +848,31 @@ func (m *MapOf[K, V]) helpCopy(rs *resizeState) (completed bool) {
 		if rs.completed.Add(1) == chunks {
 			completed = true
 			break
+		}
+		if enableParallelResize {
+			process = rs.process.Load()
+			if process > chunks {
+				break
+			}
+			remainingLen := tableLen - int(process)*chunkSize
+			needHelpers := remainingLen / minBucketsPerHelperGoroutine
+			works := int(rs.works.Load())
+			addHelpers := needHelpers - works
+			if addHelpers > 0 {
+				cpus := runtime.GOMAXPROCS(0)
+				if works < cpus {
+					remainingCpus := cpus - works
+					spawnHelpers := min(addHelpers, remainingCpus)
+					if spawnHelpers > 0 {
+						// fmt.Printf("tableLen:%v,process:%v,works:%v,add: %v\n",
+						// 	tableLen, process, works, spawnHelpers)
+						rs.works.Add(int32(spawnHelpers))
+						for i := 0; i < spawnHelpers; i++ {
+							go m.helpCopy(rs)
+						}
+					}
+				}
+			}
 		}
 	}
 
@@ -1036,7 +1051,7 @@ func (m *MapOf[K, V]) Store(key K, value V) {
 		}
 	}
 
-	m.mockSyncMap(hash, &key, nil, &value, false)
+	m.mockSyncMap(table, hash, &key, nil, &value, false)
 }
 
 // Swap stores a key-value pair and returns the previous value if any, compatible with `sync.Map`.
@@ -1059,7 +1074,7 @@ func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 		}
 	}
 
-	return m.mockSyncMap(hash, &key, nil, &value, false)
+	return m.mockSyncMap(table, hash, &key, nil, &value, false)
 }
 
 // LoadOrStore retrieves an existing value or stores a new one if the key doesn't exist,
@@ -1069,7 +1084,7 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	if table == nil {
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		return m.mockSyncMap(hash, &key, nil, &value, true)
+		return m.mockSyncMap(table, hash, &key, nil, &value, true)
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
@@ -1080,7 +1095,7 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 		}
 	}
 
-	return m.mockSyncMap(hash, &key, nil, &value, true)
+	return m.mockSyncMap(table, hash, &key, nil, &value, true)
 }
 
 // Delete removes a key-value pair, compatible with `sync.Map`.
@@ -1098,7 +1113,7 @@ func (m *MapOf[K, V]) Delete(key K) {
 		}
 	}
 
-	m.mockSyncMap(hash, &key, nil, nil, false)
+	m.mockSyncMap(table, hash, &key, nil, nil, false)
 }
 
 // LoadAndDelete retrieves the value for a key and deletes it from the map,
@@ -1117,7 +1132,7 @@ func (m *MapOf[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 		}
 	}
 
-	return m.mockSyncMap(hash, &key, nil, nil, false)
+	return m.mockSyncMap(table, hash, &key, nil, nil, false)
 }
 
 // CompareAndSwap atomically replaces an existing value with a new value
@@ -1149,7 +1164,7 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 		}
 	}
 
-	_, swapped = m.mockSyncMap(hash, &key, &old, &new, false)
+	_, swapped = m.mockSyncMap(table, hash, &key, &old, &new, false)
 	return swapped
 }
 
@@ -1177,18 +1192,19 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 		}
 	}
 
-	_, deleted = m.mockSyncMap(hash, &key, &old, nil, false)
+	_, deleted = m.mockSyncMap(table, hash, &key, &old, nil, false)
 	return deleted
 }
 
 func (m *MapOf[K, V]) mockSyncMap(
+	table *mapOfTable,
 	hash uintptr,
 	key *K,
 	cmpValue *V,
 	newValue *V,
 	loadOrStore bool,
 ) (value V, status bool) {
-	return m.processEntry(hash, key,
+	return m.processEntry(table, hash, key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				if loadOrStore {
@@ -1247,7 +1263,7 @@ func (m *MapOf[K, V]) LoadOrStoreFn(
 	if table == nil {
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		return m.processEntry(hash, &key,
+		return m.processEntry(table, hash, &key,
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				if loaded != nil {
 					return loaded, loaded.Value, true
@@ -1266,7 +1282,7 @@ func (m *MapOf[K, V]) LoadOrStoreFn(
 		}
 	}
 
-	return m.processEntry(hash, &key,
+	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return loaded, loaded.Value, true
@@ -1302,7 +1318,7 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 		}
 	}
 
-	return m.processEntry(hash, &key,
+	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return &EntryOf[K, V]{Value: value}, loaded.Value, true
@@ -1334,7 +1350,7 @@ func (m *MapOf[K, V]) LoadOrCompute(
 	if table == nil {
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		return m.processEntry(hash, &key,
+		return m.processEntry(table, hash, &key,
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				if loaded != nil {
 					return loaded, loaded.Value, true
@@ -1356,7 +1372,7 @@ func (m *MapOf[K, V]) LoadOrCompute(
 		}
 	}
 
-	return m.processEntry(hash, &key,
+	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return loaded, loaded.Value, true
@@ -1418,7 +1434,7 @@ func (m *MapOf[K, V]) Compute(
 		table = m.initSlow()
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-	return m.processEntry(hash, &key,
+	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				newValue, op := valueFn(loaded.Value, true)
@@ -1477,7 +1493,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 	if table == nil {
 		table = m.initSlow()
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		return m.processEntry(hash, &key,
+		return m.processEntry(table, hash, &key,
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				if loaded != nil {
 					return loaded, loaded.Value, true
@@ -1495,7 +1511,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 		}
 	}
 
-	return m.processEntry(hash, &key,
+	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return loaded, loaded.Value, true
@@ -1542,7 +1558,7 @@ func (m *MapOf[K, V]) ProcessEntry(
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-	return m.processEntry(hash, &key, fn)
+	return m.processEntry(table, hash, &key, fn)
 }
 
 // Clear compatible with `sync.Map`
@@ -1551,7 +1567,7 @@ func (m *MapOf[K, V]) Clear() {
 	if table == nil {
 		return
 	}
-	m.resize(mapClearHint, m.minTableLen)
+	m.resize(mapClearHint, m.minTableLen, waitAll)
 }
 
 // RangeEntry iterates over all entries in the map.
@@ -1722,6 +1738,7 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 // It processes a group of keys or key-value pairs by applying the specified processing function to each item.
 //
 // Parameters:
+//   - table: The current hash table.
 //   - itemCount: The number of items to be processed.
 //   - growFactor: Capacity change coefficient:
 //     >0: Estimates new items as itemCount * growFactor.
@@ -1729,12 +1746,12 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 //   - processor: The function to process each item.
 //   - canParallel: Whether parallel processing is supported
 func (m *MapOf[K, V]) batchProcess(
+	table *mapOfTable,
 	itemCount int,
 	growFactor float64,
-	processor func(start, end int),
+	processor func(table *mapOfTable, start, end int),
 	canParallel bool,
 ) {
-	table := m.table.Load()
 	if table == nil {
 		table = m.initSlow()
 	}
@@ -1749,7 +1766,7 @@ func (m *MapOf[K, V]) batchProcess(
 			growThreshold := int(float64(len(table.buckets)*entriesPerMapOfBucket) * mapLoadFactor)
 			sizeHint := table.sumSize() + newItemsEstimate
 			if sizeHint > growThreshold {
-				m.resize(mapGrowHint, calcTableLen(sizeHint))
+				m.resize(mapGrowHint, calcTableLen(sizeHint), waitNewTable)
 			}
 		}
 	}
@@ -1767,7 +1784,7 @@ func (m *MapOf[K, V]) batchProcess(
 		for i := 0; i < chunks; i++ {
 			go func(start, end int) {
 				defer wg.Done()
-				processor(start, end)
+				processor(table, start, end)
 			}(i*chunkSize, min((i+1)*chunkSize, itemCount))
 		}
 		wg.Wait()
@@ -1775,7 +1792,7 @@ func (m *MapOf[K, V]) batchProcess(
 	}
 
 	// Serial processing
-	processor(0, itemCount)
+	processor(table, 0, itemCount)
 }
 
 // BatchProcessImmutableEntries batch processes multiple immutable key-value pairs with a custom function.
@@ -1813,10 +1830,12 @@ func (m *MapOf[K, V]) batchProcessImmutableEntries(
 	values = make([]V, len(immutableEntries))
 	status = make([]bool, len(immutableEntries))
 
-	m.batchProcess(len(immutableEntries), growFactor, func(start, end int) {
+	table := m.table.Load()
+
+	m.batchProcess(table, len(immutableEntries), growFactor, func(table *mapOfTable, start, end int) {
 		for i := start; i < end; i++ {
 			hash := m.keyHash(noescape(unsafe.Pointer(&immutableEntries[i].Key)), m.seed)
-			values[i], status[i] = m.processEntry(hash, &immutableEntries[i].Key,
+			values[i], status[i] = m.processEntry(table, hash, &immutableEntries[i].Key,
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 					return processFn(immutableEntries[i], loaded)
 				},
@@ -1862,10 +1881,12 @@ func (m *MapOf[K, V]) batchProcessEntries(
 	values = make([]V, len(entries))
 	status = make([]bool, len(entries))
 
-	m.batchProcess(len(entries), growFactor, func(start, end int) {
+	table := m.table.Load()
+
+	m.batchProcess(table, len(entries), growFactor, func(table *mapOfTable, start, end int) {
 		for i := start; i < end; i++ {
 			hash := m.keyHash(noescape(unsafe.Pointer(&entries[i].Key)), m.seed)
-			values[i], status[i] = m.processEntry(hash, &entries[i].Key,
+			values[i], status[i] = m.processEntry(table, hash, &entries[i].Key,
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 					return processFn(&entries[i], loaded)
 				},
@@ -1907,10 +1928,12 @@ func (m *MapOf[K, V]) batchProcessKeys(
 	values = make([]V, len(keys))
 	status = make([]bool, len(keys))
 
-	m.batchProcess(len(keys), growFactor, func(start, end int) {
+	table := m.table.Load()
+
+	m.batchProcess(table, len(keys), growFactor, func(table *mapOfTable, start, end int) {
 		for i := start; i < end; i++ {
 			hash := m.keyHash(noescape(unsafe.Pointer(&keys[i])), m.seed)
-			values[i], status[i] = m.processEntry(hash, &keys[i],
+			values[i], status[i] = m.processEntry(table, hash, &keys[i],
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 					return processFn(keys[i], loaded)
 				},
@@ -2010,12 +2033,14 @@ func (m *MapOf[K, V]) FromMap(source map[K]V) {
 		return
 	}
 
-	m.batchProcess(len(source), 1.0,
-		func(int, int) {
+	table := m.table.Load()
+
+	m.batchProcess(table, len(source), 1.0,
+		func(table *mapOfTable, _, _ int) {
 			// Directly iterate and process all key-value pairs
 			for k, v := range source {
 				hash := m.keyHash(noescape(unsafe.Pointer(&k)), m.seed)
-				m.processEntry(hash, &k,
+				m.processEntry(table, hash, &k,
 					func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 						return &EntryOf[K, V]{Value: v}, v, e != nil
 					},
@@ -2094,13 +2119,14 @@ func (m *MapOf[K, V]) Merge(
 	}
 
 	// Pre-fetch target table to avoid multiple checks in loop
+	table := m.table.Load()
 	otherSize := other.Size()
 
-	m.batchProcess(otherSize, 1.0,
-		func(int, int) {
+	m.batchProcess(table, otherSize, 1.0,
+		func(table *mapOfTable, _, _ int) {
 			other.RangeEntry(func(other *EntryOf[K, V]) bool {
 				hash := m.keyHash(noescape(unsafe.Pointer(&other.Key)), m.seed)
-				m.processEntry(hash, &other.Key,
+				m.processEntry(table, hash, &other.Key,
 					func(this *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 						if this == nil {
 							// Key doesn't exist in current Map, add directly
@@ -2144,12 +2170,12 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 	if size > 0 {
 		cloneTable := newMapOfTable(clone.minTableLen)
 		clone.table.Store(cloneTable)
-		clone.batchProcess(size, 1.0,
-			func(int, int) {
+		clone.batchProcess(table, size, 1.0,
+			func(table *mapOfTable, _, _ int) {
 				// Directly iterate and process all key-value pairs
 				m.RangeEntry(func(e *EntryOf[K, V]) bool {
 					hash := clone.keyHash(noescape(unsafe.Pointer(&e.Key)), clone.seed)
-					clone.processEntry(hash, &e.Key,
+					clone.processEntry(table, hash, &e.Key,
 						func(_ *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 							return e, e.Value, false
 						},
