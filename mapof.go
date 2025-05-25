@@ -1574,9 +1574,10 @@ func (m *MapOf[K, V]) Clear() {
 //
 // Notes:
 //   - Never modify the Key or Value in an Entry under any circumstances.
-//   - Range operates on the current table snapshot, which may not reflect the most up-to-date state.
-//     Similar to `sync.Map`, this provides eventual consistency for reads.
-//     at a slight performance cost.
+//   - The iteration directly traverses bucket data.
+//     The data is not guaranteed to be real-time but provides eventual consistency.
+//     In extreme cases, the same value may be traversed twice
+//     (if it gets deleted and re-added later during iteration).
 func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	table := m.table.Load()
 	if table == nil {
@@ -1585,11 +1586,11 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 
 	for i := range table.buckets {
 		rootb := &table.buckets[i]
-		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
-			metaw := b.meta
+		for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
+			metaw := loadUint64(&b.meta)
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				i := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+				if e := (*EntryOf[K, V])(loadPointer(&b.entries[i])); e != nil {
 					if !yield(e) {
 						return
 					}
@@ -2207,13 +2208,16 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 	for i := range table.buckets {
 		nentries := 0
 		rootb := &table.buckets[i]
-		rootb.lock()
-		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
+
+		for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 			stats.TotalBuckets++
 			nentriesLocal := 0
 			stats.Capacity += entriesPerMapOfBucket
-			for i := 0; i < entriesPerMapOfBucket; i++ {
-				if b.entries[i] != nil {
+
+			metaw := loadUint64(&b.meta)
+			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
+				i := firstMarkedByteIndex(markedw)
+				if loadPointer(&b.entries[i]) != nil {
 					stats.Size++
 					nentriesLocal++
 				}
@@ -2223,7 +2227,6 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 				stats.EmptyBuckets++
 			}
 		}
-		rootb.unlock()
 
 		if nentries < stats.MinEntries {
 			stats.MinEntries = nentries
@@ -2293,6 +2296,37 @@ func (s *MapStats) ToString() string {
 	sb.WriteString(fmt.Sprintf("TotalShrinks: %d\n", s.TotalShrinks))
 	sb.WriteString("}\n")
 	return sb.String()
+}
+
+// nextPowOf2 calculates the smallest power of 2 that is greater than or equal to n.
+// Compatible with both 32-bit and 64-bit systems.
+func nextPowOf2(n int) int {
+	if n <= 0 {
+		return 1
+	}
+
+	if bits.UintSize == 32 {
+		v := uint32(n)
+		v--
+		v |= v >> 1
+		v |= v >> 2
+		v |= v >> 4
+		v |= v >> 8
+		v |= v >> 16
+		v++
+		return int(v)
+	}
+
+	v := uint64(n)
+	v--
+	v |= v >> 1
+	v |= v >> 2
+	v |= v >> 4
+	v |= v >> 8
+	v |= v >> 16
+	v |= v >> 32
+	v++
+	return int(v)
 }
 
 // spread improves hash distribution by XORing the original hash with its high bits.
@@ -2415,64 +2449,10 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 //	}
 //}
 
-// nextPowOf2 calculates the smallest power of 2 that is greater than or equal to n.
-// Compatible with both 32-bit and 64-bit systems.
-func nextPowOf2(n int) int {
-	if n <= 0 {
-		return 1
-	}
-
-	if bits.UintSize == 32 {
-		v := uint32(n)
-		v--
-		v |= v >> 1
-		v |= v >> 2
-		v |= v >> 4
-		v |= v >> 8
-		v |= v >> 16
-		v++
-		return int(v)
-	}
-
-	v := uint64(n)
-	v--
-	v |= v >> 1
-	v |= v >> 2
-	v |= v >> 4
-	v |= v >> 8
-	v |= v >> 16
-	v |= v >> 32
-	v++
-	return int(v)
-}
-
-func delay(spins *int) {
-	const yieldSleep = 500 * time.Microsecond
-	if //goland:noinspection ALL
-	enableSpin && runtime_canSpin(*spins) {
-		runtime_doSpin()
-		*spins++
-	} else {
-		// time.Sleep with non-zero duration (≈Millisecond level) works effectively
-		// as backoff under high concurrency.
-		time.Sleep(yieldSleep)
-		*spins = 0
-	}
-}
-
 func loadPointer(addr *unsafe.Pointer) unsafe.Pointer {
 	if //goland:noinspection ALL
 	atomicLevel == 0 {
 		return atomic.LoadPointer(addr)
-	} else {
-		return *addr
-	}
-}
-
-func loadUint64(addr *uint64) uint64 {
-	if //goland:noinspection ALL
-	atomicLevel == 0 {
-		return atomic.LoadUint64(addr)
 	} else {
 		return *addr
 	}
@@ -2484,6 +2464,15 @@ func storePointer(addr *unsafe.Pointer, val unsafe.Pointer) {
 		atomic.StorePointer(addr, val)
 	} else {
 		*addr = val
+	}
+}
+
+func loadUint64(addr *uint64) uint64 {
+	if //goland:noinspection ALL
+	atomicLevel == 0 {
+		return atomic.LoadUint64(addr)
+	} else {
+		return *addr
 	}
 }
 
@@ -2569,6 +2558,20 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 //	x := uintptr(unsafe.Pointer(p))
 //	return (*T)(unsafe.Pointer(x ^ 0))
 //}
+
+func delay(spins *int) {
+	const yieldSleep = 500 * time.Microsecond
+	if //goland:noinspection ALL
+	enableSpin && runtime_canSpin(*spins) {
+		runtime_doSpin()
+		*spins++
+	} else {
+		// time.Sleep with non-zero duration (≈Millisecond level) works effectively
+		// as backoff under high concurrency.
+		time.Sleep(yieldSleep)
+		*spins = 0
+	}
+}
 
 // nolint:all
 //
