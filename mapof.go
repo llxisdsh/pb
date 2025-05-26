@@ -38,7 +38,7 @@ const (
 const (
 	// mapShrinkFraction defines the threshold fraction of table occupation that triggers
 	// table shrinking when deleting the last entry in a bucket chain.
-	mapShrinkFraction = 128
+	mapShrinkFraction = 8
 	// mapLoadFactor defines the threshold that triggers a table resize during insertion.
 	// A map can hold up to mapLoadFactor*entriesPerMapOfBucket*tableLen key-value pairs
 	// (this is a soft limit).
@@ -48,14 +48,13 @@ const (
 	defaultMinMapTableLen = 32
 	// minBucketsPerGoroutine defines the minimum table size required to trigger parallel resizing.
 	// Tables smaller than this threshold will use single-threaded resizing for better efficiency.
-	minBucketsPerGoroutine       = 4
-	minBucketsPerHelperGoroutine = 64
+	minBucketsPerGoroutine = 4
 	// minParallelBatchItems defines the minimum number of items required for parallel batch processing.
 	// Below this threshold, serial processing is used to avoid the overhead of goroutine creation.
 	minParallelBatchItems = 256
 	// asyncResizeThreshold defines the minimum number of buckets required
 	// to trigger an asynchronous resize operation.
-	asyncResizeThreshold = int(128 * 1024 / CacheLineSize)
+	asyncResizeThreshold = 128 * 1024 / CacheLineSize
 )
 
 const (
@@ -76,10 +75,6 @@ const (
 	// to reduce contention latency. This improves performance for short waits but
 	// may slightly reduce throughput under high contention.
 	enableSpin = true
-
-	// enableParallelResize enables concurrent resizing using worker goroutines.
-	// Trade-off: Faster but uses more memory. Disable for low-CPU environments.
-	enableParallelResize = false
 )
 
 // MapOf is a high-performance concurrent map implementation that offers significant
@@ -299,11 +294,10 @@ func (b *bucketOf) unlock() {
 // resizeState represents the current state of a resizing operation
 type resizeState struct {
 	wg        sync.WaitGroup
-	newWg     sync.WaitGroup
 	table     *mapOfTable
+	newTable  atomic.Pointer[mapOfTable]
 	chunkSize int
 	chunks    int32
-	works     atomic.Int32
 	process   atomic.Int32
 	completed atomic.Int32
 }
@@ -312,9 +306,8 @@ type resizeState struct {
 type mapOfTable struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
-		buckets  []bucketOf
-		size     []counterStripe
-		newTable atomic.Pointer[mapOfTable]
+		buckets []bucketOf
+		size    []counterStripe
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	buckets []bucketOf
@@ -323,9 +316,6 @@ type mapOfTable struct {
 	// occupies min(buckets_memory/1024, 64KB) of memory
 	// when the compile option `mapof_opt_enablepadding` is enabled
 	size []counterStripe
-
-	// temporarily store the resized new table
-	newTable atomic.Pointer[mapOfTable]
 }
 
 func newMapOfTable(tableLen int) *mapOfTable {
@@ -554,7 +544,8 @@ func (m *MapOf[K, V]) processEntry(
 		// This is the first check, checking if there is a resize operation in progress
 		// before acquiring the bucket lock
 		if rs := m.resizeState.Load(); rs != nil &&
-			rs.table != nil /*skip init*/ {
+			rs.table != nil /*skip init*/ &&
+			rs.newTable.Load() != nil /*skip newTable in creating or clear */ {
 			rootb.unlock()
 			// Wait for the current resize operation to complete
 			m.helpCopyAndWait(rs)
@@ -685,19 +676,13 @@ const (
 	mapClearHint  mapResizeHint = 2
 )
 
-type resizeWaitHint int
-
-const (
-	waitAll      resizeWaitHint = 0
-	waitNewTable resizeWaitHint = 1
-)
-
 func (m *MapOf[K, V]) resize(
 	hint mapResizeHint,
 	sizeHint int,
-	waitHint resizeWaitHint,
+	waitCompleted bool,
 ) {
 	for {
+		// resize check
 		table := m.table.Load()
 		tableLen := len(table.buckets)
 		if hint == mapGrowHint {
@@ -713,15 +698,13 @@ func (m *MapOf[K, V]) resize(
 				return
 			}
 		}
+
+		// resize
 		ok, rs := m.tryResize(table, hint, sizeHint)
+		if rs != nil && waitCompleted {
+			rs.wg.Wait()
+		}
 		if ok {
-			if rs != nil {
-				if waitHint == waitNewTable {
-					rs.newWg.Wait()
-				} else {
-					rs.wg.Wait()
-				}
-			}
 			return
 		}
 	}
@@ -735,30 +718,23 @@ func (m *MapOf[K, V]) tryResize(
 
 	rs := m.resizeState.Load()
 	if rs != nil {
-		m.helpCopyAndWait(rs)
-		return false, nil
+		return false, rs
 	}
 
 	// Create a new WaitGroup for the current resize operation
 	rs = new(resizeState)
 	rs.wg.Add(1)
-	rs.newWg.Add(1)
 	rs.table = table
 
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
 	if !m.resizeState.CompareAndSwap(nil, rs) {
-		// Someone else started resize. Wait for it to finish.
-		if rs = m.resizeState.Load(); rs != nil {
-			m.helpCopyAndWait(rs)
-		}
-		return false, nil
+		return false, m.resizeState.Load()
 	}
 
 	// Although the table is always changed when resizeWg is not nil,
 	// it might have been changed before that.
 	if m.table.Load() != table {
 		// If the table has already been changed, return directly
-		rs.newWg.Done()
 		m.resizeState.Store(nil)
 		rs.wg.Done()
 		return false, nil
@@ -766,13 +742,12 @@ func (m *MapOf[K, V]) tryResize(
 
 	if hint == mapClearHint {
 		newTable := newMapOfTable(newTableLen)
-		rs.newWg.Done()
 		m.table.Store(newTable)
 		m.resizeState.Store(nil)
 		rs.wg.Done()
 		return true, nil
 	} else {
-		if newTableLen < asyncResizeThreshold {
+		if newTableLen < int(asyncResizeThreshold) {
 			m.finalizeResize(table, newTableLen, rs)
 			return true, nil
 		} else {
@@ -794,8 +769,7 @@ func (m *MapOf[K, V]) finalizeResize(
 	rs.chunks = chunks
 
 	newTable := newMapOfTable(newTableLen)
-	table.newTable.Store(newTable)
-	rs.newWg.Done()
+	rs.newTable.Store(newTable)
 	if isGrowth {
 		m.totalGrowths.Add(1)
 	} else {
@@ -806,27 +780,8 @@ func (m *MapOf[K, V]) finalizeResize(
 }
 
 func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
-	if enableParallelResize {
-		rs.works.Add(1)
-	}
-	rs.newWg.Wait()
-	completed := m.helpCopy(rs)
-	if !completed {
-		rs.wg.Wait()
-	}
-}
-
-func (m *MapOf[K, V]) helpCopy(rs *resizeState) (completed bool) {
 	table := rs.table
-	if table == nil {
-		// skip init
-		return false
-	}
-	newTable := table.newTable.Load()
-	if newTable == nil {
-		// skip mapClearHint
-		return false
-	}
+	newTable := rs.newTable.Load()
 
 	tableLen := len(table.buckets)
 	chunks := rs.chunks
@@ -835,7 +790,9 @@ func (m *MapOf[K, V]) helpCopy(rs *resizeState) (completed bool) {
 	for {
 		process := rs.process.Add(1)
 		if process > chunks {
-			break
+			// wait copying completed
+			rs.wg.Wait()
+			return
 		}
 		process--
 		start := int(process) * chunkSize
@@ -846,42 +803,13 @@ func (m *MapOf[K, V]) helpCopy(rs *resizeState) (completed bool) {
 			copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
 		}
 		if rs.completed.Add(1) == chunks {
-			completed = true
-			break
-		}
-		if enableParallelResize {
-			process = rs.process.Load()
-			if process > chunks {
-				break
-			}
-			remainingLen := tableLen - int(process)*chunkSize
-			needHelpers := remainingLen / minBucketsPerHelperGoroutine
-			works := int(rs.works.Load())
-			addHelpers := needHelpers - works
-			if addHelpers > 0 {
-				cpus := runtime.GOMAXPROCS(0)
-				if works < cpus {
-					remainingCpus := cpus - works
-					spawnHelpers := min(addHelpers, remainingCpus)
-					if spawnHelpers > 0 {
-						// fmt.Printf("tableLen:%v,process:%v,works:%v,add: %v\n",
-						// 	tableLen, process, works, spawnHelpers)
-						rs.works.Add(int32(spawnHelpers))
-						for i := 0; i < spawnHelpers; i++ {
-							go m.helpCopy(rs)
-						}
-					}
-				}
-			}
+			// copying completed
+			m.table.Store(newTable)
+			m.resizeState.Store(nil)
+			rs.wg.Done()
+			return
 		}
 	}
-
-	if completed {
-		m.table.Store(newTable)
-		m.resizeState.Store(nil)
-		rs.wg.Done()
-	}
-	return completed
 }
 
 // calcParallelism calculates the number of goroutines for parallel processing.
@@ -1567,7 +1495,7 @@ func (m *MapOf[K, V]) Clear() {
 	if table == nil {
 		return
 	}
-	m.resize(mapClearHint, m.minTableLen, waitAll)
+	m.resize(mapClearHint, m.minTableLen, true)
 }
 
 // RangeEntry iterates over all entries in the map.
@@ -1767,7 +1695,7 @@ func (m *MapOf[K, V]) batchProcess(
 			growThreshold := int(float64(len(table.buckets)*entriesPerMapOfBucket) * mapLoadFactor)
 			sizeHint := table.sumSize() + newItemsEstimate
 			if sizeHint > growThreshold {
-				m.resize(mapGrowHint, calcTableLen(sizeHint), waitNewTable)
+				m.resize(mapGrowHint, calcTableLen(sizeHint), false)
 			}
 		}
 	}
