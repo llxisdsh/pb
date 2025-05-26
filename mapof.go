@@ -747,29 +747,29 @@ func (m *MapOf[K, V]) tryResize(
 		rs.wg.Done()
 		return true, nil
 	} else {
-		if newTableLen < int(asyncResizeThreshold) {
-			m.finalizeResize(table, newTableLen, rs)
-			return true, nil
-		} else {
-			go m.finalizeResize(table, newTableLen, rs)
+		cpus := runtime.GOMAXPROCS(0)
+		if newTableLen >= int(asyncResizeThreshold) && cpus > 1 {
+			go m.finalizeResize(table, newTableLen, rs, cpus)
 			return true, rs
+		} else {
+			m.finalizeResize(table, newTableLen, rs, cpus)
+			return true, nil
 		}
 	}
 }
 
 func (m *MapOf[K, V]) finalizeResize(
-	table *mapOfTable, newTableLen int, rs *resizeState) {
+	table *mapOfTable, newTableLen int, rs *resizeState, cpus int) {
 
 	tableLen := len(table.buckets)
-	isGrowth := newTableLen > tableLen
-	cpus := runtime.NumCPU()
-	chunkSize, chunksInt := calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
-	chunks := int32(chunksInt)
+	chunkSize, chunks := calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
 	rs.chunkSize = chunkSize
-	rs.chunks = chunks
+	rs.chunks = int32(chunks)
 
 	newTable := newMapOfTable(newTableLen)
 	rs.newTable.Store(newTable)
+
+	isGrowth := newTableLen > tableLen
 	if isGrowth {
 		m.totalGrowths.Add(1)
 	} else {
