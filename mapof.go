@@ -296,8 +296,6 @@ type resizeState struct {
 	wg        sync.WaitGroup
 	table     *mapOfTable
 	newTable  atomic.Pointer[mapOfTable]
-	chunkSize int
-	chunks    int32
 	process   atomic.Int32
 	completed atomic.Int32
 }
@@ -306,8 +304,10 @@ type resizeState struct {
 type mapOfTable struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
-		buckets []bucketOf
-		size    []counterStripe
+		buckets   []bucketOf
+		size      []counterStripe
+		chunks    int
+		chunkSize int
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	buckets []bucketOf
@@ -316,12 +316,18 @@ type mapOfTable struct {
 	// occupies min(buckets_memory/1024, 64KB) of memory
 	// when the compile option `mapof_opt_enablepadding` is enabled
 	size []counterStripe
+	// number of chunks and chunks size for resizing
+	chunks    int
+	chunkSize int
 }
 
-func newMapOfTable(tableLen int) *mapOfTable {
+func newMapOfTable(tableLen, cpus int) *mapOfTable {
+	chunkSize, chunks := calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
 	return &mapOfTable{
-		buckets: make([]bucketOf, tableLen),
-		size:    make([]counterStripe, calcSizeLen(tableLen)),
+		buckets:   make([]bucketOf, tableLen),
+		size:      make([]counterStripe, calcSizeLen(tableLen, cpus)),
+		chunks:    chunks,
+		chunkSize: chunkSize,
 	}
 }
 
@@ -337,8 +343,8 @@ func calcTableLen(sizeHint int) int {
 
 // calcSizeLen computes the size count for the table
 // return value must be a power of 2
-func calcSizeLen(tableLen int) int {
-	return nextPowOf2(min(runtime.GOMAXPROCS(0), tableLen>>10))
+func calcSizeLen(tableLen, cpus int) int {
+	return nextPowOf2(min(cpus, tableLen>>10))
 }
 
 // addSize atomically adds delta to the size counter for the given bucket index.
@@ -431,7 +437,7 @@ func (m *MapOf[K, V]) init(
 	m.minTableLen = calcTableLen(c.sizeHint)
 	m.shrinkEnabled = c.shrinkEnabled
 
-	table := newMapOfTable(m.minTableLen)
+	table := newMapOfTable(m.minTableLen, runtime.GOMAXPROCS(0))
 	m.table.Store(table)
 	return table
 }
@@ -739,15 +745,14 @@ func (m *MapOf[K, V]) tryResize(
 		rs.wg.Done()
 		return false, nil
 	}
-
+	cpus := runtime.GOMAXPROCS(0)
 	if hint == mapClearHint {
-		newTable := newMapOfTable(newTableLen)
+		newTable := newMapOfTable(newTableLen, cpus)
 		m.table.Store(newTable)
 		m.resizeState.Store(nil)
 		rs.wg.Done()
 		return true, nil
 	} else {
-		cpus := runtime.GOMAXPROCS(0)
 		if newTableLen >= int(asyncResizeThreshold) && cpus > 1 {
 			go m.finalizeResize(table, newTableLen, rs, cpus)
 			return true, rs
@@ -761,16 +766,9 @@ func (m *MapOf[K, V]) tryResize(
 func (m *MapOf[K, V]) finalizeResize(
 	table *mapOfTable, newTableLen int, rs *resizeState, cpus int) {
 
-	tableLen := len(table.buckets)
-	chunkSize, chunks := calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
-	rs.chunkSize = chunkSize
-	rs.chunks = int32(chunks)
-
-	newTable := newMapOfTable(newTableLen)
+	newTable := newMapOfTable(newTableLen, cpus)
 	rs.newTable.Store(newTable)
-
-	isGrowth := newTableLen > tableLen
-	if isGrowth {
+	if newTableLen > len(table.buckets) {
 		m.totalGrowths.Add(1)
 	} else {
 		m.totalShrinks.Add(1)
@@ -784,8 +782,8 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 	newTable := rs.newTable.Load()
 
 	tableLen := len(table.buckets)
-	chunks := rs.chunks
-	chunkSize := rs.chunkSize
+	chunks := int32(table.chunks)
+	chunkSize := table.chunkSize
 	isGrowth := len(newTable.buckets) > tableLen
 	for {
 		process := rs.process.Add(1)
@@ -2097,7 +2095,7 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 	// Pre-fetch size to optimize initial capacity
 	size := m.Size()
 	if size > 0 {
-		cloneTable := newMapOfTable(clone.minTableLen)
+		cloneTable := newMapOfTable(clone.minTableLen, runtime.GOMAXPROCS(0))
 		clone.table.Store(cloneTable)
 		clone.batchProcess(table, size, 1.0,
 			func(table *mapOfTable, _, _ int) {

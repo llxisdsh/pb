@@ -792,7 +792,7 @@ func TestMapOfCalcLen(t *testing.T) {
 	t.Log("runtime.GOMAXPROCS(0),", cpus)
 	for i := 0; i < 1000000; i++ {
 		tableLen = calcTableLen(i)
-		sizeLen = calcSizeLen(i)
+		sizeLen = calcSizeLen(i, cpus)
 		_, parallelism = calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
 		if tableLen != lastTableLen || sizeLen != lastSizeLen || parallelism != lastParallelism {
 			t.Logf("sizeHint: %v, tableLen: %v, counterLen: %v, parallelism: %v", i, tableLen, sizeLen, parallelism)
