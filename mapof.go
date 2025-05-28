@@ -2224,6 +2224,10 @@ func (s *MapStats) ToString() string {
 	return sb.String()
 }
 
+func (s *MapStats) String() string {
+	return s.ToString()
+}
+
 // nextPowOf2 calculates the smallest power of 2 that is greater than or equal to n.
 // Compatible with both 32-bit and 64-bit systems.
 func nextPowOf2(n int) int {
@@ -2265,21 +2269,10 @@ func spread(h uintptr) uintptr {
 }
 
 // h1 extracts the bucket index from a hash value.
-// It uses different shift values based on the key type to optimize performance:
-//   - For integer keys (intKey=true): Uses a right shift of 2 bits (divide by 4),
-//     which provides good distribution for sequential integers while matching
-//     the average bucket capacity (with load factor 0.75 and bucket size 6,
-//     each bucket handles ~4.5 elements).
-//   - For non-integer keys (intKey=false): Uses a right shift of 7 bits (divide by 128),
-//     which provides better distribution for hash values from complex types like strings,
-//     where the high bits contain more entropy and the distribution is already randomized
-//     by the hash function.
-//
-// The different approaches balance memory usage, lookup performance, and collision rates
-// for different key types.
 func h1(h uintptr, intKey bool) uintptr {
 	if intKey {
-		return h >> 2
+		// Possible values: [1,2,3,4,...entriesPerMapOfBucket].
+		return h / uintptr(entriesPerMapOfBucket)
 	} else {
 		if enableHashSpread {
 			return spread(h) >> 7
