@@ -1,4 +1,4 @@
-//go:build mapof_opt_achelinesize_128
+//go:build mapof_opt_cachelinesize_128
 
 package pb
 
