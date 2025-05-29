@@ -175,8 +175,8 @@ func (ht *HashTrieMap[K, V]) LoadOrStoreFn(key K, valueFn func() V) (result V, l
 // produces a subtree of indirect nodes to hold the two new entries.
 func (ht *HashTrieMap[K, V]) expand(oldEntry, newEntry *entry[K, V], newHash uintptr, hashShift uint, parent *indirect[K, V]) *node[K, V] {
 	// Check for a hash collision.
-	//oldHash := ht.keyHash(oldEntry.key, ht.seed)
-	if oldEntry.hash == newHash {
+	oldHash := oldEntry.hash
+	if oldHash == newHash {
 		// Store the old entry in the new entry's overflow list, then store
 		// the new entry.
 		newEntry.overflow.Store(oldEntry)
@@ -190,7 +190,7 @@ func (ht *HashTrieMap[K, V]) expand(oldEntry, newEntry *entry[K, V], newHash uin
 			panic("internal/sync.HashTrieMap: ran out of hash bits while inserting")
 		}
 		hashShift -= nChildrenLog2 // hashShift is for the level parent is at. We need to go deeper.
-		oi := (oldEntry.hash >> hashShift) & nChildrenMask
+		oi := (oldHash >> hashShift) & nChildrenMask
 		ni := (newHash >> hashShift) & nChildrenMask
 		if oi != ni {
 			newIndirect.children[oi].Store(&oldEntry.node)
@@ -627,7 +627,6 @@ func newIndirectNode[K comparable, V any](parent *indirect[K, V]) *indirect[K, V
 }
 
 func (i *indirect[K, V]) empty() bool {
-	i.mu.TryLock()
 	nc := 0
 	for j := range i.children {
 		if i.children[j].Load() != nil {
