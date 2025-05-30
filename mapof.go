@@ -331,22 +331,6 @@ func newMapOfTable(tableLen, cpus int) *mapOfTable {
 	}
 }
 
-// calcTableLen computes the bucket count for the table
-// return value must be a power of 2
-func calcTableLen(sizeHint int) int {
-	tableLen := defaultMinMapTableLen
-	if sizeHint > defaultMinMapTableLen*entriesPerMapOfBucket {
-		tableLen = nextPowOf2(int((float64(sizeHint) / float64(entriesPerMapOfBucket)) / mapLoadFactor))
-	}
-	return tableLen
-}
-
-// calcSizeLen computes the size count for the table
-// return value must be a power of 2
-func calcSizeLen(tableLen, cpus int) int {
-	return nextPowOf2(min(cpus, tableLen>>10))
-}
-
 // addSize atomically adds delta to the size counter for the given bucket index.
 func (table *mapOfTable) addSize(bucketIdx uintptr, delta int) {
 	cidx := uintptr(len(table.size)-1) & bucketIdx
@@ -579,18 +563,9 @@ func (m *MapOf[K, V]) processEntry(
 			lastBucket  *bucketOf
 		)
 
+	findLoop:
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
-			lastBucket = b
 			metaw := b.meta
-
-			if emptyBucket == nil {
-				emptyw := (^metaw) & metaMask
-				if emptyw != 0 {
-					emptyBucket = b
-					emptyIdx = firstMarkedByteIndex(emptyw)
-				}
-			}
-
 			for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 				idx := firstMarkedByteIndex(markedw)
 				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
@@ -599,13 +574,18 @@ func (m *MapOf[K, V]) processEntry(
 						oldBucket = b
 						oldIdx = idx
 						oldMeta = metaw
-						break
+						break findLoop
 					}
 				}
 			}
-			if oldEntry != nil {
-				break
+			if emptyBucket == nil {
+				emptyw := (^metaw) & metaMask
+				if emptyw != 0 {
+					emptyBucket = b
+					emptyIdx = firstMarkedByteIndex(emptyw)
+				}
 			}
+			lastBucket = b
 		}
 
 		// --- Processing Logic ---
@@ -613,6 +593,7 @@ func (m *MapOf[K, V]) processEntry(
 
 		if oldEntry != nil {
 			if newEntry == oldEntry {
+				// No entry to update or delete
 				rootb.unlock()
 				return value, status
 			}
@@ -642,6 +623,7 @@ func (m *MapOf[K, V]) processEntry(
 		}
 
 		if newEntry == nil {
+			// No entry to insert or delete
 			rootb.unlock()
 			return value, status
 		}
@@ -688,7 +670,7 @@ func (m *MapOf[K, V]) resize(
 	waitCompleted bool,
 ) {
 	for {
-		// resize check
+		// Resize check
 		table := m.table.Load()
 		tableLen := len(table.buckets)
 		if hint == mapGrowHint {
@@ -705,7 +687,7 @@ func (m *MapOf[K, V]) resize(
 			}
 		}
 
-		// resize
+		// Try resize
 		ok, rs := m.tryResize(table, hint, sizeHint)
 		if rs != nil && waitCompleted {
 			rs.wg.Wait()
@@ -754,6 +736,7 @@ func (m *MapOf[K, V]) tryResize(
 		return true, nil
 	} else {
 		if newTableLen >= int(asyncResizeThreshold) && cpus > 1 {
+			// The big table, use goroutines to create new table and copy entries
 			go m.finalizeResize(table, newTableLen, rs, cpus)
 			return true, rs
 		} else {
@@ -763,9 +746,7 @@ func (m *MapOf[K, V]) tryResize(
 	}
 }
 
-func (m *MapOf[K, V]) finalizeResize(
-	table *mapOfTable, newTableLen int, rs *resizeState, cpus int) {
-
+func (m *MapOf[K, V]) finalizeResize(table *mapOfTable, newTableLen int, rs *resizeState, cpus int) {
 	newTable := newMapOfTable(newTableLen, cpus)
 	rs.newTable.Store(newTable)
 	if newTableLen > len(table.buckets) {
@@ -808,31 +789,6 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 			return
 		}
 	}
-}
-
-// calcParallelism calculates the number of goroutines for parallel processing.
-//
-// Parameters:
-//   - items: Number of items to process.
-//   - threshold: Minimum threshold to enable parallel processing.
-//   - number of available CPU cores
-//
-// Returns:
-//   - chunks: Suggested degree of parallelism (number of goroutines).
-//   - chunkSize: Number of items processed per goroutine
-func calcParallelism(items, threshold, cpus int) (chunkSize, chunks int) {
-	// If the items is too small, use single-threaded processing.
-	// Adjusts the parallel process trigger threshold using a scaling factor.
-	// example: items < threshold * 2
-	if items <= threshold {
-		return items, 1
-	}
-
-	chunks = min(items/threshold, cpus)
-
-	chunkSize = (items + chunks - 1) / chunks
-
-	return chunkSize, chunks
 }
 
 // copyBucketOfLock unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
@@ -994,7 +950,7 @@ func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 			e := m.findEntry(table, hash, &key)
 			if e != nil {
 				if m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&value))) {
-					return e.Value, true
+					return value, true
 				}
 			}
 		}
@@ -1079,14 +1035,12 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 			return false
 		}
 
-		if m.valEqual != nil {
-			if !m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&old))) {
-				return false
-			}
-			// deduplicates identical values
-			if m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&new))) {
-				return true
-			}
+		if !m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&old))) {
+			return false
+		}
+		// deduplicates identical values
+		if m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&new))) {
+			return true
 		}
 	}
 
@@ -1111,10 +1065,8 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 		if e == nil {
 			return false
 		}
-		if m.valEqual != nil {
-			if !m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&old))) {
-				return false
-			}
+		if !m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&old))) {
+			return false
 		}
 	}
 
@@ -1219,6 +1171,48 @@ func (m *MapOf[K, V]) LoadOrStoreFn(
 	)
 }
 
+// LoadAndUpdate retrieves the value associated with the given key and updates it if the key exists.
+//
+// Parameters:
+//   - key: The key to look up in the map.
+//   - value: The new value to set if the key exists.
+//
+// Returns:
+//   - previous: The old value associated with the key (if it existed),
+//     otherwise a zero-value of V.
+//   - loaded: True if the key existed and the value was updated, false otherwise.
+func (m *MapOf[K, V]) LoadAndUpdate(key K, value V) (previous V, loaded bool) {
+	table := m.table.Load()
+	if table == nil {
+		return *(new(V)), false
+	}
+
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
+
+	if enableFastPath {
+		e := m.findEntry(table, hash, &key)
+		if e == nil {
+			return *(new(V)), false
+		}
+
+		// deduplicates identical values
+		if m.valEqual != nil {
+			if m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&value))) {
+				return value, true
+			}
+		}
+	}
+
+	return m.processEntry(table, hash, &key,
+		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			if loaded != nil {
+				return &EntryOf[K, V]{Value: value}, loaded.Value, true
+			}
+			return nil, *(new(V)), false
+		},
+	)
+}
+
 // LoadAndStore returns the existing value for the key if present,
 // while setting the new value for the key.
 // It stores the new value and returns the existing one, if present.
@@ -1239,7 +1233,7 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 			e := m.findEntry(table, hash, &key)
 			if e != nil &&
 				m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&value))) {
-				return e.Value, true
+				return value, true
 			}
 		}
 	}
@@ -2228,6 +2222,47 @@ func (s *MapStats) String() string {
 	return s.ToString()
 }
 
+// calcParallelism calculates the number of goroutines for parallel processing.
+//
+// Parameters:
+//   - items: Number of items to process.
+//   - threshold: Minimum threshold to enable parallel processing.
+//   - number of available CPU cores
+//
+// Returns:
+//   - chunks: Suggested degree of parallelism (number of goroutines).
+//   - chunkSize: Number of items processed per goroutine
+func calcParallelism(items, threshold, cpus int) (chunkSize, chunks int) {
+	// If the items is too small, use single-threaded processing.
+	// Adjusts the parallel process trigger threshold using a scaling factor.
+	// example: items < threshold * 2
+	if items <= threshold {
+		return items, 1
+	}
+
+	chunks = min(items/threshold, cpus)
+
+	chunkSize = (items + chunks - 1) / chunks
+
+	return chunkSize, chunks
+}
+
+// calcTableLen computes the bucket count for the table
+// return value must be a power of 2
+func calcTableLen(sizeHint int) int {
+	tableLen := defaultMinMapTableLen
+	if sizeHint > defaultMinMapTableLen*entriesPerMapOfBucket {
+		tableLen = nextPowOf2(int((float64(sizeHint) / float64(entriesPerMapOfBucket)) / mapLoadFactor))
+	}
+	return tableLen
+}
+
+// calcSizeLen computes the size count for the table
+// return value must be a power of 2
+func calcSizeLen(tableLen, cpus int) int {
+	return nextPowOf2(min(cpus, tableLen>>10))
+}
+
 // nextPowOf2 calculates the smallest power of 2 that is greater than or equal to n.
 // Compatible with both 32-bit and 64-bit systems.
 func nextPowOf2(n int) int {
@@ -2404,10 +2439,6 @@ func storeUint64(addr *uint64, val uint64) {
 	}
 }
 
-//func casPointer(addr *unsafe.Pointer, oldPtr, newPtr unsafe.Pointer) bool {
-//	return atomic.CompareAndSwapPointer(addr, oldPtr, newPtr)
-//}
-
 func setOp(meta uint64, mask uint64, value bool) uint64 {
 	if value {
 		return meta | mask
@@ -2479,16 +2510,16 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 //}
 
 func delay(spins *int) {
-	const yieldSleep = 500 * time.Microsecond
 	if //goland:noinspection ALL
 	enableSpin && runtime_canSpin(*spins) {
-		runtime_doSpin()
 		*spins++
+		runtime_doSpin()
 	} else {
+		*spins = 0
 		// time.Sleep with non-zero duration (≈Millisecond level) works effectively
 		// as backoff under high concurrency.
+		const yieldSleep = 500 * time.Microsecond
 		time.Sleep(yieldSleep)
-		*spins = 0
 	}
 }
 
