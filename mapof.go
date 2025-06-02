@@ -913,6 +913,71 @@ func copyBucketOf[K comparable, V any](
 	}
 }
 
+// RangeProcessEntry iterates through all map entries while holding the bucket lock,
+// applying fn to each entry. The iteration is thread-safe due to bucket-level locking.
+//
+// The fn callback (with same signature as ProcessEntry) controls entry modification:
+//   - Return modified entry: updates the value
+//   - Return nil: deletes the entry
+//   - Return original entry: no change
+//
+// Ideal for batch operations requiring atomic read-modify-write semantics.
+//
+// Parameters:
+//   - fn: callback that processes each entry and returns an operation indicator
+//
+// Note:
+//   - The input parameter loaded is immutable and should not be modified directly
+//   - Holds bucket lock for entire iteration - avoid long operations/deadlock risks
+//   - Blocks concurrent map operations during execution
+func (m *MapOf[K, V]) RangeProcessEntry(fn func(loaded *EntryOf[K, V]) *EntryOf[K, V]) {
+	table := m.table.Load()
+	if table == nil {
+		return
+	}
+
+	for bidx := range table.buckets {
+		rootb := &table.buckets[bidx]
+		rootb.lock()
+		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
+			metaw := b.meta
+			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
+				i := firstMarkedByteIndex(markedw)
+				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+
+					newEntry := fn(e)
+
+					if newEntry == e {
+						// No entry to update or delete
+					} else if newEntry != nil {
+						// Update
+						newEntry.Key = e.Key
+						storePointer(&b.entries[i], unsafe.Pointer(newEntry))
+					} else {
+						// Delete
+						newmetaw := setByte(metaw, emptyMetaSlot, i)
+						storeUint64(&b.meta, newmetaw)
+						storePointer(&b.entries[i], nil)
+						table.addSize(uintptr(bidx), -1)
+					}
+				}
+			}
+		}
+		rootb.unlock()
+	}
+
+	// Check if table shrinking is needed
+	if m.shrinkEnabled {
+		tableLen := len(table.buckets)
+		if m.minTableLen < tableLen {
+			newTableLen := calcTableLen(table.sumSize())
+			if newTableLen < tableLen {
+				m.tryResize(table, mapShrinkHint, newTableLen)
+			}
+		}
+	}
+}
+
 // Store inserts or updates a key-value pair, compatible with `sync.Map`.
 func (m *MapOf[K, V]) Store(key K, value V) {
 	table := m.table.Load()
