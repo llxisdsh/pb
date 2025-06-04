@@ -681,6 +681,20 @@ func (m *MapOf[K, V]) resize(
 			if tableLen <= sizeHint {
 				return
 			}
+			// Recalculate the shrink size to avoid over-shrinking
+			size := table.sumSize()
+			newTableLen := calcTableLen(size)
+			if newTableLen < m.minTableLen {
+				newTableLen = m.minTableLen
+			}
+			if newTableLen <= sizeHint {
+				return
+			}
+			sizeHint = newTableLen
+
+			if tableLen <= sizeHint {
+				return
+			}
 		} else {
 			if tableLen == sizeHint && table.isZero() {
 				return
@@ -964,17 +978,6 @@ func (m *MapOf[K, V]) RangeProcessEntry(fn func(loaded *EntryOf[K, V]) *EntryOf[
 			}
 		}
 		rootb.unlock()
-	}
-
-	// Check if table shrinking is needed
-	if m.shrinkEnabled {
-		tableLen := len(table.buckets)
-		if m.minTableLen < tableLen {
-			newTableLen := calcTableLen(table.sumSize())
-			if newTableLen < tableLen {
-				m.tryResize(table, mapShrinkHint, newTableLen)
-			}
-		}
 	}
 }
 
@@ -1555,6 +1558,38 @@ func (m *MapOf[K, V]) Clear() {
 	m.resize(mapClearHint, m.minTableLen, true)
 }
 
+// Grow increases the map's capacity by sizeAdd entries to accommodate future growth.
+// This pre-allocation avoids rehashing when adding new entries up to the new capacity.
+//
+// Parameters:
+//   - sizeAdd specifies the number of additional entries the map should be able to hold.
+func (m *MapOf[K, V]) Grow(sizeAdd int) {
+	if sizeAdd <= 0 {
+		return
+	}
+
+	table := m.table.Load()
+	if table == nil {
+		table = m.initSlow()
+		return
+	}
+
+	growThreshold := int(float64(len(table.buckets)*entriesPerMapOfBucket) * mapLoadFactor)
+	sizeHint := table.sumSize() + sizeAdd
+	if sizeHint > growThreshold {
+		m.resize(mapGrowHint, calcTableLen(sizeHint), false)
+	}
+}
+
+// Shrink reduces the capacity to fit the current size
+func (m *MapOf[K, V]) Shrink() {
+	table := m.table.Load()
+	if table == nil {
+		return
+	}
+	m.resize(mapShrinkHint, m.minTableLen, false)
+}
+
 // RangeEntry iterates over all entries in the map.
 //
 // Notes:
@@ -1746,15 +1781,8 @@ func (m *MapOf[K, V]) batchProcess(
 	if growFactor > 0 {
 		// Estimate new items
 		newItemsEstimate := int(float64(itemCount) * growFactor)
-
 		// Pre-growth check
-		if newItemsEstimate > 0 {
-			growThreshold := int(float64(len(table.buckets)*entriesPerMapOfBucket) * mapLoadFactor)
-			sizeHint := table.sumSize() + newItemsEstimate
-			if sizeHint > growThreshold {
-				m.resize(mapGrowHint, calcTableLen(sizeHint), false)
-			}
-		}
+		m.Grow(newItemsEstimate)
 	}
 
 	// Calculate the parallel count
@@ -2020,19 +2048,17 @@ func (m *MapOf[K, V]) FromMap(source map[K]V) {
 	}
 
 	table := m.table.Load()
-
-	m.batchProcess(table, len(source), 1.0,
-		func(table *mapOfTable, _, _ int) {
-			// Directly iterate and process all key-value pairs
-			for k, v := range source {
-				hash := m.keyHash(noescape(unsafe.Pointer(&k)), m.seed)
-				m.processEntry(table, hash, &k,
-					func(e *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-						return &EntryOf[K, V]{Value: v}, v, e != nil
-					},
-				)
-			}
-		}, false)
+	if table == nil {
+		table = m.initSlow()
+	}
+	for k, v := range source {
+		hash := m.keyHash(noescape(unsafe.Pointer(&k)), m.seed)
+		m.processEntry(table, hash, &k,
+			func(*EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+				return &EntryOf[K, V]{Value: v}, v, false
+			},
+		)
+	}
 }
 
 // FilterAndTransform filters and transforms elements in the map
@@ -2104,27 +2130,24 @@ func (m *MapOf[K, V]) Merge(
 		}
 	}
 
-	// Pre-fetch target table to avoid multiple checks in loop
 	table := m.table.Load()
-	otherSize := other.Size()
-
-	m.batchProcess(table, otherSize, 1.0,
-		func(table *mapOfTable, _, _ int) {
-			other.RangeEntry(func(other *EntryOf[K, V]) bool {
-				hash := m.keyHash(noescape(unsafe.Pointer(&other.Key)), m.seed)
-				m.processEntry(table, hash, &other.Key,
-					func(this *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-						if this == nil {
-							// Key doesn't exist in current Map, add directly
-							return other, other.Value, false
-						}
-						// Key exists in both Maps, use conflict handler
-						return conflictFn(this, other), other.Value, true
-					},
-				)
-				return true
-			})
-		}, false)
+	if table == nil {
+		table = m.initSlow()
+	}
+	other.RangeEntry(func(other *EntryOf[K, V]) bool {
+		hash := m.keyHash(noescape(unsafe.Pointer(&other.Key)), m.seed)
+		m.processEntry(table, hash, &other.Key,
+			func(this *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+				if this == nil {
+					// Key doesn't exist in current Map, add directly
+					return other, other.Value, false
+				}
+				// Key exists in both Maps, use conflict handler
+				return conflictFn(this, other), other.Value, true
+			},
+		)
+		return true
+	})
 }
 
 // Clone creates a deep copy of the map.
@@ -2156,19 +2179,16 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 	if size > 0 {
 		cloneTable := newMapOfTable(clone.minTableLen, runtime.GOMAXPROCS(0))
 		clone.table.Store(cloneTable)
-		clone.batchProcess(table, size, 1.0,
-			func(table *mapOfTable, _, _ int) {
-				// Directly iterate and process all key-value pairs
-				m.RangeEntry(func(e *EntryOf[K, V]) bool {
-					hash := clone.keyHash(noescape(unsafe.Pointer(&e.Key)), clone.seed)
-					clone.processEntry(table, hash, &e.Key,
-						func(_ *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-							return e, e.Value, false
-						},
-					)
-					return true
-				})
-			}, false)
+		clone.Grow(size)
+		m.RangeEntry(func(e *EntryOf[K, V]) bool {
+			hash := clone.keyHash(noescape(unsafe.Pointer(&e.Key)), clone.seed)
+			clone.processEntry(cloneTable, hash, &e.Key,
+				func(*EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+					return e, e.Value, false
+				},
+			)
+			return true
+		})
 	}
 
 	return clone
