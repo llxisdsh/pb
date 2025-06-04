@@ -1571,7 +1571,6 @@ func (m *MapOf[K, V]) Grow(sizeAdd int) {
 	table := m.table.Load()
 	if table == nil {
 		table = m.initSlow()
-		return
 	}
 
 	growThreshold := int(float64(len(table.buckets)*entriesPerMapOfBucket) * mapLoadFactor)
@@ -1783,6 +1782,7 @@ func (m *MapOf[K, V]) batchProcess(
 		newItemsEstimate := int(float64(itemCount) * growFactor)
 		// Pre-growth check
 		m.Grow(newItemsEstimate)
+		table = m.table.Load()
 	}
 
 	// Calculate the parallel count
@@ -2180,6 +2180,7 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 		cloneTable := newMapOfTable(clone.minTableLen, runtime.GOMAXPROCS(0))
 		clone.table.Store(cloneTable)
 		clone.Grow(size)
+		cloneTable = clone.table.Load()
 		m.RangeEntry(func(e *EntryOf[K, V]) bool {
 			hash := clone.keyHash(noescape(unsafe.Pointer(&e.Key)), clone.seed)
 			clone.processEntry(cloneTable, hash, &e.Key,
