@@ -485,10 +485,8 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 		metaw := loadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
-				if e.Key == key {
-					return e.Value, true
-				}
+			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil && e.Key == key {
+				return e.Value, true
 			}
 		}
 	}
@@ -504,10 +502,8 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key *K) *EntryO
 		metaw := loadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
-				if e.Key == *key {
-					return e
-				}
+			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil && e.Key == *key {
+				return e
 			}
 		}
 	}
@@ -568,19 +564,16 @@ func (m *MapOf[K, V]) processEntry(
 			metaw := b.meta
 			for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 				idx := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
-					if e.Key == *key {
-						oldEntry = e
-						oldBucket = b
-						oldIdx = idx
-						oldMeta = metaw
-						break findLoop
-					}
+				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil && e.Key == *key {
+					oldEntry = e
+					oldBucket = b
+					oldIdx = idx
+					oldMeta = metaw
+					break findLoop
 				}
 			}
 			if emptyBucket == nil {
-				emptyw := (^metaw) & metaMask
-				if emptyw != 0 {
+				if emptyw := (^metaw) & metaMask; emptyw != 0 {
 					emptyBucket = b
 					emptyIdx = firstMarkedByteIndex(emptyw)
 				}
@@ -821,8 +814,7 @@ func copyBucketOfLock[K comparable, V any](
 		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				i := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+				if e := (*EntryOf[K, V])(b.entries[firstMarkedByteIndex(markedw)]); e != nil {
 					// We could store the hash value in the Entry during processEntry to avoid
 					// recalculating it here, which would speed up the resize process.
 					// However, for simple integer keys, this approach would actually slow down
@@ -882,8 +874,7 @@ func copyBucketOf[K comparable, V any](
 		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				i := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+				if e := (*EntryOf[K, V])(b.entries[firstMarkedByteIndex(markedw)]); e != nil {
 					// We could store the hash value in the Entry during processEntry to avoid
 					// recalculating it here, which would speed up the resize process.
 					// However, for simple integer keys, this approach would actually slow down
@@ -992,8 +983,7 @@ func (m *MapOf[K, V]) Store(key K, value V) {
 	if enableFastPath {
 		// deduplicates identical values
 		if m.valEqual != nil {
-			e := m.findEntry(table, hash, &key)
-			if e != nil {
+			if e := m.findEntry(table, hash, &key); e != nil {
 				if m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&value))) {
 					return
 				}
@@ -1015,8 +1005,7 @@ func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 	if enableFastPath {
 		// deduplicates identical values
 		if m.valEqual != nil {
-			e := m.findEntry(table, hash, &key)
-			if e != nil {
+			if e := m.findEntry(table, hash, &key); e != nil {
 				if m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&value))) {
 					return value, true
 				}
@@ -1039,8 +1028,7 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
-		e := m.findEntry(table, hash, &key)
-		if e != nil {
+		if e := m.findEntry(table, hash, &key); e != nil {
 			return e.Value, true
 		}
 	}
@@ -1298,8 +1286,7 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 	if enableFastPath {
 		// deduplicates identical values
 		if m.valEqual != nil {
-			e := m.findEntry(table, hash, &key)
-			if e != nil &&
+			if e := m.findEntry(table, hash, &key); e != nil &&
 				m.valEqual(noescape(unsafe.Pointer(&e.Value)), noescape(unsafe.Pointer(&value))) {
 				return value, true
 			}
@@ -1608,8 +1595,7 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 		for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 			metaw := loadUint64(&b.meta)
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				i := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(loadPointer(&b.entries[i])); e != nil {
+				if e := (*EntryOf[K, V])(loadPointer(&b.entries[firstMarkedByteIndex(markedw)])); e != nil {
 					if !yield(e) {
 						return
 					}
