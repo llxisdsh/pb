@@ -22,7 +22,7 @@ const (
 
 	// entriesPerMapOfBucket defines the number of MapOf entries per bucket.
 	// This value is automatically calculated to fit within a cache line,
-	// but will not exceed 8, which is the upper limit supported by the meta field.
+	// but will not exceed 8, which is the upper limit supported by the meta-field.
 	entriesPerMapOfBucket = min(opByteIdx, (int(CacheLineSize)-int(unsafe.Sizeof(struct {
 		meta uint64
 		// entries [entriesPerMapOfBucket]unsafe.Pointer
@@ -59,7 +59,7 @@ const (
 
 const (
 	// enableFastPath optimizes read-only operations by fast-returning results,
-	// avoiding expensive lock contention and write barriers. In extreme cases, reduces latency by up to 100x.
+	// avoiding expensive lock contention and write barriers. In extreme cases, it reduces latency by up to 100x.
 	enableFastPath = true
 
 	// enableHashSpread controls whether to apply hash spreading for non-integer keys.
@@ -207,9 +207,9 @@ type MapConfig struct {
 	shrinkEnabled bool
 }
 
-// WithPresize configures new MapOf instance with capacity enough
+// WithPresize configuring new MapOf instance with capacity enough
 // to hold sizeHint entries. The capacity is treated as the minimal
-// capacity meaning that the underlying hash table will never shrink
+// capacity, meaning that the underlying hash table will never shrink
 // to a smaller capacity. If sizeHint is zero or negative, the value
 // is ignored.
 func WithPresize(sizeHint int) func(*MapConfig) {
@@ -266,7 +266,7 @@ type bucketOf struct {
 // Spinlock state is embedded in the Meta field for cache locality.
 // This function can be inlined.
 //
-// Partially references:
+// Partial references:
 // [https://github.com/facebook/folly/blob/main/folly/synchronization/PicoSpinLock.h]
 func (b *bucketOf) lock() {
 	cur := atomic.LoadUint64(&b.meta)
@@ -293,6 +293,15 @@ func (b *bucketOf) unlock() {
 
 // resizeState represents the current state of a resizing operation
 type resizeState struct {
+	//lint:ignore U1000 prevents false sharing
+	pad [(CacheLineSize - unsafe.Sizeof(struct {
+		wg        sync.WaitGroup
+		table     *mapOfTable
+		newTable  atomic.Pointer[mapOfTable]
+		process   atomic.Int32
+		completed atomic.Int32
+	}{})%CacheLineSize) % CacheLineSize]byte
+
 	wg        sync.WaitGroup
 	table     *mapOfTable
 	newTable  atomic.Pointer[mapOfTable]
@@ -334,7 +343,7 @@ func newMapOfTable(tableLen, cpus int) *mapOfTable {
 // addSize atomically adds delta to the size counter for the given bucket index.
 func (table *mapOfTable) addSize(bucketIdx uintptr, delta int) {
 	cidx := uintptr(len(table.size)-1) & bucketIdx
-	atomic.AddUintptr(&table.size[cidx].c, uintptr(delta))
+	table.size[cidx].c.Add(uintptr(delta))
 }
 
 //// addSizePlain adds delta to the size counter without atomic operations.
@@ -344,19 +353,19 @@ func (table *mapOfTable) addSize(bucketIdx uintptr, delta int) {
 //	table.size[cidx].c += uintptr(delta)
 //}
 
-// sumSize calculates the total number of entries in the table by summing all counter stripes.
+// sumSize calculates the total number of entries in the table by summing all counter-stripes.
 func (table *mapOfTable) sumSize() int {
 	var sum int
 	for i := range table.size {
-		sum += int(atomic.LoadUintptr(&table.size[i].c))
+		sum += int(table.size[i].c.Load())
 	}
 	return sum
 }
 
-// isZero checks if the table is empty by verifying all counter stripes are zero.
+// isZero checks if the table is empty by verifying all counter-stripes are zero.
 func (table *mapOfTable) isZero() bool {
 	for i := range table.size {
-		if atomic.LoadUintptr(&table.size[i].c) != 0 {
+		if table.size[i].c.Load() != 0 {
 			return false
 		}
 	}
@@ -402,9 +411,7 @@ func (m *MapOf[K, V]) init(
 	options ...func(*MapConfig),
 ) *mapOfTable {
 
-	c := &MapConfig{
-		sizeHint: defaultMinMapTableLen * entriesPerMapOfBucket,
-	}
+	c := &MapConfig{}
 	for _, o := range options {
 		o(c)
 	}
@@ -539,10 +546,9 @@ func (m *MapOf[K, V]) processEntry(
 			continue
 		}
 
-		// This is the second check, checking if the table has been replaced by another
-		// goroutine after acquiring the bucket lock
-		// This is necessary because another goroutine may have completed a resize operation
-		// between the first check and acquiring the bucket lock
+		// Verifies if table was replaced after lock acquisition.
+		// Needed since another goroutine may have resized the table
+		// between initial check and lock acquisition.
 		if newTable := m.table.Load(); table != newTable {
 			rootb.unlock()
 			table = newTable
@@ -605,10 +611,11 @@ func (m *MapOf[K, V]) processEntry(
 			table.addSize(bidx, -1)
 
 			// Check if table shrinking is needed
-			if clearOp(newmetaw) == emptyMeta && m.shrinkEnabled {
+			if m.shrinkEnabled && clearOp(newmetaw) == emptyMeta && m.resizeState.Load() == nil {
+				table = m.table.Load()
 				tableLen := len(table.buckets)
 				if m.minTableLen < tableLen &&
-					table.sumSize() <= (tableLen*entriesPerMapOfBucket)/mapShrinkFraction {
+					table.sumSize() <= tableLen*entriesPerMapOfBucket/mapShrinkFraction {
 					m.tryResize(table, mapShrinkHint, tableLen>>1)
 				}
 			}
@@ -640,9 +647,13 @@ func (m *MapOf[K, V]) processEntry(
 		table.addSize(bidx, 1)
 
 		// Check if the table needs to grow
-		tableLen := len(table.buckets)
-		if table.sumSize() >= int(float64(tableLen*entriesPerMapOfBucket)*mapLoadFactor) {
-			m.tryResize(table, mapGrowHint, tableLen<<1)
+		if m.resizeState.Load() == nil {
+			table = m.table.Load()
+			tableLen := len(table.buckets)
+			const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
+			if table.sumSize() >= int(float64(tableLen)*sizeHintFactor) {
+				m.tryResize(table, mapGrowHint, tableLen<<1)
+			}
 		}
 
 		return value, status
@@ -694,12 +705,19 @@ func (m *MapOf[K, V]) resize(
 			}
 		}
 
-		// Try resize
-		ok, rs := m.tryResize(table, hint, sizeHint)
-		if rs != nil && waitCompleted {
-			rs.wg.Wait()
+		// Wait resize finish
+		if rs := m.resizeState.Load(); rs != nil {
+			if rs.table != nil /*skip init*/ &&
+				rs.newTable.Load() != nil /*skip newTable in creating or clear */ {
+				m.helpCopyAndWait(rs)
+			} else {
+				rs.wg.Wait()
+			}
+			continue
 		}
-		if ok {
+
+		// Try resize
+		if ok := m.tryResize(table, hint, sizeHint); ok && !waitCompleted {
 			return
 		}
 	}
@@ -709,21 +727,15 @@ func (m *MapOf[K, V]) tryResize(
 	table *mapOfTable,
 	hint mapResizeHint,
 	newTableLen int,
-) (bool, *resizeState) {
-
-	rs := m.resizeState.Load()
-	if rs != nil {
-		return false, rs
-	}
-
+) bool {
 	// Create a new WaitGroup for the current resize operation
-	rs = new(resizeState)
+	rs := new(resizeState)
 	rs.wg.Add(1)
 	rs.table = table
 
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
 	if !m.resizeState.CompareAndSwap(nil, rs) {
-		return false, m.resizeState.Load()
+		return false
 	}
 
 	// Although the table is always changed when resizeWg is not nil,
@@ -732,7 +744,7 @@ func (m *MapOf[K, V]) tryResize(
 		// If the table has already been changed, return directly
 		m.resizeState.Store(nil)
 		rs.wg.Done()
-		return false, nil
+		return false
 	}
 	cpus := runtime.GOMAXPROCS(0)
 	if hint == mapClearHint {
@@ -740,15 +752,15 @@ func (m *MapOf[K, V]) tryResize(
 		m.table.Store(newTable)
 		m.resizeState.Store(nil)
 		rs.wg.Done()
-		return true, nil
+		return true
 	} else {
 		if newTableLen >= int(asyncResizeThreshold) && cpus > 1 {
 			// The big table, use goroutines to create new table and copy entries
 			go m.finalizeResize(table, newTableLen, rs, cpus)
-			return true, rs
+			return true
 		} else {
 			m.finalizeResize(table, newTableLen, rs, cpus)
-			return true, nil
+			return true
 		}
 	}
 }
@@ -776,7 +788,7 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 	for {
 		process := rs.process.Add(1)
 		if process > chunks {
-			// wait copying completed
+			// Wait copying completed
 			rs.wg.Wait()
 			return
 		}
@@ -789,7 +801,7 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 			copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
 		}
 		if rs.completed.Add(1) == chunks {
-			// copying completed
+			// Copying completed
 			m.table.Store(newTable)
 			m.resizeState.Store(nil)
 			rs.wg.Done()
@@ -798,7 +810,7 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 	}
 }
 
-// copyBucketOfLock unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
+// copyBucketOfLock, unlike copyBucketOf, it locks the destination bucket to ensure concurrency safety.
 func copyBucketOfLock[K comparable, V any](
 	table *mapOfTable,
 	start, end int,
@@ -1559,8 +1571,8 @@ func (m *MapOf[K, V]) Grow(sizeAdd int) {
 	if table == nil {
 		table = m.initSlow()
 	}
-
-	growThreshold := int(float64(len(table.buckets)*entriesPerMapOfBucket) * mapLoadFactor)
+	const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
+	growThreshold := int(float64(len(table.buckets)) * sizeHintFactor)
 	sizeHint := table.sumSize() + sizeAdd
 	if sizeHint > growThreshold {
 		m.resize(mapGrowHint, calcTableLen(sizeHint), false)
@@ -2125,7 +2137,7 @@ func (m *MapOf[K, V]) Merge(
 		m.processEntry(table, hash, &other.Key,
 			func(this *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				if this == nil {
-					// Key doesn't exist in current Map, add directly
+					// Key doesn't exist in the current Map, add directly
 					return other, other.Value, false
 				}
 				// Key exists in both Maps, use conflict handler
@@ -2245,29 +2257,29 @@ type MapStats struct {
 	TotalBuckets int
 	// EmptyBuckets is the number of buckets that hold no entries.
 	EmptyBuckets int
-	// Capacity is the MapOf capacity, i.e. the total number of
+	// Capacity is the MapOf capacity, i.e., the total number of
 	// entries that all buckets can physically hold. This number
 	// does not consider the findEntry factor.
 	Capacity int
 	// Size is the exact number of entries stored in the map.
 	Size int
 	// Counter is the number of entries stored in the map according
-	// to the internal atomic counter. In case of concurrent map
-	// modifications this number may be different from Size.
+	// to the internal atomic counter. In the case of concurrent map
+	// modifications, this number may be different from Size.
 	Counter int
 	// CounterLen is the number of internal atomic counter stripes.
 	// This number may grow with the map capacity to improve
 	// multithreaded scalability.
 	CounterLen int
 	// MinEntries is the minimum number of entries per a chain of
-	// buckets, i.e. a root bucket and its chained buckets.
+	// buckets, i.e., a root bucket and its chained buckets.
 	MinEntries int
 	// MinEntries is the maximum number of entries per a chain of
-	// buckets, i.e. a root bucket and its chained buckets.
+	// buckets, i.e., a root bucket and its chained buckets.
 	MaxEntries int
 	// TotalGrowths is the number of times the hash table grew.
 	TotalGrowths uint32
-	// TotalGrowths is the number of times the hash table shrinked.
+	// TotalGrowths is the number of times the hash table shrunk.
 	TotalShrinks uint32
 }
 
@@ -2305,7 +2317,7 @@ func (s *MapStats) String() string {
 //   - chunks: Suggested degree of parallelism (number of goroutines).
 //   - chunkSize: Number of items processed per goroutine
 func calcParallelism(items, threshold, cpus int) (chunkSize, chunks int) {
-	// If the items is too small, use single-threaded processing.
+	// If the items are too small, use single-threaded processing.
 	// Adjusts the parallel process trigger threshold using a scaling factor.
 	// example: items < threshold * 2
 	if items <= threshold {
@@ -2323,8 +2335,10 @@ func calcParallelism(items, threshold, cpus int) (chunkSize, chunks int) {
 // return value must be a power of 2
 func calcTableLen(sizeHint int) int {
 	tableLen := defaultMinMapTableLen
-	if sizeHint > defaultMinMapTableLen*entriesPerMapOfBucket {
-		tableLen = nextPowOf2(int((float64(sizeHint) / float64(entriesPerMapOfBucket)) / mapLoadFactor))
+	const minSizeHintThreshold = int(float64(defaultMinMapTableLen*entriesPerMapOfBucket) * mapLoadFactor)
+	if sizeHint >= minSizeHintThreshold {
+		const invSizeHintFactor = 1.0 / (float64(entriesPerMapOfBucket) * mapLoadFactor)
+		tableLen = nextPowOf2(int(float64(sizeHint) * invSizeHintFactor))
 	}
 	return tableLen
 }
