@@ -793,9 +793,13 @@ func TestMapOfCalcLen(t *testing.T) {
 	for i := 0; i < 1000000; i++ {
 		tableLen = calcTableLen(i)
 		sizeLen = calcSizeLen(i, cpus)
+		const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
+		growThreshold := int(float64(tableLen) * sizeHintFactor)
+		growTableLen := calcTableLen(growThreshold) << 1
 		_, parallelism = calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
 		if tableLen != lastTableLen || sizeLen != lastSizeLen || parallelism != lastParallelism {
-			t.Logf("sizeHint: %v, tableLen: %v, counterLen: %v, parallelism: %v", i, tableLen, sizeLen, parallelism)
+			t.Logf("sizeHint: %v, tableLen: %v, growThreshold: %v, growTableLen: %v, counterLen: %v, parallelism: %v",
+				i, tableLen, growThreshold, growTableLen, sizeLen, parallelism)
 			lastTableLen, lastSizeLen, lastParallelism = tableLen, sizeLen, parallelism
 		}
 

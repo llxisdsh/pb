@@ -650,9 +650,10 @@ func (m *MapOf[K, V]) processEntry(
 		if m.resizeState.Load() == nil {
 			table = m.table.Load()
 			tableLen := len(table.buckets)
+			size := table.sumSize()
 			const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
-			if table.sumSize() >= int(float64(tableLen)*sizeHintFactor) {
-				m.tryResize(table, mapGrowHint, tableLen<<1)
+			if size >= int(float64(tableLen)*sizeHintFactor) {
+				m.tryResize(table, mapGrowHint, calcTableLen(size)<<1)
 			}
 		}
 
@@ -746,6 +747,8 @@ func (m *MapOf[K, V]) tryResize(
 		rs.wg.Done()
 		return false
 	}
+
+	// Resize start
 	cpus := runtime.GOMAXPROCS(0)
 	if hint == mapClearHint {
 		newTable := newMapOfTable(newTableLen, cpus)
