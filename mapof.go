@@ -653,6 +653,9 @@ func (m *MapOf[K, V]) processEntry(
 			size := table.sumSize()
 			const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
 			if size >= int(float64(tableLen)*sizeHintFactor) {
+				// Map resizing is dynamically determined by the current size (not just 2x grow),
+				// because writes can still occur during resizing - while generating the new table and
+				// migrating data, the actual size may have grown significantly beyond the load threshold.
 				m.tryResize(table, mapGrowHint, calcTableLen(size)<<1)
 			}
 		}
