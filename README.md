@@ -387,6 +387,10 @@ func TestMapOf(t *testing.T) {
 }
 ```
 
+## Implementation details
+
+See [mapof flow](mapof_flow.md) for implementation details.
+
 # pb.HashTrieMap
 
 The HashTrieMap is an optimization of the built-in HashTrieMap.
