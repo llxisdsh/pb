@@ -68,8 +68,8 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 ## Benchmarks
 
 Benchmark results (1,000,000 records) show `pb.MapOf` consistently outperforms other implementations, 
-achieving the fastest operations for Store (0.6007 ns/op), LoadOrStore (0.5671 ns/op), Load (0.1980 ns/op) 
-and Mixed (0.3797 ns/op)
+achieving the fastest operations for Store (0.6495 ns/op), LoadOrStore (0.5318 ns/op), Load (0.2047 ns/op) 
+and Mixed (0.3582 ns/op)
 
 ```
 goos: windows
@@ -80,7 +80,7 @@ cpu: AMD Ryzen Threadripper 3970X 32-Core Processor
 
 
 <details>
-<summary> Benchmark test (28/05/2025) </summary>
+<summary> Benchmark test (11/06/2025) </summary>
 
 ```go
 const countStore = 1_000_000
@@ -181,63 +181,66 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 
 | Implementation                 | Operation   |       Ops/sec |   ns/op | B/op | Allocs/op |
 |--------------------------------|-------------|--------------:|--------:|-----:|----------:|
-| `original_syncMap`             | Store       |    46,064,870 |   24.64 |   64 |         3 |
-|                                | LoadOrStore |    64,949,474 |   18.79 |   17 |         2 |
-|                                | Load        |   426,571,569 |    2.83 |    0 |         0 |
-|                                | Mixed       |   168,495,805 |    6.96 |   10 |         0 |
-| `pb_MapOf` 🏆                  | Store       | 1,000,000,000 |    0.60 |    0 |         0 |
-|                                | LoadOrStore | 1,000,000,000 |    0.57 |    0 |         0 |
+| `original_syncMap`             | Store       |    47,236,741 |   24.27 |   64 |         3 |
+|                                | LoadOrStore |    56,023,192 |   19.03 |   17 |         2 |
+|                                | Load        |   404,771,172 |    3.66 |    0 |         0 |
+|                                | Mixed       |   142,293,642 |    8.60 |   10 |         0 |
+| `pb_MapOf` 🏆                  | Store       | 1,000,000,000 |    0.65 |    0 |         0 |
+|                                | LoadOrStore | 1,000,000,000 |    0.53 |    0 |         0 |
 |                                | Load        | 1,000,000,000 |    0.20 |    0 |         0 |
-|                                | Mixed       | 1,000,000,000 |    0.40 |    0 |         0 |
-| `xsync_MapV4`                  | Store       |   137,536,370 |    7.66 |   16 |         1 |
-|                                | LoadOrStore |   294,872,066 |    3.67 |    0 |         0 |
-|                                | Load        |   737,239,308 |    1.61 |    0 |         0 |
-|                                | Mixed       |   499,624,864 |    2.18 |    2 |         0 |
-| `pb_HashTrieMap`               | Store       |    64,702,512 |   18.21 |   48 |         1 |
-|                                | LoadOrStore |    87,431,056 |   11.85 |    1 |         0 |
-|                                | Load        |   469,479,710 |    3.79 |    0 |         0 |
-|                                | Mixed       |   179,121,828 |    7.62 |    6 |         0 |
-| `alphadose_haxmap`             | Store       |    68,260,161 |   15.39 |    9 |         1 |
-|                                | LoadOrStore |    73,429,525 |   14.81 |    9 |         1 |
-|                                | Load        |   782,623,156 |    1.59 |    0 |         0 |
-|                                | Mixed       |   184,823,894 |    6.47 |    2 |         0 |
-| `zhangyunhao116_skipmap`       | Store       |    29,525,016 |   38.18 |    9 |         1 |
-|                                | LoadOrStore |    36,366,831 |   30.25 |    1 |         0 |
-|                                | Load        |   565,815,679 |    2.34 |    0 |         0 |
-|                                | Mixed       |   189,834,188 |    6.18 |    1 |         0 |
-| `riraccuia_ash`                | Store       |    48,614,984 |   22.39 |   64 |         4 |
-|                                | LoadOrStore |    24,301,975 |   41.34 |   94 |         3 |
-|                                | Load        |   291,879,900 |    4.65 |    7 |         0 |
-|                                | Mixed       |   126,836,432 |   10.19 |   18 |         1 |
-| `fufuok_cmap`                  | Store       |    30,101,139 |   38.04 |    1 |         0 |
-|                                | LoadOrStore |    45,212,043 |   27.30 |    0 |         0 |
-|                                | Load        |   159,030,338 |    7.27 |    0 |         0 |
-|                                | Mixed       |    25,381,407 |   45.83 |    0 |         0 |
-| `mhmtszr_concurrent_swiss_map` | Store       |    30,092,307 |   40.08 |    1 |         0 |
-|                                | LoadOrStore |    26,714,038 |   44.41 |    0 |         0 |
-|                                | Load        |   159,262,423 |    7.48 |    0 |         0 |
-|                                | Mixed       |    32,010,584 |   35.94 |    0 |         0 |
-| `orcaman_concurrent_mapV2`     | Store       |    35,815,976 |   33.40 |    1 |         0 |
-|                                | LoadOrStore |    49,316,352 |   25.95 |    1 |         0 |
-|                                | Load        |   153,549,606 |    8.36 |    0 |         0 |
-|                                | Mixed       |    45,057,391 |   25.40 |    0 |         0 |
-| `RWLockShardedMap`             | Store       |    33,360,577 |   33.84 |    1 |         0 |
-|                                | LoadOrStore |    47,403,661 |   26.01 |    1 |         0 |
-|                                | Load        |   134,923,510 |    8.82 |    0 |         0 |
-|                                | Mixed       |    43,701,996 |   26.59 |    0 |         0 |
-| `RWLockMap`                    | Store       |     3,882,283 |  309.00 |    1 |         0 |
-|                                | LoadOrStore |     9,064,360 |  164.00 |    1 |         0 |
-|                                | Load        |    33,687,709 |   36.27 |    0 |         0 |
-|                                | Mixed       |     7,556,793 |  156.60 |    0 |         0 |
-| `snawoot_lfmap`                | Store       |       404,527 | 2689.00 | 8030 |        50 |
-|                                | LoadOrStore |     7,413,974 |  222.80 |  507 |         2 |
-|                                | Load        |   281,330,618 |    4.21 |    0 |         0 |
-|                                | Mixed       |     1,897,257 |  645.00 | 2513 |        10 |
+|                                | Mixed       | 1,000,000,000 |    0.36 |    0 |         0 |
+| `xsync_MapOf`                  | Store       |   142,851,074 |    7.60 |   16 |         1 |
+|                                | LoadOrStore |   293,945,829 |    3.64 |    0 |         0 |
+|                                | Load        |   729,350,713 |    1.64 |    0 |         0 |
+|                                | Mixed       |   491,628,387 |    2.20 |    2 |         0 |
+| `pb_HashTrieMap`               | Store       |    62,662,484 |   18.30 |   48 |         1 |
+|                                | LoadOrStore |    86,982,994 |   11.95 |    1 |         0 |
+|                                | Load        |   463,348,550 |    3.58 |    0 |         0 |
+|                                | Mixed       |   198,404,397 |    6.16 |    6 |         0 |
+| `alphadose_haxmap`             | Store       |    80,418,174 |   14.01 |    9 |         1 |
+|                                | LoadOrStore |    75,698,793 |   14.39 |    9 |         1 |
+|                                | Load        |   767,338,982 |    1.92 |    0 |         0 |
+|                                | Mixed       |   186,024,159 |    5.52 |    2 |         0 |
+| `zhangyunhao116_skipmap`       | Store       |    29,587,840 |   39.17 |    9 |         1 |
+|                                | LoadOrStore |    37,524,507 |   30.38 |    1 |         0 |
+|                                | Load        |   527,466,034 |    2.27 |    0 |         0 |
+|                                | Mixed       |   183,319,764 |    6.22 |    1 |         0 |
+| `riraccuia_ash`                | Store       |    51,692,203 |   21.81 |   62 |         4 |
+|                                | LoadOrStore |    28,938,676 |   41.67 |   94 |         3 |
+|                                | Load        |   269,917,735 |    4.64 |    7 |         0 |
+|                                | Mixed       |   124,839,320 |    9.94 |   18 |         1 |
+| `fufuok_cmap`                  | Store       |    29,590,686 |   38.21 |    1 |         0 |
+|                                | LoadOrStore |    43,682,427 |   27.92 |    0 |         0 |
+|                                | Load        |   151,875,836 |    7.74 |    0 |         0 |
+|                                | Mixed       |    25,265,125 |   46.51 |    0 |         0 |
+| `mhmtszr_concurrent_swiss_map` | Store       |    29,849,112 |   40.21 |    1 |         0 |
+|                                | LoadOrStore |    27,447,705 |   45.02 |    0 |         0 |
+|                                | Load        |   163,669,803 |    7.66 |    0 |         0 |
+|                                | Mixed       |    30,439,160 |   36.53 |    0 |         0 |
+| `orcaman_concurrent_map`       | Store       |    34,420,544 |   33.46 |    1 |         0 |
+|                                | LoadOrStore |    50,175,614 |   25.41 |    1 |         0 |
+|                                | Load        |   145,646,887 |    8.70 |    0 |         0 |
+|                                | Mixed       |    48,974,994 |   26.18 |    0 |         0 |
+| `RWLockShardedMap_256`         | Store       |    69,052,428 |   15.79 |    1 |         0 |
+|                                | LoadOrStore |   119,077,255 |    9.45 |    0 |         0 |
+|                                | Load        |   287,863,598 |    4.17 |    0 |         0 |
+|                                | Mixed       |   172,448,331 |    6.98 |    0 |         0 |
+| `RWLockMap`                    | Store       |     4,238,468 |  269.00 |    1 |         0 |
+|                                | LoadOrStore |     9,066,169 |  163.10 |    1 |         0 |
+|                                | Load        |    33,225,810 |   36.11 |    0 |         0 |
+|                                | Mixed       |     9,591,573 |  127.70 |    0 |         0 |
+| `snawoot_lfmap`                | Store       |       364,705 | 3153.00 | 7754 |        48 |
+|                                | LoadOrStore |     8,887,498 |  205.60 |  518 |         2 |
+|                                | Load        |   281,609,623 |    4.22 |    0 |         0 |
+|                                | Mixed       |     1,899,039 |  630.00 | 2453 |        10 |
 
+
+- RWLockShardedMap_256: A 256-shard concurrent map using Go's native map + RWMutex per shard (benchmark reference). 
+  Sharding theoretically boosts performance/throughput for any map.
 
 
 <details>
-<summary> Store throughput test (26/05/2025) </summary>
+<summary> Store throughput test (11/06/2025) </summary>
 
 ```go
 
@@ -313,24 +316,26 @@ func TestInsert_pb_MapOf(t *testing.T) {
 
 | Implementation & Case       | Throughput<br>(M ops/s) | Performance Scale      |
 |-----------------------------|------------------------:|------------------------|
-| pb_MapOf (64/pre)           |                  144.63 | ━━━━━━━━━━━━━━━━━━━━━━ |
-| pb_MapOf (64)               |                   70.36 | ━━━━━━━━━━             |
-| xsync_MapV4 (64/pre)        |                   65.00 | ━━━━━━━━━━             |
-| zhangyunhao116_skipmap (64) |                   23.40 | ━━━━                   |
-| pb_MapOf (1/pre)            |                   20.99 | ━━━                    |
-| xsync_MapV4 (64)            |                   20.88 | ━━━                    |
-| pb_HashTrieMap (64)         |                   18.57 | ━━━                    |
-| pb_MapOf (1)                |                   17.67 | ━━━                    |
-| original_syncMap (64)       |                   13.55 | ━━                     |
-| xsync_MapV4 (1/pre)         |                    5.80 | ━                      |
-| xsync_MapV4 (1)             |                    4.82 | ━                      |
+| pb_MapOf (64/pre)           |                  147.08 | ━━━━━━━━━━━━━━━━━━━━━━ |
+| pb_MapOf (64)               |                   86.38 | ━━━━━━━━━━━━━━━━       |
+| xsync_MapV4 (64/pre)        |                   64.70 | ━━━━━━━━━━━━           |
+| RWLockShardedMap_256 (64)   |                   39.50 | ━━━━━━━━━              |
+| zhangyunhao116_skipmap (64) |                   22.82 | ━━━━━                  |
+| pb_MapOf (1/pre)            |                   20.62 | ━━━━━                  |
+| xsync_MapV4 (64)            |                   22.00 | ━━━━━                  |
+| pb_HashTrieMap (64)         |                   18.56 | ━━━━                   |
+| pb_MapOf (1)                |                   17.92 | ━━━━                   |
+| original_syncMap (64)       |                   13.59 | ━━━                    |
+| xsync_MapV4 (1/pre)         |                    5.73 | ━                      |
+| xsync_MapV4 (1)             |                    4.72 | ━                      |
 | zhangyunhao116_skipmap (1)  |                    3.56 | ━                      |
-| alphadose_haxmap (64/pre)   |                    2.91 | ━                      |
-| pb_HashTrieMap (1)          |                    1.74 | ━                      |
-| original_syncMap (1)        |                    1.43 | ━                      |
-| alphadose_haxmap (1/pre)    |                    1.02 | ━                      |
-| alphadose_haxmap (1)        |                    0.94 | ━                      |
-| alphadose_haxmap (64)       |                    0.55 | ━                      |
+| RWLockShardedMap_256 (1)    |                    3.47 | ━                      |
+| alphadose_haxmap (64/pre)   |                    2.61 | ━                      |
+| pb_HashTrieMap (1)          |                    1.69 | ━                      |
+| original_syncMap (1)        |                    1.42 | ━                      |
+| alphadose_haxmap (1/pre)    |                    1.01 | ━                      |
+| alphadose_haxmap (1)        |                    0.90 | ━                      |
+| alphadose_haxmap (64)       |                    0.57 | ━                      |
 
 - (1): 1 goroutine without pre-allocation
 - (1/pre): 1 goroutine with pre-allocation
