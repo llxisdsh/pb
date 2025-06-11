@@ -23,7 +23,7 @@
 
 ## Function Analysis
 
-Load Operation
+### Load Operation
 ```mermaid
 flowchart TD
 	subgraph Initialization Check
@@ -58,7 +58,7 @@ flowchart TD
 	end
 ```
 
-Store Operation
+### Store Operation
 ```mermaid
 flowchart TD
 	subgraph Initialization
@@ -91,8 +91,7 @@ flowchart TD
 	end
 ```
 
-mockSyncMap Operation
-
+### mockSyncMap Operation
 ```mermaid
 flowchart TD
 	subgraph Initialization
@@ -132,7 +131,7 @@ flowchart TD
 	end
 ```
 
-processEntry Operation
+### processEntry Operation
 ```mermaid
 flowchart TD
 	subgraph Initialization
@@ -190,7 +189,7 @@ flowchart TD
 	end
 ```
 
-tryResize Operation
+### tryResize Operation
 ```mermaid
 flowchart TD
 	subgraph Initialization
@@ -219,7 +218,7 @@ flowchart TD
 	end
 ```
 
-finalizeResize Operation
+### finalizeResize Operation
 ```mermaid
 flowchart TD
 	subgraph Initialization
@@ -239,7 +238,7 @@ flowchart TD
 	end
 ```
 
-helpCopyAndWait Operation
+### helpCopyAndWait Operation
 ```mermaid
 flowchart TD
 	subgraph Initialization
@@ -270,7 +269,7 @@ flowchart TD
 	end
 ```
 
-copyBucketOfLock Operation
+### copyBucketOf / copyBucketOfLock Operation
 ```mermaid
 flowchart TD
 	subgraph Initialization
@@ -285,7 +284,7 @@ flowchart TD
 		F --> G{Is entry valid?}
 		G -->|No| H[Continue]
 		G -->|Yes| I[Calculate target index]
-		I --> J{Lock target bucket?}
+		I --> J{Is copyBucketOfLock?}
 		J -->|Yes| K[Lock target]
 		J -->|No| L[Skip locking]
 		K --> M[Find empty slot]
@@ -296,7 +295,7 @@ flowchart TD
 		M --> N{Found slot?}
 		N -->|Yes| O[Insert into slot]
 		N -->|No| P[Create new bucket]
-		O --> Q{Was target locked?}
+		O --> Q{Is copyBucketOfLock?}
 		P --> Q
 		Q -->|Yes| R[Unlock target]
 		Q -->|No| S[Continue]
