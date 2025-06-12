@@ -68,8 +68,8 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 ## Benchmarks
 
 Benchmark results (1,000,000 records) show `pb.MapOf` consistently outperforms other implementations, 
-achieving the fastest operations for Store (0.6495 ns/op), LoadOrStore (0.5318 ns/op), Load (0.2047 ns/op) 
-and Mixed (0.3582 ns/op)
+achieving the fastest operations for Store (0.5981 ns/op), LoadOrStore (0.5501 ns/op), Load (0.1983 ns/op) 
+and Mixed (0.4373 ns/op)
 
 ```
 goos: windows
@@ -80,7 +80,7 @@ cpu: AMD Ryzen Threadripper 3970X 32-Core Processor
 
 
 <details>
-<summary> Benchmark test (11/06/2025) </summary>
+<summary> Benchmark test (12/06/2025) </summary>
 
 ```go
 const countStore = 1_000_000
@@ -185,10 +185,10 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 |                                | LoadOrStore |    56,023,192 |   19.03 |   17 |         2 |
 |                                | Load        |   404,771,172 |    3.66 |    0 |         0 |
 |                                | Mixed       |   142,293,642 |    8.60 |   10 |         0 |
-| `pb_MapOf` 🏆                  | Store       | 1,000,000,000 |    0.65 |    0 |         0 |
-|                                | LoadOrStore | 1,000,000,000 |    0.53 |    0 |         0 |
+| `pb_MapOf` 🏆                  | Store       | 1,000,000,000 |    0.60 |    0 |         0 |
+|                                | LoadOrStore | 1,000,000,000 |    0.55 |    0 |         0 |
 |                                | Load        | 1,000,000,000 |    0.20 |    0 |         0 |
-|                                | Mixed       | 1,000,000,000 |    0.36 |    0 |         0 |
+|                                | Mixed       | 1,000,000,000 |    0.44 |    0 |         0 |
 | `xsync_MapOf`                  | Store       |   142,851,074 |    7.60 |   16 |         1 |
 |                                | LoadOrStore |   293,945,829 |    3.64 |    0 |         0 |
 |                                | Load        |   729,350,713 |    1.64 |    0 |         0 |
@@ -240,7 +240,7 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 
 
 <details>
-<summary> Store throughput test (11/06/2025) </summary>
+<summary> Store throughput test (12/06/2025) </summary>
 
 ```go
 
@@ -316,15 +316,15 @@ func TestInsert_pb_MapOf(t *testing.T) {
 
 | Implementation & Case       | Throughput<br>(M ops/s) | Performance Scale      |
 |-----------------------------|------------------------:|------------------------|
-| pb_MapOf (64/pre)           |                  147.08 | ━━━━━━━━━━━━━━━━━━━━━━ |
-| pb_MapOf (64)               |                   86.38 | ━━━━━━━━━━━━━━━━       |
+| pb_MapOf (64/pre)           |                  142.35 | ━━━━━━━━━━━━━━━━━━━━━━ |
+| pb_MapOf (64)               |                   76.97 | ━━━━━━━━━━━━━━         |
 | xsync_MapV4 (64/pre)        |                   64.70 | ━━━━━━━━━━━━           |
 | RWLockShardedMap_256 (64)   |                   39.50 | ━━━━━━━━━              |
 | zhangyunhao116_skipmap (64) |                   22.82 | ━━━━━                  |
-| pb_MapOf (1/pre)            |                   20.62 | ━━━━━                  |
 | xsync_MapV4 (64)            |                   22.00 | ━━━━━                  |
+| pb_MapOf (1/pre)            |                   20.57 | ━━━━━                  |
 | pb_HashTrieMap (64)         |                   18.56 | ━━━━                   |
-| pb_MapOf (1)                |                   17.92 | ━━━━                   |
+| pb_MapOf (1)                |                   17.55 | ━━━━                   |
 | original_syncMap (64)       |                   13.59 | ━━━                    |
 | xsync_MapV4 (1/pre)         |                    5.73 | ━                      |
 | xsync_MapV4 (1)             |                    4.72 | ━                      |
