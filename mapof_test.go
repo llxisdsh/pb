@@ -787,22 +787,24 @@ func TestMapOfConcurrentReadWriteStress(t *testing.T) {
 }
 
 func TestMapOfCalcLen(t *testing.T) {
-	var tableLen, sizeLen, parallelism, lastTableLen, lastSizeLen, lastParallelism int
+	var tableLen, growTableLen, sizeLen, parallelism, lastTableLen, lastGrowTableLen, lastSizeLen, lastParallelism int
 	cpus := runtime.GOMAXPROCS(0)
 	t.Log("runtime.GOMAXPROCS(0),", cpus)
 	for i := 0; i < 1000000; i++ {
 		tableLen = calcTableLen(i)
 		sizeLen = calcSizeLen(i, cpus)
-		const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
-		growThreshold := int(float64(tableLen) * sizeHintFactor)
-		growTableLen := calcTableLen(growThreshold) << 1
+		//const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
+		growThreshold := int(float64(tableLen*entriesPerMapOfBucket) * mapLoadFactor)
+		growTableLen = calcTableLen(growThreshold)
 		_, parallelism = calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
-		if tableLen != lastTableLen || sizeLen != lastSizeLen || parallelism != lastParallelism {
+		if tableLen != lastTableLen ||
+			growTableLen != lastGrowTableLen ||
+			sizeLen != lastSizeLen ||
+			parallelism != lastParallelism {
 			t.Logf("sizeHint: %v, tableLen: %v, growThreshold: %v, growTableLen: %v, counterLen: %v, parallelism: %v",
 				i, tableLen, growThreshold, growTableLen, sizeLen, parallelism)
-			lastTableLen, lastSizeLen, lastParallelism = tableLen, sizeLen, parallelism
+			lastTableLen, lastGrowTableLen, lastSizeLen, lastParallelism = tableLen, growTableLen, sizeLen, parallelism
 		}
-
 	}
 }
 
@@ -2578,7 +2580,7 @@ func TestNewMapOfPresized(t *testing.T) {
 
 func TestNewMapOfPresized_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	const minTableLen = 1024
-	const numEntries = int(minTableLen * float64(entriesPerMapOfBucket) * MapLoadFactor)
+	const numEntries = int(minTableLen*float64(entriesPerMapOfBucket)*MapLoadFactor) - entriesPerMapOfBucket
 	m := NewMapOf[int, int](WithPresize(numEntries), WithShrinkEnabled())
 	for i := 0; i < 2*numEntries; i++ {
 		m.Store(i, i)
@@ -2595,7 +2597,7 @@ func TestNewMapOfPresized_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 
 	stats = m.Stats()
 	if stats.RootBuckets != minTableLen {
-		t.Fatalf("table length was different from the minimum: %d", stats.RootBuckets)
+		t.Fatalf("table length was different from the minimum: %v", stats)
 	}
 }
 

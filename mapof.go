@@ -656,7 +656,7 @@ func (m *MapOf[K, V]) processEntry(
 				// Map resizing is dynamically determined by the current size (not just 2x grow),
 				// because writes can still occur during resizing - while generating the new table and
 				// migrating data, the actual size may have grown significantly beyond the load threshold.
-				m.tryResize(table, mapGrowHint, calcTableLen(size)<<1)
+				m.tryResize(table, mapGrowHint, calcTableLen(size))
 			}
 		}
 
@@ -1580,7 +1580,7 @@ func (m *MapOf[K, V]) Grow(sizeAdd int) {
 	const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
 	growThreshold := int(float64(len(table.buckets)) * sizeHintFactor)
 	sizeHint := table.sumSize() + sizeAdd
-	if sizeHint > growThreshold {
+	if sizeHint >= growThreshold {
 		m.resize(mapGrowHint, calcTableLen(sizeHint), false)
 	}
 }
@@ -2344,7 +2344,8 @@ func calcTableLen(sizeHint int) int {
 	const minSizeHintThreshold = int(float64(defaultMinMapTableLen*entriesPerMapOfBucket) * mapLoadFactor)
 	if sizeHint >= minSizeHintThreshold {
 		const invSizeHintFactor = 1.0 / (float64(entriesPerMapOfBucket) * mapLoadFactor)
-		tableLen = nextPowOf2(int(float64(sizeHint) * invSizeHintFactor))
+		// +entriesPerMapOfBucket-1 is used to compensate for calculation inaccuracies
+		tableLen = nextPowOf2(int(float64(sizeHint+entriesPerMapOfBucket-1) * invSizeHintFactor))
 	}
 	return tableLen
 }
