@@ -4707,3 +4707,296 @@ func TestMapOfLoadAndUpdate(t *testing.T) {
 		expectPresentMapOf(t, "zero", 42)(m.Load("zero"))
 	})
 }
+
+func TestMapOfGrow_Basic(t *testing.T) {
+	m := NewMapOf[string, int]()
+
+	initialStats := m.Stats()
+	initialCapacity := initialStats.Capacity
+	initialBuckets := initialStats.RootBuckets
+
+	m.Grow(1000)
+
+	afterGrowStats := m.Stats()
+	if afterGrowStats.Capacity <= initialCapacity {
+		t.Fatalf("Grow should increase capacity: initial=%d, after=%d",
+			initialCapacity, afterGrowStats.Capacity)
+	}
+	if afterGrowStats.RootBuckets <= initialBuckets {
+		t.Fatalf("Grow should increase buckets: initial=%d, after=%d",
+			initialBuckets, afterGrowStats.RootBuckets)
+	}
+	if afterGrowStats.TotalGrowths == 0 {
+		t.Fatal("TotalGrowths should be incremented")
+	}
+
+	m.Store("test", 42)
+	if val, ok := m.Load("test"); !ok || val != 42 {
+		t.Fatal("Map should work normally after Grow")
+	}
+}
+
+func TestMapOfGrow_ZeroAndNegative(t *testing.T) {
+	m := NewMapOf[string, int]()
+	initialStats := m.Stats()
+
+	m.Grow(0)
+	afterZeroStats := m.Stats()
+	if afterZeroStats.Capacity != initialStats.Capacity {
+		t.Fatal("Grow(0) should not change capacity")
+	}
+	if afterZeroStats.TotalGrowths != initialStats.TotalGrowths {
+		t.Fatal("Grow(0) should not increment TotalGrowths")
+	}
+
+	m.Grow(-100)
+	afterNegativeStats := m.Stats()
+	if afterNegativeStats.Capacity != initialStats.Capacity {
+		t.Fatal("Grow(-100) should not change capacity")
+	}
+	if afterNegativeStats.TotalGrowths != initialStats.TotalGrowths {
+		t.Fatal("Grow(-100) should not increment TotalGrowths")
+	}
+}
+
+func TestMapOfGrow_UninitializedMap(t *testing.T) {
+	var m MapOf[string, int]
+
+	m.Grow(200)
+
+	stats := m.Stats()
+	t.Log(stats)
+	if stats.Capacity == 0 {
+		t.Fatal("Map should be initialized after Grow")
+	}
+	if stats.TotalGrowths == 0 {
+		t.Fatal("TotalGrowths should be incremented")
+	}
+
+	m.Store("test", 42)
+	if val, ok := m.Load("test"); !ok || val != 42 {
+		t.Fatal("Map should work normally after Grow on uninitialized map")
+	}
+}
+
+func TestMapOfShrink_Basic(t *testing.T) {
+	m := NewMapOf[string, int]()
+
+	for i := 0; i < 10000; i++ {
+		m.Store(strconv.Itoa(i), i)
+	}
+
+	afterStoreStats := m.Stats()
+	initialCapacity := afterStoreStats.Capacity
+	initialBuckets := afterStoreStats.RootBuckets
+
+	for i := 0; i < 9000; i++ {
+		m.Delete(strconv.Itoa(i))
+	}
+
+	m.Shrink()
+
+	afterShrinkStats := m.Stats()
+	if afterShrinkStats.Capacity >= initialCapacity {
+		t.Fatalf("Shrink should decrease capacity: initial=%d, after=%d",
+			initialCapacity, afterShrinkStats.Capacity)
+	}
+	if afterShrinkStats.RootBuckets >= initialBuckets {
+		t.Fatalf("Shrink should decrease buckets: initial=%d, after=%d",
+			initialBuckets, afterShrinkStats.RootBuckets)
+	}
+	if afterShrinkStats.TotalShrinks == 0 {
+		t.Fatal("TotalShrinks should be incremented")
+	}
+
+	for i := 9000; i < 10000; i++ {
+		if val, ok := m.Load(strconv.Itoa(i)); !ok || val != i {
+			t.Fatalf("Data should be preserved after Shrink: key=%d", i)
+		}
+	}
+}
+
+func TestMapOfShrink_MinTableLen(t *testing.T) {
+	m := NewMapOf[string, int](WithPresize(1000))
+	initialStats := m.Stats()
+	minBuckets := initialStats.RootBuckets
+
+	for i := 0; i < 10; i++ {
+		m.Store(strconv.Itoa(i), i)
+	}
+
+	m.Shrink()
+
+	afterShrinkStats := m.Stats()
+	if afterShrinkStats.RootBuckets < minBuckets {
+		t.Fatalf("Shrink should not go below minTableLen: min=%d, after=%d",
+			minBuckets, afterShrinkStats.RootBuckets)
+	}
+}
+
+func TestMapOfShrink_UninitializedMap(t *testing.T) {
+	var m MapOf[string, int]
+
+	m.Shrink()
+
+	stats := m.Stats()
+	if stats.Capacity != 0 {
+		t.Fatal("Shrink on uninitialized map should not initialize it")
+	}
+}
+
+func TestMapOfGrowShrink_Concurrent(t *testing.T) {
+	m := NewMapOf[int, int]()
+	const numGoroutines = 10
+	const numOperations = 100
+	const sizeAdd = 200
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines * 3) // grow, shrink, data operations
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numOperations; j++ {
+				m.Grow(sizeAdd)
+				runtime.Gosched()
+			}
+		}()
+	}
+
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numOperations; j++ {
+				m.Shrink()
+				runtime.Gosched()
+			}
+		}()
+	}
+
+	for i := 0; i < numGoroutines; i++ {
+		go func(base int) {
+			defer wg.Done()
+			for j := 0; j < numOperations; j++ {
+				key := base*numOperations + j
+				m.Store(key, key)
+				if val, ok := m.Load(key); !ok || val != key {
+					t.Errorf("Data corruption during concurrent resize: key=%d", key)
+				}
+				m.Delete(key)
+				runtime.Gosched()
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	stats := m.Stats()
+	if stats.TotalGrowths == 0 {
+		t.Fatal("Should have some growths")
+	}
+	t.Logf("Final stats: %s", stats.ToString())
+}
+
+func TestMapOfGrow_Performance(t *testing.T) {
+	const numEntries = 100000
+
+	m1 := NewMapOf[int, int]()
+	start1 := time.Now()
+	for i := 0; i < numEntries; i++ {
+		m1.Store(i, i)
+	}
+	duration1 := time.Since(start1)
+
+	m2 := NewMapOf[int, int]()
+	m2.Grow(numEntries)
+	start2 := time.Now()
+	for i := 0; i < numEntries; i++ {
+		m2.Store(i, i)
+	}
+	duration2 := time.Since(start2)
+
+	if duration2 > duration1*2 {
+		t.Logf("Pre-allocation might be slower than expected: without=%v, with=%v",
+			duration1, duration2)
+	}
+
+	stats1 := m1.Stats()
+	stats2 := m2.Stats()
+
+	if stats2.TotalGrowths > stats1.TotalGrowths {
+		t.Fatalf("Pre-allocated map should have fewer growths: pre=%d, normal=%d",
+			stats2.TotalGrowths, stats1.TotalGrowths)
+	}
+
+	t.Logf("Without pre-allocation: %v, growths=%d", duration1, stats1.TotalGrowths)
+	t.Logf("With pre-allocation: %v, growths=%d", duration2, stats2.TotalGrowths)
+}
+
+func TestMapOfShrink_AutomaticVsManual(t *testing.T) {
+	const numEntries = 10000
+
+	m1 := NewMapOf[string, int]()
+	for i := 0; i < numEntries; i++ {
+		m1.Store(strconv.Itoa(i), i)
+	}
+	for i := 0; i < numEntries-100; i++ {
+		m1.Delete(strconv.Itoa(i))
+	}
+	stats1 := m1.Stats()
+
+	m2 := NewMapOf[string, int]()
+	for i := 0; i < numEntries; i++ {
+		m2.Store(strconv.Itoa(i), i)
+	}
+	for i := 0; i < numEntries-100; i++ {
+		m2.Delete(strconv.Itoa(i))
+	}
+	m2.Shrink()
+	stats2 := m2.Stats()
+
+	if stats2.TotalShrinks == 0 {
+		t.Fatal("Manual shrink should increment TotalShrinks")
+	}
+
+	t.Logf("Automatic shrink stats: %s", stats1.ToString())
+	t.Logf("Manual shrink stats: %s", stats2.ToString())
+}
+
+func TestMapOfGrowShrink_DataIntegrity(t *testing.T) {
+	m := NewMapOf[string, string]()
+	const numEntries = 1000
+
+	testData := make(map[string]string)
+	for i := 0; i < numEntries; i++ {
+		key := "key_" + strconv.Itoa(i)
+		value := "value_" + strconv.Itoa(i)
+		testData[key] = value
+		m.Store(key, value)
+	}
+
+	for cycle := 0; cycle < 5; cycle++ {
+		m.Grow(numEntries * 2)
+
+		for key, expectedValue := range testData {
+			if actualValue, ok := m.Load(key); !ok || actualValue != expectedValue {
+				t.Fatalf("Data corruption after Grow cycle %d: key=%s, expected=%s, actual=%s, ok=%v",
+					cycle, key, expectedValue, actualValue, ok)
+			}
+		}
+
+		m.Shrink()
+
+		for key, expectedValue := range testData {
+			if actualValue, ok := m.Load(key); !ok || actualValue != expectedValue {
+				t.Fatalf("Data corruption after Shrink cycle %d: key=%s, expected=%s, actual=%s, ok=%v",
+					cycle, key, expectedValue, actualValue, ok)
+			}
+		}
+	}
+
+	stats := m.Stats()
+	if stats.Size != numEntries {
+		t.Fatalf("Final size mismatch: expected=%d, actual=%d", numEntries, stats.Size)
+	}
+}

@@ -296,14 +296,14 @@ type resizeState struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
 		wg        sync.WaitGroup
-		table     *mapOfTable
+		table     atomic.Pointer[mapOfTable]
 		newTable  atomic.Pointer[mapOfTable]
 		process   atomic.Int32
 		completed atomic.Int32
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	wg        sync.WaitGroup
-	table     *mapOfTable
+	table     atomic.Pointer[mapOfTable]
 	newTable  atomic.Pointer[mapOfTable]
 	process   atomic.Int32
 	completed atomic.Int32
@@ -537,7 +537,7 @@ func (m *MapOf[K, V]) processEntry(
 		// This is the first check, checking if there is a resize operation in progress
 		// before acquiring the bucket lock
 		if rs := m.resizeState.Load(); rs != nil &&
-			rs.table != nil /*skip init*/ &&
+			rs.table.Load() != nil /*skip init*/ &&
 			rs.newTable.Load() != nil /*skip newTable in creating or clear */ {
 			rootb.unlock()
 			// Wait for the current resize operation to complete
@@ -612,11 +612,12 @@ func (m *MapOf[K, V]) processEntry(
 
 			// Check if table shrinking is needed
 			if m.shrinkEnabled && clearOp(newmetaw) == emptyMeta && m.resizeState.Load() == nil {
-				table = m.table.Load()
 				tableLen := len(table.buckets)
-				if m.minTableLen < tableLen &&
-					table.sumSize() <= tableLen*entriesPerMapOfBucket/mapShrinkFraction {
-					m.tryResize(table, mapShrinkHint, tableLen>>1)
+				if m.minTableLen < tableLen {
+					size := table.sumSize()
+					if size < tableLen*entriesPerMapOfBucket/mapShrinkFraction {
+						m.tryResize(mapShrinkHint, size, 0)
+					}
 				}
 			}
 			return value, status
@@ -648,15 +649,11 @@ func (m *MapOf[K, V]) processEntry(
 
 		// Check if the table needs to grow
 		if m.resizeState.Load() == nil {
-			table = m.table.Load()
 			tableLen := len(table.buckets)
 			size := table.sumSize()
 			const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
 			if size >= int(float64(tableLen)*sizeHintFactor) {
-				// Map resizing is dynamically determined by the current size (not just 2x grow),
-				// because writes can still occur during resizing - while generating the new table and
-				// migrating data, the actual size may have grown significantly beyond the load threshold.
-				m.tryResize(table, mapGrowHint, calcTableLen(size))
+				m.tryResize(mapGrowHint, size, 0)
 			}
 		}
 
@@ -674,44 +671,40 @@ const (
 
 func (m *MapOf[K, V]) resize(
 	hint mapResizeHint,
-	sizeHint int,
-	waitCompleted bool,
+	sizeAdd int,
 ) {
+	var size int
 	for {
 		// Resize check
 		table := m.table.Load()
 		tableLen := len(table.buckets)
 		if hint == mapGrowHint {
-			if tableLen >= sizeHint {
+			if sizeAdd <= 0 {
+				return
+			}
+			size = table.sumSize()
+			newTableLen := calcTableLen(size + sizeAdd)
+			if tableLen >= newTableLen {
 				return
 			}
 		} else if hint == mapShrinkHint {
-			if tableLen <= sizeHint {
+			if tableLen <= m.minTableLen {
 				return
 			}
 			// Recalculate the shrink size to avoid over-shrinking
-			size := table.sumSize()
+			size = table.sumSize()
 			newTableLen := calcTableLen(size)
-			if newTableLen < m.minTableLen {
-				newTableLen = m.minTableLen
-			}
-			if newTableLen <= sizeHint {
-				return
-			}
-			sizeHint = newTableLen
-
-			if tableLen <= sizeHint {
+			if tableLen <= newTableLen {
 				return
 			}
 		} else {
-			if tableLen == sizeHint && table.isZero() {
+			if tableLen == m.minTableLen && table.isZero() {
 				return
 			}
 		}
-
 		// Wait resize finish
 		if rs := m.resizeState.Load(); rs != nil {
-			if rs.table != nil /*skip init*/ &&
+			if rs.table.Load() != nil /*skip init*/ &&
 				rs.newTable.Load() != nil /*skip newTable in creating or clear */ {
 				m.helpCopyAndWait(rs)
 			} else {
@@ -720,76 +713,83 @@ func (m *MapOf[K, V]) resize(
 			continue
 		}
 
-		// Try resize
-		if ok := m.tryResize(table, hint, sizeHint); ok && !waitCompleted {
-			return
-		}
+		m.tryResize(hint, size, sizeAdd)
 	}
 }
 
 func (m *MapOf[K, V]) tryResize(
-	table *mapOfTable,
 	hint mapResizeHint,
-	newTableLen int,
-) bool {
+	size, sizeAdd int,
+) {
 	// Create a new WaitGroup for the current resize operation
 	rs := new(resizeState)
 	rs.wg.Add(1)
-	rs.table = table
 
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
 	if !m.resizeState.CompareAndSwap(nil, rs) {
-		return false
-	}
-
-	// Although the table is always changed when resizeWg is not nil,
-	// it might have been changed before that.
-	if m.table.Load() != table {
-		// If the table has already been changed, return directly
-		m.resizeState.Store(nil)
-		rs.wg.Done()
-		return false
+		return
 	}
 
 	// Resize start
 	cpus := runtime.GOMAXPROCS(0)
 	if hint == mapClearHint {
-		newTable := newMapOfTable(newTableLen, cpus)
+		newTable := newMapOfTable(m.minTableLen, cpus)
 		m.table.Store(newTable)
 		m.resizeState.Store(nil)
 		rs.wg.Done()
-		return true
-	} else {
-		if newTableLen >= int(asyncResizeThreshold) && cpus > 1 {
-			// The big table, use goroutines to create new table and copy entries
-			go m.finalizeResize(table, newTableLen, rs, cpus)
-			return true
+		return
+	}
+
+	table := m.table.Load()
+	tableLen := len(table.buckets)
+	var newTableLen int
+	if hint == mapGrowHint {
+		if sizeAdd == 0 {
+			newTableLen = max(calcTableLen(size), tableLen<<1)
 		} else {
-			m.finalizeResize(table, newTableLen, rs, cpus)
-			return true
+			newTableLen = calcTableLen(size + sizeAdd)
+			if newTableLen <= tableLen {
+				m.resizeState.Store(nil)
+				rs.wg.Done()
+				return
+			}
 		}
+		m.totalGrowths.Add(1)
+	} else {
+		if sizeAdd == 0 {
+			newTableLen = tableLen >> 1
+		} else {
+			newTableLen = calcTableLen(size)
+		}
+		if newTableLen < m.minTableLen {
+			m.resizeState.Store(nil)
+			rs.wg.Done()
+			return
+		}
+		m.totalShrinks.Add(1)
+	}
+
+	if newTableLen >= int(asyncResizeThreshold) && cpus > 1 {
+		// The big table, use goroutines to create new table and copy entries
+		go m.finalizeResize(table, newTableLen, rs, cpus)
+	} else {
+		m.finalizeResize(table, newTableLen, rs, cpus)
 	}
 }
 
 func (m *MapOf[K, V]) finalizeResize(table *mapOfTable, newTableLen int, rs *resizeState, cpus int) {
+	rs.table.Store(table)
 	newTable := newMapOfTable(newTableLen, cpus)
 	rs.newTable.Store(newTable)
-	if newTableLen > len(table.buckets) {
-		m.totalGrowths.Add(1)
-	} else {
-		m.totalShrinks.Add(1)
-	}
-
 	m.helpCopyAndWait(rs)
 }
 
 func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
-	table := rs.table
-	newTable := rs.newTable.Load()
-
+	table := rs.table.Load()
 	tableLen := len(table.buckets)
 	chunks := int32(table.chunks)
 	chunkSize := table.chunkSize
+	newTable := rs.newTable.Load()
 	isGrowth := len(newTable.buckets) > tableLen
 	for {
 		process := rs.process.Add(1)
@@ -1560,7 +1560,7 @@ func (m *MapOf[K, V]) Clear() {
 	if table == nil {
 		return
 	}
-	m.resize(mapClearHint, m.minTableLen, true)
+	m.resize(mapClearHint, 0)
 }
 
 // Grow increases the map's capacity by sizeAdd entries to accommodate future growth.
@@ -1568,30 +1568,27 @@ func (m *MapOf[K, V]) Clear() {
 //
 // Parameters:
 //   - sizeAdd specifies the number of additional entries the map should be able to hold.
+//
+// Notes:
+//   - If the current remaining capacity already exceeds sizeAdd, no growth will be triggered.
 func (m *MapOf[K, V]) Grow(sizeAdd int) {
 	if sizeAdd <= 0 {
 		return
 	}
-
-	table := m.table.Load()
-	if table == nil {
-		table = m.initSlow()
+	if m.table.Load() == nil {
+		m.initSlow()
 	}
-	const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
-	growThreshold := int(float64(len(table.buckets)) * sizeHintFactor)
-	sizeHint := table.sumSize() + sizeAdd
-	if sizeHint >= growThreshold {
-		m.resize(mapGrowHint, calcTableLen(sizeHint), false)
-	}
+	m.resize(mapGrowHint, sizeAdd)
 }
 
-// Shrink reduces the capacity to fit the current size
+// Shrink reduces the capacity to fit the current size,
+// always executes regardless of WithShrinkEnabled.
 func (m *MapOf[K, V]) Shrink() {
 	table := m.table.Load()
 	if table == nil {
 		return
 	}
-	m.resize(mapShrinkHint, m.minTableLen, false)
+	m.resize(mapShrinkHint, -1)
 }
 
 // RangeEntry iterates over all entries in the map.
