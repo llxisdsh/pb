@@ -288,7 +288,7 @@ func (b *bucketOf) tryLock() bool {
 }
 
 func (b *bucketOf) unlock() {
-	cur := atomic.LoadUint64(&b.meta)
+	cur := b.meta
 	atomic.StoreUint64(&b.meta, cur&(^opLockMask))
 }
 
