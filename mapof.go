@@ -288,7 +288,8 @@ func (b *bucketOf) tryLock() bool {
 }
 
 func (b *bucketOf) unlock() {
-	storeOp(&b.meta, opLockMask, false)
+	cur := atomic.LoadUint64(&b.meta)
+	atomic.StoreUint64(&b.meta, cur&(^opLockMask))
 }
 
 // resizeState represents the current state of a resizing operation
@@ -435,6 +436,8 @@ func (m *MapOf[K, V]) init(
 
 // initSlow may be called concurrently by multiple goroutines, so it requires
 // synchronization with a "lock" mechanism.
+//
+//go:noinline
 func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	rs := m.resizeState.Load()
 	if rs != nil {
@@ -717,6 +720,7 @@ func (m *MapOf[K, V]) resize(
 	}
 }
 
+//go:noinline
 func (m *MapOf[K, V]) tryResize(
 	hint mapResizeHint,
 	size, sizeAdd int,
@@ -784,6 +788,7 @@ func (m *MapOf[K, V]) finalizeResize(table *mapOfTable, newTableLen int, rs *res
 	m.helpCopyAndWait(rs)
 }
 
+//go:noinline
 func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 	table := rs.table.Load()
 	tableLen := len(table.buckets)
@@ -2319,6 +2324,8 @@ func (s *MapStats) String() string {
 // Returns:
 //   - chunks: Suggested degree of parallelism (number of goroutines).
 //   - chunkSize: Number of items processed per goroutine
+//
+//go:nosplit
 func calcParallelism(items, threshold, cpus int) (chunkSize, chunks int) {
 	// If the items are too small, use single-threaded processing.
 	// Adjusts the parallel process trigger threshold using a scaling factor.
@@ -2336,6 +2343,8 @@ func calcParallelism(items, threshold, cpus int) (chunkSize, chunks int) {
 
 // calcTableLen computes the bucket count for the table
 // return value must be a power of 2
+//
+//go:nosplit
 func calcTableLen(sizeHint int) int {
 	tableLen := defaultMinMapTableLen
 	const minSizeHintThreshold = int(float64(defaultMinMapTableLen*entriesPerMapOfBucket) * mapLoadFactor)
@@ -2349,12 +2358,16 @@ func calcTableLen(sizeHint int) int {
 
 // calcSizeLen computes the size count for the table
 // return value must be a power of 2
+//
+//go:nosplit
 func calcSizeLen(tableLen, cpus int) int {
 	return nextPowOf2(min(cpus, tableLen>>10))
 }
 
 // nextPowOf2 calculates the smallest power of 2 that is greater than or equal to n.
 // Compatible with both 32-bit and 64-bit systems.
+//
+//go:nosplit
 func nextPowOf2(n int) int {
 	if n <= 0 {
 		return 1
@@ -2376,11 +2389,15 @@ func nextPowOf2(n int) int {
 // which helps reduce collisions when calculating bucket indices.
 // It's particularly effective for hash values where significant bits
 // are concentrated in the upper positions.
+//
+//go:nosplit
 func spread(h uintptr) uintptr {
 	return h ^ (h >> 16)
 }
 
 // h1 extracts the bucket index from a hash value.
+//
+//go:nosplit
 func h1(h uintptr, intKey bool) uintptr {
 	if intKey {
 		// Possible values: [1,2,3,4,...entriesPerMapOfBucket].
@@ -2394,6 +2411,8 @@ func h1(h uintptr, intKey bool) uintptr {
 }
 
 // h2 extracts the byte-level hash for in-bucket lookups.
+//
+//go:nosplit
 func h2(h uintptr) uint8 {
 	if enableHashSpread {
 		return uint8(spread(h)) | metaSlotMask
@@ -2402,6 +2421,8 @@ func h2(h uintptr) uint8 {
 }
 
 // broadcast replicates a byte value across all bytes of an uint64.
+//
+//go:nosplit
 func broadcast(b uint8) uint64 {
 	return 0x101010101010101 * uint64(b)
 }
@@ -2415,6 +2436,8 @@ func broadcast(b uint8) uint64 {
 //
 // Returns:
 //   - The index (0-7) of the first marked byte in the uint64
+//
+//go:nosplit
 func firstMarkedByteIndex(w uint64) int {
 	return bits.TrailingZeros64(w) >> 3
 }
@@ -2432,12 +2455,16 @@ func firstMarkedByteIndex(w uint64) int {
 //     that were originally zero.
 //   - Finally, & emptyMetaMask filters to only consider relevant data slots,
 //     using the mask-defined marker bits (MSB of each byte).
+//
+//go:nosplit
 func markZeroBytes(w uint64) uint64 {
 	return (w - 0x0101010101010101) & (^w) & metaMask
 }
 
 // setByte sets the byte at index idx in the uint64 w to the value b.
 // Returns the modified uint64 value.
+//
+//go:nosplit
 func setByte(w uint64, b uint8, idx int) uint64 {
 	shift := idx << 3
 	return (w &^ (0xff << shift)) | (uint64(b) << shift)
@@ -2516,6 +2543,7 @@ func storeUint64(addr *uint64, val uint64) {
 	}
 }
 
+//go:nosplit
 func setOp(meta uint64, mask uint64, value bool) uint64 {
 	if value {
 		return meta | mask
@@ -2524,10 +2552,12 @@ func setOp(meta uint64, mask uint64, value bool) uint64 {
 	}
 }
 
+//go:nosplit
 func getOp(meta uint64, mask uint64) bool {
 	return meta&mask != 0
 }
 
+//go:nosplit
 func clearOp(meta uint64) uint64 {
 	return meta & (^opByteMask)
 }
@@ -2535,6 +2565,14 @@ func clearOp(meta uint64) uint64 {
 //func loadOp(addr *uint64, mask uint64) bool {
 //	cur := atomic.LoadUint64(addr)
 //	return getOp(cur, mask)
+//}
+//
+//func storeOp(addr *uint64, mask uint64, value bool) {
+//	if value {
+//		atomic.OrUint64(addr, mask)
+//	} else {
+//		atomic.AndUint64(addr, ^mask)
+//	}
 //}
 
 func casOp(addr *uint64, mask uint64, old, new bool) bool {
@@ -2548,14 +2586,6 @@ func casOp(addr *uint64, mask uint64, old, new bool) bool {
 		if atomic.CompareAndSwapUint64(addr, cur, nv) {
 			return true
 		}
-	}
-}
-
-func storeOp(addr *uint64, mask uint64, value bool) {
-	if value {
-		atomic.OrUint64(addr, mask)
-	} else {
-		atomic.AndUint64(addr, ^mask)
 	}
 }
 
