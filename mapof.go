@@ -257,8 +257,8 @@ type bucketOf struct {
 		next    unsafe.Pointer
 	}{})%CacheLineSize) % CacheLineSize]byte
 
-	entries [entriesPerMapOfBucket]unsafe.Pointer // entries Pointers to *EntryOf instances
-	next    unsafe.Pointer                        // next Pointer to the next bucket (*bucketOf) in the chain
+	entries [entriesPerMapOfBucket]unsafe.Pointer // *EntryOf
+	next    unsafe.Pointer                        // *bucketOf
 }
 
 // lock acquires the lock for the bucket.
@@ -2359,29 +2359,16 @@ func nextPowOf2(n int) int {
 	if n <= 0 {
 		return 1
 	}
-
-	if bits.UintSize == 32 {
-		v := uint32(n)
-		v--
-		v |= v >> 1
-		v |= v >> 2
-		v |= v >> 4
-		v |= v >> 8
-		v |= v >> 16
-		v++
-		return int(v)
-	}
-
-	v := uint64(n)
-	v--
+	v := uint(n - 1)
 	v |= v >> 1
 	v |= v >> 2
 	v |= v >> 4
 	v |= v >> 8
 	v |= v >> 16
-	v |= v >> 32
-	v++
-	return int(v)
+	if bits.UintSize == 64 {
+		v |= v >> 32
+	}
+	return int(v + 1)
 }
 
 // spread improves hash distribution by XORing the original hash with its high bits.
