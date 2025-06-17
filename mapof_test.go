@@ -2664,6 +2664,7 @@ func TestMapOfResize(t *testing.T) {
 	for i := 0; i < numEntries; i++ {
 		m.Delete(strconv.Itoa(i))
 	}
+	m.Shrink()
 
 	stats = m.Stats()
 	if stats.Size > 0 {

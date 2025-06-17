@@ -2489,6 +2489,7 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 //	/*return false*/
 //}
 //
+////go:nosplit
 //func getByte(w uint64, idx int) uint8 {
 //	shift := idx << 3
 //	return uint8((w >> shift) & 0xff)
