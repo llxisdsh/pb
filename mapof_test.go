@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -5003,4 +5004,418 @@ func TestMapOfGrowShrink_DataIntegrity(t *testing.T) {
 	if stats.Size != numEntries {
 		t.Fatalf("Final size mismatch: expected=%d, actual=%d", numEntries, stats.Size)
 	}
+}
+
+// TestMapOfCompareAndSwap tests the CompareAndSwap function}
+
+// TestMapOfDefaultHasher tests the defaultHasher function with different key types
+func TestMapOfDefaultHasher(t *testing.T) {
+	t.Run("UintKeys", func(t *testing.T) {
+		m := NewMapOf[uint, string]()
+		m.Store(uint(123), "value123")
+		m.Store(uint(456), "value456")
+
+		expectPresentMapOf(t, uint(123), "value123")(m.Load(uint(123)))
+		expectPresentMapOf(t, uint(456), "value456")(m.Load(uint(456)))
+	})
+
+	t.Run("IntKeys", func(t *testing.T) {
+		m := NewMapOf[int, string]()
+		m.Store(-123, "negative")
+		m.Store(456, "positive")
+
+		expectPresentMapOf(t, -123, "negative")(m.Load(-123))
+		expectPresentMapOf(t, 456, "positive")(m.Load(456))
+	})
+
+	t.Run("UintptrKeys", func(t *testing.T) {
+		m := NewMapOf[uintptr, string]()
+		m.Store(uintptr(0x1000), "addr1")
+		m.Store(uintptr(0x2000), "addr2")
+
+		expectPresentMapOf(t, uintptr(0x1000), "addr1")(m.Load(uintptr(0x1000)))
+		expectPresentMapOf(t, uintptr(0x2000), "addr2")(m.Load(uintptr(0x2000)))
+	})
+
+	t.Run("Uint64Keys", func(t *testing.T) {
+		m := NewMapOf[uint64, string]()
+		m.Store(uint64(0x123456789ABCDEF0), "large1")
+		m.Store(uint64(0xFEDCBA9876543210), "large2")
+
+		expectPresentMapOf(t, uint64(0x123456789ABCDEF0), "large1")(m.Load(uint64(0x123456789ABCDEF0)))
+		expectPresentMapOf(t, uint64(0xFEDCBA9876543210), "large2")(m.Load(uint64(0xFEDCBA9876543210)))
+	})
+
+	t.Run("Int64Keys", func(t *testing.T) {
+		m := NewMapOf[int64, string]()
+		m.Store(int64(-9223372036854775808), "min")
+		m.Store(int64(9223372036854775807), "max")
+
+		expectPresentMapOf(t, int64(-9223372036854775808), "min")(m.Load(int64(-9223372036854775808)))
+		expectPresentMapOf(t, int64(9223372036854775807), "max")(m.Load(int64(9223372036854775807)))
+	})
+
+	t.Run("Uint32Keys", func(t *testing.T) {
+		m := NewMapOf[uint32, string]()
+		m.Store(uint32(0xFFFFFFFF), "max32")
+		m.Store(uint32(0x12345678), "mid32")
+
+		expectPresentMapOf(t, uint32(0xFFFFFFFF), "max32")(m.Load(uint32(0xFFFFFFFF)))
+		expectPresentMapOf(t, uint32(0x12345678), "mid32")(m.Load(uint32(0x12345678)))
+	})
+
+	t.Run("Int32Keys", func(t *testing.T) {
+		m := NewMapOf[int32, string]()
+		m.Store(int32(-2147483648), "min32")
+		m.Store(int32(2147483647), "max32")
+
+		expectPresentMapOf(t, int32(-2147483648), "min32")(m.Load(int32(-2147483648)))
+		expectPresentMapOf(t, int32(2147483647), "max32")(m.Load(int32(2147483647)))
+	})
+
+	t.Run("Uint16Keys", func(t *testing.T) {
+		m := NewMapOf[uint16, string]()
+		m.Store(uint16(0xFFFF), "max16")
+		m.Store(uint16(0x1234), "mid16")
+
+		expectPresentMapOf(t, uint16(0xFFFF), "max16")(m.Load(uint16(0xFFFF)))
+		expectPresentMapOf(t, uint16(0x1234), "mid16")(m.Load(uint16(0x1234)))
+	})
+
+	t.Run("Int16Keys", func(t *testing.T) {
+		m := NewMapOf[int16, string]()
+		m.Store(int16(-32768), "min16")
+		m.Store(int16(32767), "max16")
+
+		expectPresentMapOf(t, int16(-32768), "min16")(m.Load(int16(-32768)))
+		expectPresentMapOf(t, int16(32767), "max16")(m.Load(int16(32767)))
+	})
+
+	t.Run("Uint8Keys", func(t *testing.T) {
+		m := NewMapOf[uint8, string]()
+		m.Store(uint8(255), "max8")
+		m.Store(uint8(128), "mid8")
+
+		expectPresentMapOf(t, uint8(255), "max8")(m.Load(uint8(255)))
+		expectPresentMapOf(t, uint8(128), "mid8")(m.Load(uint8(128)))
+	})
+
+	t.Run("Int8Keys", func(t *testing.T) {
+		m := NewMapOf[int8, string]()
+		m.Store(int8(-128), "min8")
+		m.Store(int8(127), "max8")
+
+		expectPresentMapOf(t, int8(-128), "min8")(m.Load(int8(-128)))
+		expectPresentMapOf(t, int8(127), "max8")(m.Load(int8(127)))
+	})
+}
+
+// TestMapOfDefaultHasherComprehensive tests all branches of defaultHasher function
+func TestMapOfDefaultHasherComprehensive(t *testing.T) {
+	t.Run("Float32Keys", func(t *testing.T) {
+		m := &MapOf[float32, string]{}
+		keys := []float32{1.1, 2.2, 3.3, 0.0, -1.1}
+		for i, key := range keys {
+			m.Store(key, fmt.Sprintf("value%d", i))
+		}
+		for i, key := range keys {
+			if val, found := m.Load(key); !found || val != fmt.Sprintf("value%d", i) {
+				t.Fatalf("Expected to find key %v with value value%d, got found=%v, val=%s", key, i, found, val)
+			}
+		}
+	})
+
+	t.Run("Float64Keys", func(t *testing.T) {
+		m := &MapOf[float64, string]{}
+		keys := []float64{1.123456789, 2.987654321, 0.0, -3.141592653}
+		for i, key := range keys {
+			m.Store(key, fmt.Sprintf("val%d", i))
+		}
+		for i, key := range keys {
+			if val, found := m.Load(key); !found || val != fmt.Sprintf("val%d", i) {
+				t.Fatalf("Expected to find key %v with value val%d, got found=%v, val=%s", key, i, found, val)
+			}
+		}
+	})
+
+	t.Run("BoolKeys", func(t *testing.T) {
+		m := &MapOf[bool, int]{}
+		m.Store(true, 1)
+		m.Store(false, 0)
+
+		if val, found := m.Load(true); !found || val != 1 {
+			t.Fatalf("Expected true->1, got found=%v, val=%d", found, val)
+		}
+		if val, found := m.Load(false); !found || val != 0 {
+			t.Fatalf("Expected false->0, got found=%v, val=%d", found, val)
+		}
+	})
+
+	t.Run("ComplexKeys", func(t *testing.T) {
+		m := &MapOf[complex64, string]{}
+		keys := []complex64{1 + 2i, 3 + 4i, 0 + 0i, -1 - 2i}
+		for i, key := range keys {
+			m.Store(key, fmt.Sprintf("complex%d", i))
+		}
+		for i, key := range keys {
+			if val, found := m.Load(key); !found || val != fmt.Sprintf("complex%d", i) {
+				t.Fatalf("Expected to find key %v with value complex%d, got found=%v, val=%s", key, i, found, val)
+			}
+		}
+	})
+
+	t.Run("Complex128Keys", func(t *testing.T) {
+		m := &MapOf[complex128, string]{}
+		keys := []complex128{1.1 + 2.2i, 3.3 + 4.4i, 0 + 0i}
+		for i, key := range keys {
+			m.Store(key, fmt.Sprintf("c128_%d", i))
+		}
+		for i, key := range keys {
+			if val, found := m.Load(key); !found || val != fmt.Sprintf("c128_%d", i) {
+				t.Fatalf("Expected to find key %v with value c128_%d, got found=%v, val=%s", key, i, found, val)
+			}
+		}
+	})
+
+	t.Run("ArrayKeys", func(t *testing.T) {
+		m := &MapOf[[3]int, string]{}
+		keys := [][3]int{{1, 2, 3}, {4, 5, 6}, {0, 0, 0}}
+		for i, key := range keys {
+			m.Store(key, fmt.Sprintf("array%d", i))
+		}
+		for i, key := range keys {
+			if val, found := m.Load(key); !found || val != fmt.Sprintf("array%d", i) {
+				t.Fatalf("Expected to find key %v with value array%d, got found=%v, val=%s", key, i, found, val)
+			}
+		}
+	})
+
+	t.Run("StructKeys", func(t *testing.T) {
+		type TestStruct struct {
+			A int
+			B string
+		}
+		m := &MapOf[TestStruct, int]{}
+		keys := []TestStruct{{1, "a"}, {2, "b"}, {0, ""}}
+		for i, key := range keys {
+			m.Store(key, i*100)
+		}
+		for i, key := range keys {
+			if val, found := m.Load(key); !found || val != i*100 {
+				t.Fatalf("Expected to find key %v with value %d, got found=%v, val=%d", key, i*100, found, val)
+			}
+		}
+	})
+
+	t.Run("IntegerTypesEdgeCases", func(t *testing.T) {
+		// Test edge values for different integer types
+		m8 := &MapOf[int8, string]{}
+		m8.Store(127, "max_int8")
+		m8.Store(-128, "min_int8")
+		m8.Store(0, "zero_int8")
+
+		m16 := &MapOf[int16, string]{}
+		m16.Store(32767, "max_int16")
+		m16.Store(-32768, "min_int16")
+
+		m32 := &MapOf[int32, string]{}
+		m32.Store(2147483647, "max_int32")
+		m32.Store(-2147483648, "min_int32")
+
+		// Verify all values
+		if val, found := m8.Load(127); !found || val != "max_int8" {
+			t.Fatalf("Expected max_int8, got found=%v, val=%s", found, val)
+		}
+		if val, found := m16.Load(32767); !found || val != "max_int16" {
+			t.Fatalf("Expected max_int16, got found=%v, val=%s", found, val)
+		}
+		if val, found := m32.Load(2147483647); !found || val != "max_int32" {
+			t.Fatalf("Expected max_int32, got found=%v, val=%s", found, val)
+		}
+	})
+
+	t.Run("UnsignedTypesEdgeCases", func(t *testing.T) {
+		mu8 := &MapOf[uint8, string]{}
+		mu8.Store(255, "max_uint8")
+		mu8.Store(0, "zero_uint8")
+
+		mu16 := &MapOf[uint16, string]{}
+		mu16.Store(65535, "max_uint16")
+
+		mu32 := &MapOf[uint32, string]{}
+		mu32.Store(4294967295, "max_uint32")
+
+		// Verify values
+		if val, found := mu8.Load(255); !found || val != "max_uint8" {
+			t.Fatalf("Expected max_uint8, got found=%v, val=%s", found, val)
+		}
+		if val, found := mu16.Load(65535); !found || val != "max_uint16" {
+			t.Fatalf("Expected max_uint16, got found=%v, val=%s", found, val)
+		}
+		if val, found := mu32.Load(4294967295); !found || val != "max_uint32" {
+			t.Fatalf("Expected max_uint32, got found=%v, val=%s", found, val)
+		}
+	})
+}
+
+func TestMapOfEdgeCases(t *testing.T) {
+	t.Run("ZeroValues", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		m.Store("", 0)     // empty string key, zero value
+		m.Store("zero", 0) // zero value
+
+		expectPresentMapOf(t, "", 0)(m.Load(""))
+		expectPresentMapOf(t, "zero", 0)(m.Load("zero"))
+	})
+
+	t.Run("LargeKeys", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		largeKey := strings.Repeat("x", 1000)
+		m.Store(largeKey, 42)
+
+		expectPresentMapOf(t, largeKey, 42)(m.Load(largeKey))
+	})
+
+	t.Run("ManyOperations", func(t *testing.T) {
+		m := NewMapOf[int, int]()
+
+		// Store many values
+		for i := 0; i < 1000; i++ {
+			m.Store(i, i*2)
+		}
+
+		// Verify all values
+		for i := 0; i < 1000; i++ {
+			expectPresentMapOf(t, i, i*2)(m.Load(i))
+		}
+
+		// Delete half
+		for i := 0; i < 500; i++ {
+			m.Delete(i)
+		}
+
+		// Verify deletions
+		for i := 0; i < 500; i++ {
+			expectMissingMapOf(t, i, 0)(m.Load(i))
+		}
+
+		// Verify remaining
+		for i := 500; i < 1000; i++ {
+			expectPresentMapOf(t, i, i*2)(m.Load(i))
+		}
+	})
+
+	t.Run("StoreOverwrite", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		m.Store("key", 1)
+		m.Store("key", 2) // overwrite
+		m.Store("key", 3) // overwrite again
+
+		expectPresentMapOf(t, "key", 3)(m.Load("key"))
+	})
+}
+
+func TestMapOfCompareAndSwap(t *testing.T) { // Test with comparable values
+	t.Run("ComparableValues", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		m.Store("key1", 100)
+
+		// Successful swap
+		if !m.CompareAndSwap("key1", 100, 200) {
+			t.Fatal("CompareAndSwap should succeed when old value matches")
+		}
+		expectPresentMapOf(t, "key1", 200)(m.Load("key1"))
+
+		// Failed swap - wrong old value
+		if m.CompareAndSwap("key1", 100, 300) {
+			t.Fatal("CompareAndSwap should fail when old value doesn't match")
+		}
+		expectPresentMapOf(t, "key1", 200)(m.Load("key1"))
+
+		// Failed swap - non-existent key
+		if m.CompareAndSwap("nonexistent", 100, 300) {
+			t.Fatal("CompareAndSwap should fail for non-existent key")
+		}
+
+		// Swap with same value (should succeed)
+		if !m.CompareAndSwap("key1", 200, 200) {
+			t.Fatal("CompareAndSwap should succeed when swapping to same value")
+		}
+		expectPresentMapOf(t, "key1", 200)(m.Load("key1"))
+	})
+
+	// Test with non-comparable values (should panic)
+	t.Run("NonComparableValues", func(t *testing.T) {
+		var m MapOf[string, []int] // slice is not comparable
+		m.Store("key1", []int{1, 2, 3})
+
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("CompareAndSwap should panic for non-comparable values")
+			} else if !strings.Contains(fmt.Sprint(r), "not of comparable type") {
+				t.Fatalf("Unexpected panic message: %v", r)
+			}
+		}()
+
+		m.CompareAndSwap("key1", []int{1, 2, 3}, []int{4, 5, 6})
+	})
+
+	// Test on empty map
+	t.Run("EmptyMap", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		if m.CompareAndSwap("key1", 100, 200) {
+			t.Fatal("CompareAndSwap should fail on empty map")
+		}
+	})
+}
+
+// TestMapOfCompareAndDelete tests the CompareAndDelete function
+func TestMapOfCompareAndDelete(t *testing.T) {
+	// Test with comparable values
+	t.Run("ComparableValues", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		m.Store("key1", 100)
+		m.Store("key2", 200)
+
+		// Successful delete
+		if !m.CompareAndDelete("key1", 100) {
+			t.Fatal("CompareAndDelete should succeed when value matches")
+		}
+		expectMissingMapOf(t, "key1", 0)(m.Load("key1"))
+
+		// Failed delete - wrong value
+		if m.CompareAndDelete("key2", 100) {
+			t.Fatal("CompareAndDelete should fail when value doesn't match")
+		}
+		expectPresentMapOf(t, "key2", 200)(m.Load("key2"))
+
+		// Failed delete - non-existent key
+		if m.CompareAndDelete("nonexistent", 100) {
+			t.Fatal("CompareAndDelete should fail for non-existent key")
+		}
+	})
+
+	// Test with non-comparable values (should panic)
+	t.Run("NonComparableValues", func(t *testing.T) {
+		var m MapOf[string, []int] // slice is not comparable
+		m.Store("key1", []int{1, 2, 3})
+
+		defer func() {
+			if r := recover(); r == nil {
+				t.Fatal("CompareAndDelete should panic for non-comparable values")
+			} else if !strings.Contains(fmt.Sprint(r), "not of comparable type") {
+				t.Fatalf("Unexpected panic message: %v", r)
+			}
+		}()
+
+		m.CompareAndDelete("key1", []int{1, 2, 3})
+	})
+
+	// Test on empty map
+	t.Run("EmptyMap", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		if m.CompareAndDelete("key1", 100) {
+			t.Fatal("CompareAndDelete should fail on empty map")
+		}
+	})
 }
