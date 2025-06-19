@@ -2595,6 +2595,8 @@ func TestNewMapOfPresized_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 		m.Delete(i)
 	}
 
+	m.Shrink()
+
 	stats = m.Stats()
 	if stats.RootBuckets != minTableLen {
 		t.Fatalf("table length was different from the minimum: %v", stats)
