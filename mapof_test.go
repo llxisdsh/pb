@@ -2441,6 +2441,7 @@ func TestMapOfStoreThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T
 	//<-cdone
 	//<-cdone
 	//<-cdone
+	m.Shrink()
 	stats := m.Stats()
 	if stats.RootBuckets != DefaultMinMapTableLen {
 		t.Fatalf("table length was different from the minimum: %d", stats.RootBuckets)

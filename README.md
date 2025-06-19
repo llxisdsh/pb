@@ -1,3 +1,8 @@
+[![GitHub Actions](https://github.com/llxisdsh/pb/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/llxisdsh/pb/actions)
+[![Go Reference](https://pkg.go.dev/badge/github.com/llxisdsh/pb.svg)](https://pkg.go.dev/github.com/llxisdsh/pb)
+[![Go Report Card](https://goreportcard.com/badge/github.com/llxisdsh/pb)](https://goreportcard.com/report/github.com/llxisdsh/pb)
+[![Codecov](https://codecov.io/gh/llxisdsh/pb/branch/main/graph/badge.svg)](https://codecov.io/gh/llxisdsh/pb)
+
 # pb.MapOf
 
 MapOf is a high-performance concurrent map implementation that offers significant
@@ -68,8 +73,8 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 ## Benchmarks
 
 Benchmark results (1,000,000 records) show `pb.MapOf` consistently outperforms other implementations, 
-achieving the fastest operations for Store (0.5981 ns/op), LoadOrStore (0.5501 ns/op), Load (0.1983 ns/op) 
-and Mixed (0.4373 ns/op)
+achieving the fastest operations for Store (0.5893 ns/op), LoadOrStore (0.4760 ns/op), Load (0.1987 ns/op) 
+and Mixed (0.4467 ns/op)
 
 ```
 goos: windows
@@ -80,7 +85,7 @@ cpu: AMD Ryzen Threadripper 3970X 32-Core Processor
 
 
 <details>
-<summary> Benchmark test (12/06/2025) </summary>
+<summary> Benchmark test (19/06/2025) </summary>
 
 ```go
 const countStore = 1_000_000
@@ -185,10 +190,10 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 |                                | LoadOrStore |    56,023,192 |   19.03 |   17 |         2 |
 |                                | Load        |   404,771,172 |    3.66 |    0 |         0 |
 |                                | Mixed       |   142,293,642 |    8.60 |   10 |         0 |
-| `pb_MapOf` 🏆                  | Store       | 1,000,000,000 |    0.60 |    0 |         0 |
-|                                | LoadOrStore | 1,000,000,000 |    0.55 |    0 |         0 |
+| `pb_MapOf` 🏆                  | Store       | 1,000,000,000 |    0.59 |    0 |         0 |
+|                                | LoadOrStore | 1,000,000,000 |    0.48 |    0 |         0 |
 |                                | Load        | 1,000,000,000 |    0.20 |    0 |         0 |
-|                                | Mixed       | 1,000,000,000 |    0.44 |    0 |         0 |
+|                                | Mixed       | 1,000,000,000 |    0.45 |    0 |         0 |
 | `xsync_MapOf`                  | Store       |   142,851,074 |    7.60 |   16 |         1 |
 |                                | LoadOrStore |   293,945,829 |    3.64 |    0 |         0 |
 |                                | Load        |   729,350,713 |    1.64 |    0 |         0 |
@@ -240,14 +245,16 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 
 
 <details>
-<summary> Store throughput test (12/06/2025) </summary>
+<summary> Store throughput test (19/06/2025) </summary>
 
 ```go
 
 const total = 100_000_000
 
 func testInsert_pb_MapOf(t *testing.T, total int, numCPU int, preSize bool) {
-
+	time.Sleep(1 * time.Second)
+	runtime.GC()
+	
 	var m *MapOf[int, int]
 	if preSize {
 		m = NewMapOf[int, int](WithPresize(total))
@@ -316,25 +323,25 @@ func TestInsert_pb_MapOf(t *testing.T) {
 
 | Implementation & Case       | Throughput<br>(M ops/s) | Performance Scale      |
 |-----------------------------|------------------------:|------------------------|
-| pb_MapOf (64/pre)           |                  142.35 | ━━━━━━━━━━━━━━━━━━━━━━ |
-| pb_MapOf (64)               |                   76.97 | ━━━━━━━━━━━━━━         |
-| xsync_MapV4 (64/pre)        |                   64.70 | ━━━━━━━━━━━━           |
-| RWLockShardedMap_256 (64)   |                   39.50 | ━━━━━━━━━              |
-| zhangyunhao116_skipmap (64) |                   22.82 | ━━━━━                  |
-| xsync_MapV4 (64)            |                   22.00 | ━━━━━                  |
-| pb_MapOf (1/pre)            |                   20.57 | ━━━━━                  |
-| pb_HashTrieMap (64)         |                   18.56 | ━━━━                   |
-| pb_MapOf (1)                |                   17.55 | ━━━━                   |
-| original_syncMap (64)       |                   13.59 | ━━━                    |
-| xsync_MapV4 (1/pre)         |                    5.73 | ━                      |
-| xsync_MapV4 (1)             |                    4.72 | ━                      |
-| zhangyunhao116_skipmap (1)  |                    3.56 | ━                      |
+| pb_MapOf (64/pre)           |                  147.93 | ━━━━━━━━━━━━━━━━━━━━━━ |
+| xsync_MapV4 (64/pre)        |                   92.51 | ━━━━━━━━━━━━━          |
+| pb_MapOf (64)               |                   83.40 | ━━━━━━━━━━━━           |
+| RWLockShardedMap_256 (64)   |                   40.77 | ━━━━━━━━               |
+| pb_HashTrieMap (64)         |                   25.54 | ━━━━━                  |
+| zhangyunhao116_skipmap (64) |                   25.37 | ━━━━━                  |
+| xsync_MapV4 (64)            |                   23.40 | ━━━━━                  |
+| original_syncMap (64)       |                   21.84 | ━━━━                   |
+| pb_MapOf (1/pre)            |                   20.87 | ━━━━                   |
+| pb_MapOf (1)                |                   17.79 | ━━━━                   |
+| xsync_MapV4 (1/pre)         |                    6.06 | ━                      |
+| xsync_MapV4 (1)             |                    4.89 | ━                      |
 | RWLockShardedMap_256 (1)    |                    3.47 | ━                      |
-| alphadose_haxmap (64/pre)   |                    2.61 | ━                      |
-| pb_HashTrieMap (1)          |                    1.69 | ━                      |
+| zhangyunhao116_skipmap (1)  |                    3.38 | ━                      |
+| alphadose_haxmap (64/pre)   |                    2.88 | ━                      |
+| pb_HashTrieMap (1)          |                    1.73 | ━                      |
+| alphadose_haxmap (1/pre)    |                    1.00 | ━                      |
 | original_syncMap (1)        |                    1.42 | ━                      |
-| alphadose_haxmap (1/pre)    |                    1.01 | ━                      |
-| alphadose_haxmap (1)        |                    0.90 | ━                      |
+| alphadose_haxmap (1)        |                    0.92 | ━                      |
 | alphadose_haxmap (64)       |                    0.57 | ━                      |
 
 - (1): 1 goroutine without pre-allocation
