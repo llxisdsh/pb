@@ -227,7 +227,7 @@ func WithPresize(sizeHint int) func(*MapConfig) {
 // Deprecated: WithGrowOnly is now obsolete (default grow-only mode avoids performance jitter),
 // Explicitly enable WithShrinkEnabled() if shrinking is required
 func WithGrowOnly() func(*MapConfig) {
-	return func(c *MapConfig) {
+	return func(*MapConfig) {
 	}
 }
 
@@ -681,7 +681,8 @@ func (m *MapOf[K, V]) resize(
 		// Resize check
 		table := m.table.Load()
 		tableLen := len(table.buckets)
-		if hint == mapGrowHint {
+		switch hint {
+		case mapGrowHint:
 			if sizeAdd <= 0 {
 				return
 			}
@@ -690,7 +691,7 @@ func (m *MapOf[K, V]) resize(
 			if tableLen >= newTableLen {
 				return
 			}
-		} else if hint == mapShrinkHint {
+		case mapShrinkHint:
 			if tableLen <= m.minTableLen {
 				return
 			}
@@ -700,7 +701,7 @@ func (m *MapOf[K, V]) resize(
 			if tableLen <= newTableLen {
 				return
 			}
-		} else {
+		default:
 			if tableLen == m.minTableLen && table.isZero() {
 				return
 			}
@@ -2015,7 +2016,7 @@ func (m *MapOf[K, V]) BatchInsert(entries []EntryOf[K, V]) (actual []V, loaded [
 func (m *MapOf[K, V]) BatchDelete(keys []K) (previous []V, loaded []bool) {
 	return m.batchProcessKeys(
 		keys, 0,
-		func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+		func(_ K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
 				return nil, loaded.Value, true
 			}
@@ -2108,7 +2109,7 @@ func (m *MapOf[K, V]) FilterAndTransform(
 	if len(toUpsert) > 0 {
 		m.batchProcessImmutableEntries(
 			toUpsert, 1.0,
-			func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			func(entry *EntryOf[K, V], _ *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 				return entry, entry.Value, false
 			},
 		)
@@ -2657,34 +2658,34 @@ func defaultHasher[K comparable, V any]() (keyHash hashFunc, valEqual equalFunc,
 
 	switch any(*new(K)).(type) {
 	case uint, int, uintptr:
-		return func(value unsafe.Pointer, seed uintptr) uintptr {
+		return func(value unsafe.Pointer, _ uintptr) uintptr {
 			return *(*uintptr)(value)
 		}, valEqual, true
 
 	case uint64, int64:
 		if bits.UintSize == 32 {
-			return func(value unsafe.Pointer, seed uintptr) uintptr {
+			return func(value unsafe.Pointer, _ uintptr) uintptr {
 				v := *(*uint64)(value)
 				return uintptr(v) ^ uintptr(v>>32)
 			}, valEqual, true
 		}
 
-		return func(value unsafe.Pointer, seed uintptr) uintptr {
+		return func(value unsafe.Pointer, _ uintptr) uintptr {
 			return uintptr(*(*uint64)(value))
 		}, valEqual, true
 
 	case uint32, int32:
-		return func(value unsafe.Pointer, seed uintptr) uintptr {
+		return func(value unsafe.Pointer, _ uintptr) uintptr {
 			return uintptr(*(*uint32)(value))
 		}, valEqual, true
 
 	case uint16, int16:
-		return func(value unsafe.Pointer, seed uintptr) uintptr {
+		return func(value unsafe.Pointer, _ uintptr) uintptr {
 			return uintptr(*(*uint16)(value))
 		}, valEqual, true
 
 	case uint8, int8:
-		return func(value unsafe.Pointer, seed uintptr) uintptr {
+		return func(value unsafe.Pointer, _ uintptr) uintptr {
 			return uintptr(*(*uint8)(value))
 		}, valEqual, true
 
