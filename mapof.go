@@ -1002,6 +1002,7 @@ func (m *MapOf[K, V]) Store(key K, value V) {
 	if table == nil {
 		table = m.initSlow()
 	}
+
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
@@ -1026,6 +1027,7 @@ func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 	if table == nil {
 		table = m.initSlow()
 	}
+
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
@@ -1054,6 +1056,7 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	if table == nil {
 		table = m.initSlow()
 	}
+
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
@@ -1076,6 +1079,7 @@ func (m *MapOf[K, V]) Delete(key K) {
 	if table == nil {
 		return
 	}
+
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
@@ -1097,6 +1101,7 @@ func (m *MapOf[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 	if table == nil {
 		return *new(V), false
 	}
+
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
@@ -1121,9 +1126,11 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 	if table == nil {
 		return false
 	}
+
 	if m.valEqual == nil {
 		panic("called CompareAndSwap when value is not of comparable type")
 	}
+
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
@@ -1158,9 +1165,11 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 	if table == nil {
 		return false
 	}
+
 	if m.valEqual == nil {
 		panic("called CompareAndDelete when value is not of comparable type")
 	}
+
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
@@ -1200,16 +1209,6 @@ func (m *MapOf[K, V]) LoadOrStoreFn(
 	table := m.table.Load()
 	if table == nil {
 		table = m.initSlow()
-		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		return m.processEntry(table, hash, &key,
-			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-				if loaded != nil {
-					return loaded, loaded.Value, true
-				}
-				newValue := valueFn()
-				return &EntryOf[K, V]{Value: newValue}, newValue, false
-			},
-		)
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
@@ -1285,6 +1284,7 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 	if table == nil {
 		table = m.initSlow()
 	}
+
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
 	if enableFastPath {
@@ -1328,19 +1328,6 @@ func (m *MapOf[K, V]) LoadOrCompute(
 	table := m.table.Load()
 	if table == nil {
 		table = m.initSlow()
-		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		return m.processEntry(table, hash, &key,
-			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-				if loaded != nil {
-					return loaded, loaded.Value, true
-				}
-				newValue, cancel := valueFn()
-				if cancel {
-					return nil, *new(V), false
-				}
-				return &EntryOf[K, V]{Value: newValue}, newValue, false
-			},
-		)
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
@@ -1407,12 +1394,13 @@ func (m *MapOf[K, V]) Compute(
 	key K,
 	valueFn func(oldValue V, loaded bool) (newValue V, op ComputeOp),
 ) (actual V, ok bool) {
-
 	table := m.table.Load()
 	if table == nil {
 		table = m.initSlow()
 	}
+
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
+
 	return m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			if loaded != nil {
@@ -1467,19 +1455,9 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 	key K,
 	valueFn func() (*EntryOf[K, V], V, bool),
 ) (value V, loaded bool) {
-
 	table := m.table.Load()
 	if table == nil {
 		table = m.initSlow()
-		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		return m.processEntry(table, hash, &key,
-			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-				if loaded != nil {
-					return loaded, loaded.Value, true
-				}
-				return valueFn()
-			},
-		)
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
@@ -1530,7 +1508,6 @@ func (m *MapOf[K, V]) ProcessEntry(
 	key K,
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (value V, status bool) {
-
 	table := m.table.Load()
 	if table == nil {
 		table = m.initSlow()
@@ -1696,6 +1673,7 @@ func (m *MapOf[K, V]) HasKey(key K) bool {
 	if table == nil {
 		return false
 	}
+
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	return m.findEntry(table, hash, &key) != nil
 }
