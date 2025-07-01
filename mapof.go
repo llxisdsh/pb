@@ -1015,7 +1015,9 @@ func (m *MapOf[K, V]) Store(key K, value V) {
 		}
 	}
 
-	m.mockSyncMap(table, hash, &key, nil, &value, false)
+	m.processEntry(table, hash, &key, func(*EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+		return &EntryOf[K, V]{Value: value}, *new(V), false
+	})
 }
 
 // Swap stores a key-value pair and returns the previous value if any, compatible with `sync.Map`.
@@ -1037,7 +1039,12 @@ func (m *MapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
 		}
 	}
 
-	return m.mockSyncMap(table, hash, &key, nil, &value, false)
+	return m.processEntry(table, hash, &key, func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+		if loaded != nil {
+			return &EntryOf[K, V]{Value: value}, loaded.Value, true
+		}
+		return &EntryOf[K, V]{Value: value}, *new(V), false
+	})
 }
 
 // LoadOrStore retrieves an existing value or stores a new one if the key doesn't exist,
@@ -1046,8 +1053,6 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	table := m.table.Load()
 	if table == nil {
 		table = m.initSlow()
-		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		return m.mockSyncMap(table, hash, &key, nil, &value, true)
 	}
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 
@@ -1057,7 +1062,12 @@ func (m *MapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 		}
 	}
 
-	return m.mockSyncMap(table, hash, &key, nil, &value, true)
+	return m.processEntry(table, hash, &key, func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+		if loaded != nil {
+			return loaded, loaded.Value, true
+		}
+		return &EntryOf[K, V]{Value: value}, value, false
+	})
 }
 
 // Delete removes a key-value pair, compatible with `sync.Map`.
@@ -1075,7 +1085,9 @@ func (m *MapOf[K, V]) Delete(key K) {
 		}
 	}
 
-	m.mockSyncMap(table, hash, &key, nil, nil, false)
+	m.processEntry(table, hash, &key, func(*EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+		return nil, *new(V), false
+	})
 }
 
 // LoadAndDelete retrieves the value for a key and deletes it from the map,
@@ -1094,7 +1106,12 @@ func (m *MapOf[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 		}
 	}
 
-	return m.mockSyncMap(table, hash, &key, nil, nil, false)
+	return m.processEntry(table, hash, &key, func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+		if loaded != nil {
+			return nil, loaded.Value, true
+		}
+		return nil, *new(V), false
+	})
 }
 
 // CompareAndSwap atomically replaces an existing value with a new value
@@ -1124,7 +1141,13 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 		}
 	}
 
-	_, swapped = m.mockSyncMap(table, hash, &key, &old, &new, false)
+	_, swapped = m.processEntry(table, hash, &key, func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+		var zero V
+		if loaded != nil && m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(&old))) {
+			return &EntryOf[K, V]{Value: new}, zero, true
+		}
+		return loaded, zero, false
+	})
 	return swapped
 }
 
@@ -1150,57 +1173,14 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 		}
 	}
 
-	_, deleted = m.mockSyncMap(table, hash, &key, &old, nil, false)
+	_, deleted = m.processEntry(table, hash, &key, func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+		var zero V
+		if loaded != nil && m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(&old))) {
+			return nil, zero, true
+		}
+		return loaded, zero, false
+	})
 	return deleted
-}
-
-func (m *MapOf[K, V]) mockSyncMap(
-	table *mapOfTable,
-	hash uintptr,
-	key *K,
-	cmpValue *V,
-	newValue *V,
-	loadOrStore bool,
-) (value V, status bool) {
-	return m.processEntry(table, hash, key,
-		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-			if loaded != nil {
-				if loadOrStore {
-					return loaded, loaded.Value, true
-				}
-				if cmpValue != nil &&
-					!m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(cmpValue))) {
-					return loaded, loaded.Value, false
-				}
-				if newValue == nil {
-					// Delete
-					return nil, loaded.Value, true
-				}
-
-				// Disabled: Skip deduplication here - move to caller side to avoid lock contention
-				//if enableFastPath {
-				//	if m.valEqual != nil &&
-				//		m.valEqual(noescape(unsafe.Pointer(&loaded.Value)), noescape(unsafe.Pointer(newValue))) {
-				//		return loaded, loaded.Value, true
-				//	}
-				//}
-
-				// Update
-				newe := &EntryOf[K, V]{Value: *newValue}
-				return newe, loaded.Value, true
-			}
-
-			if newValue == nil || cmpValue != nil {
-				return loaded, *new(V), false
-			}
-			// Insert
-			newe := &EntryOf[K, V]{Value: *newValue}
-			if loadOrStore {
-				return newe, *newValue, false
-			}
-			return newe, *new(V), false
-		},
-	)
 }
 
 // LoadOrStoreFn returns the existing value for the key if
