@@ -70,7 +70,7 @@ flowchart TD
 
 	subgraph Fast Path Check
 		D --> E{Is enableFastPath on?}
-		E -->|No| F[Invoke mockSyncMap]
+		E -->|No| F[Invoke processEntry]
 		E -->|Yes| G{Does valEqual exist?}
 		G -->|No| F
 	end
@@ -88,46 +88,6 @@ flowchart TD
 		F --> L[Process entry via processEntry]
 		L --> M[End]
 		K --> M
-	end
-```
-
-### mockSyncMap Operation
-```mermaid
-flowchart TD
-	subgraph Initialization
-		A[Start mockSyncMap] --> B[Invoke processEntry]
-		B --> C[Pass callback handler]
-	end
-
-	subgraph Entry Exists Branch
-		C --> D{Does loaded entry exist?}
-		D -->|Yes| E{Is LoadOrStore operation?}
-		E -->|Yes| F[Return existing value and true]
-		E -->|No| G{Does cmpValue mismatch?}
-		G -->|Yes| H[Return existing value and false]
-		G -->|No| I{Is newValue nil?}
-		I -->|Yes| J[Delete: return nil]
-		I -->|No| K[Update: create new EntryOf]
-		K --> L[Return new entry and existing value]
-	end
-
-	subgraph Entry Absent Branch
-		D -->|No| M{Is newValue nil or cmpValue exists?}
-		M -->|Yes| N[Return zero-value and false]
-		M -->|No| O[Insert: create new EntryOf]
-		O --> P{Is LoadOrStore?}
-		P -->|Yes| Q[Return new entry and value, false]
-		P -->|No| R[Return new entry and zero-value, false]
-	end
-
-	subgraph Termination
-		F --> S[End]
-		H --> S
-		J --> S
-		L --> S
-		N --> S
-		Q --> S
-		R --> S
 	end
 ```
 
