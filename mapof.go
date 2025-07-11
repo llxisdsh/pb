@@ -1099,7 +1099,7 @@ func (m *MapOf[K, V]) Delete(key K) {
 func (m *MapOf[K, V]) LoadAndDelete(key K) (value V, loaded bool) {
 	table := m.table.Load()
 	if table == nil {
-		return *new(V), false
+		return
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
@@ -1243,7 +1243,7 @@ func (m *MapOf[K, V]) LoadOrStoreFn(
 func (m *MapOf[K, V]) LoadAndUpdate(key K, value V) (previous V, loaded bool) {
 	table := m.table.Load()
 	if table == nil {
-		return *(new(V)), false
+		return
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
@@ -1251,7 +1251,7 @@ func (m *MapOf[K, V]) LoadAndUpdate(key K, value V) (previous V, loaded bool) {
 	if enableFastPath {
 		e := m.findEntry(table, hash, &key)
 		if e == nil {
-			return *(new(V)), false
+			return
 		}
 
 		// deduplicates identical values
