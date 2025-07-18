@@ -240,12 +240,6 @@ func WithShrinkEnabled() func(*MapConfig) {
 	}
 }
 
-// EntryOf is an immutable map entry.
-type EntryOf[K comparable, V any] struct {
-	Key   K
-	Value V
-}
-
 // bucketOf represents a single bucket in the hash table.
 type bucketOf struct {
 	meta uint64 // meta for fast entry lookups using SWAR, must be 64-bit aligned
@@ -601,6 +595,11 @@ func (m *MapOf[K, V]) processEntry(
 			}
 			if newEntry != nil {
 				// Update
+				if embeddedHash {
+					if !m.intKey {
+						newEntry.setHash(hash)
+					}
+				}
 				newEntry.Key = *key
 				storePointer(&oldBucket.entries[oldIdx], unsafe.Pointer(newEntry))
 				rootb.unlock()
@@ -633,6 +632,11 @@ func (m *MapOf[K, V]) processEntry(
 		}
 
 		// Insert
+		if embeddedHash {
+			if !m.intKey {
+				newEntry.setHash(hash)
+			}
+		}
 		newEntry.Key = *key
 		if emptyBucket != nil {
 			storeUint64(&emptyBucket.meta, setByte(emptyBucket.meta, h2v, emptyIdx))
@@ -839,11 +843,16 @@ func copyBucketOfLock[K comparable, V any](
 			metaw := b.meta
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				if e := (*EntryOf[K, V])(b.entries[firstMarkedByteIndex(markedw)]); e != nil {
-					// We could store the hash value in the Entry during processEntry to avoid
-					// recalculating it here, which would speed up the resize process.
-					// However, for simple integer keys, this approach would actually slow down
-					// the load operation. Therefore, recalculating the hash value is the better approach.
-					hash := hasher(noescape(unsafe.Pointer(&e.Key)), seed)
+					var hash uintptr
+					if embeddedHash {
+						if intKey {
+							hash = hasher(noescape(unsafe.Pointer(&e.Key)), seed)
+						} else {
+							hash = e.getHash()
+						}
+					} else {
+						hash = hasher(noescape(unsafe.Pointer(&e.Key)), seed)
+					}
 					bidx := uintptr(len(destTable.buckets)-1) & h1(hash, intKey)
 					destb := &destTable.buckets[bidx]
 					h2v := h2(hash)
@@ -899,11 +908,16 @@ func copyBucketOf[K comparable, V any](
 			metaw := b.meta
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				if e := (*EntryOf[K, V])(b.entries[firstMarkedByteIndex(markedw)]); e != nil {
-					// We could store the hash value in the Entry during processEntry to avoid
-					// recalculating it here, which would speed up the resize process.
-					// However, for simple integer keys, this approach would actually slow down
-					// the load operation. Therefore, recalculating the hash value is the better approach.
-					hash := hasher(noescape(unsafe.Pointer(&e.Key)), seed)
+					var hash uintptr
+					if embeddedHash {
+						if intKey {
+							hash = hasher(noescape(unsafe.Pointer(&e.Key)), seed)
+						} else {
+							hash = e.getHash()
+						}
+					} else {
+						hash = hasher(noescape(unsafe.Pointer(&e.Key)), seed)
+					}
 					bidx := uintptr(len(destTable.buckets)-1) & h1(hash, intKey)
 					destb := &destTable.buckets[bidx]
 					h2v := h2(hash)
