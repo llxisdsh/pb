@@ -489,8 +489,16 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 		metaw := loadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil && e.Key == key {
-				return e.Value, true
+			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
+				if embeddedHash {
+					if e.getHash() == hash && e.Key == key {
+						return e.Value, true
+					}
+				} else {
+					if e.Key == key {
+						return e.Value, true
+					}
+				}
 			}
 		}
 	}
@@ -506,8 +514,16 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key *K) *EntryO
 		metaw := loadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil && e.Key == *key {
-				return e
+			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
+				if embeddedHash {
+					if e.getHash() == hash && e.Key == *key {
+						return e
+					}
+				} else {
+					if e.Key == *key {
+						return e
+					}
+				}
 			}
 		}
 	}
@@ -567,12 +583,24 @@ func (m *MapOf[K, V]) processEntry(
 			metaw := b.meta
 			for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 				idx := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil && e.Key == *key {
-					oldEntry = e
-					oldBucket = b
-					oldIdx = idx
-					oldMeta = metaw
-					break findLoop
+				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
+					if embeddedHash {
+						if e.getHash() == hash && e.Key == *key {
+							oldEntry = e
+							oldBucket = b
+							oldIdx = idx
+							oldMeta = metaw
+							break findLoop
+						}
+					} else {
+						if e.Key == *key {
+							oldEntry = e
+							oldBucket = b
+							oldIdx = idx
+							oldMeta = metaw
+							break findLoop
+						}
+					}
 				}
 			}
 			if emptyBucket == nil {
@@ -596,9 +624,7 @@ func (m *MapOf[K, V]) processEntry(
 			if newEntry != nil {
 				// Update
 				if embeddedHash {
-					if !m.intKey {
-						newEntry.setHash(hash)
-					}
+					newEntry.setHash(hash)
 				}
 				newEntry.Key = *key
 				storePointer(&oldBucket.entries[oldIdx], unsafe.Pointer(newEntry))
@@ -633,9 +659,7 @@ func (m *MapOf[K, V]) processEntry(
 
 		// Insert
 		if embeddedHash {
-			if !m.intKey {
-				newEntry.setHash(hash)
-			}
+			newEntry.setHash(hash)
 		}
 		newEntry.Key = *key
 		if emptyBucket != nil {
@@ -845,11 +869,7 @@ func copyBucketOfLock[K comparable, V any](
 				if e := (*EntryOf[K, V])(b.entries[firstMarkedByteIndex(markedw)]); e != nil {
 					var hash uintptr
 					if embeddedHash {
-						if intKey {
-							hash = hasher(noescape(unsafe.Pointer(&e.Key)), seed)
-						} else {
-							hash = e.getHash()
-						}
+						hash = e.getHash()
 					} else {
 						hash = hasher(noescape(unsafe.Pointer(&e.Key)), seed)
 					}
@@ -910,11 +930,7 @@ func copyBucketOf[K comparable, V any](
 				if e := (*EntryOf[K, V])(b.entries[firstMarkedByteIndex(markedw)]); e != nil {
 					var hash uintptr
 					if embeddedHash {
-						if intKey {
-							hash = hasher(noescape(unsafe.Pointer(&e.Key)), seed)
-						} else {
-							hash = e.getHash()
-						}
+						hash = e.getHash()
 					} else {
 						hash = hasher(noescape(unsafe.Pointer(&e.Key)), seed)
 					}
