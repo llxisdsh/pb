@@ -24,11 +24,11 @@ MapOf is particularly well-suited for scenarios with:
 Key features of pb.MapOf:
 
 - Uses cache-line aligned structures to prevent false sharing
-- Automatic CPU Cache Line Size Adaptation
+- Automatic CPU Cache Line Size Adaptation.  
   The library automatically adapts to the CPU's cache line size.
   You can also manually specify it using compile-time options like `mapof_opt_cachelinesize_64, 128, 256` etc.
 - Enhanced the lock mechanism to ensure consistent performance under highly contended concurrent access
-- Counter Performance Optimization
+- Counter Performance Optimization.  
   For improved counter performance, use `mapof_opt_enablepadding` to force padding around counters, reducing false sharing.
 - Compatibility
   - Already optimized for strong memory models (e.g., x86 TSO, Apple Silicon).
@@ -38,7 +38,8 @@ Key features of pb.MapOf:
   - Enable `mapof_opt_atomiclevel_1` or `mapof_opt_atomiclevel_2` for better performance on strong memory models.
 - Implements zero-value usability for convenient initialization
 - Provides lazy initialization for better performance
-- Defaults to Go's built-in hash function, customizable on creation or initialization
+- Defaults to Go's built-in hash function, customizable on creation or initialization.  
+  For high hash computation costs, use `mapof_opt_embeddedhash` to enable hash caching (disabled by default as Go's built-in hashing is generally efficient)
 - Offers complete sync.Map API compatibility
 - Specially optimized for read operations
 - Supports parallel resizing for better scalability
