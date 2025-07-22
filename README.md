@@ -36,7 +36,7 @@ pb.MapOf excels in scenarios requiring:
 - **IoT applications** with massive concurrent sensor data updates
 
 
-## 🔧 Key Features of pb.MapOf
+## 🔧 Key Features
 
 - Uses cache-line aligned structures to prevent false sharing
 - Automatic CPU Cache Line Size Adaptation.  
@@ -494,8 +494,9 @@ See [mapof flow](mapof_flow.md) for implementation details.
 - **Eliminated `inited` Field**: Uses root pointer directly for state management
 - **Lazy Initialization**: Defers initialization until first write operation
 - **Hash Caching**: Caches hash values to accelerate expand operations
+
 ---
 
-## 📄 License
+# 📄 License
 
 Licensed under [MIT License](LICENSE).
