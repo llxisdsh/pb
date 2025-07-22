@@ -15,13 +15,28 @@ compared to sync.Map in read-heavy workloads, while also providing competitive
 write performance. The actual performance gain varies depending on workload
 characteristics, key types, and concurrency patterns.
 
-MapOf is particularly well-suited for scenarios with:
 
-- High read-to-write ratios
-- Frequent lookups of existing keys
-- Need for atomic operations on values
+## 📊 Quick Benchmark Comparison
 
-Key features of pb.MapOf:
+| Implementation  | Load (ns/op) | Store (ns/op) | Throughput (M ops/s) |
+|-----------------|-------------:|--------------:|---------------------:|
+| **pb.MapOf** 🏆 |     **0.20** |      **0.59** |            **83.40** |
+| sync.Map        |         3.66 |         24.27 |                21.84 |
+
+
+## 🎯 Use Cases
+
+pb.MapOf excels in scenarios requiring:
+
+- **High-frequency caching** with read-heavy workloads
+- **Real-time data processing** with concurrent access patterns
+- **Microservices** requiring low-latency key-value operations
+- **Gaming backends** with high-concurrency player state management
+- **Financial systems** needing atomic operations on shared data
+- **IoT applications** with massive concurrent sensor data updates
+
+
+## 🔧 Key Features of pb.MapOf
 
 - Uses cache-line aligned structures to prevent false sharing
 - Automatic CPU Cache Line Size Adaptation.  
@@ -48,7 +63,10 @@ Key features of pb.MapOf:
 - Thoroughly tested with comprehensive test coverage
 - Delivers exceptional performance (see benchmark results below)
 
-pb.MapOf is built upon xsync.MapOf. We extend our thanks to the authors of [xsync](https://github.com/puzpuzpuz/xsync) and reproduce its introduction below:
+## 🙏 Acknowledgments
+
+pb.MapOf builds upon the excellent work of [xsync](https://github.com/puzpuzpuz/xsync). We extend our gratitude to the xsync authors and the broader Go community.
+Reproduce its introduction below:
 
 ```
 MapOf is like a Go map[K]V but is safe for concurrent
@@ -73,7 +91,7 @@ MapOf also borrows ideas from Java's j.u.c.ConcurrentHashMap
 and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 ```
 
-## Benchmarks
+## 📈 Comprehensive Benchmarks
 
 Benchmark results (1,000,000 records) show `pb.MapOf` consistently outperforms other implementations, 
 achieving the fastest operations for Store (0.5893 ns/op), LoadOrStore (0.4760 ns/op), Load (0.1987 ns/op) 
@@ -352,9 +370,16 @@ func TestInsert_pb_MapOf(t *testing.T) {
 - (64): 64 goroutines without pre-allocation
 - (64/pre): 64 goroutines with pre-allocation
 
-## Usage
+## 🚀 Quick Start
 
-Doc [here](https://pkg.go.dev/github.com/llxisdsh/pb)
+### Installation
+
+```bash
+go get github.com/llxisdsh/pb@latest
+```
+
+
+### Prerequisites
 
 The `pb.Map` implementation uses `golang.org/x/sys` to determine the system's `CacheLineSize`.
 For optimal performance, ensure your build environment has the latest version of this dependency:
@@ -362,66 +387,115 @@ For optimal performance, ensure your build environment has the latest version of
 go get golang.org/x/sys@latest
 ```
 
-Example usage in test code:
+### Basic Usage
+
 
 ```go
+package main
+
 import (
+    "fmt"
     "github.com/llxisdsh/pb"
-    "math/rand/v2"
-    "testing"
 )
 
-func TestMapOf(t *testing.T) {
-
-    var m pb.MapOf[string, int]
-
-    m.LoadOrStore("a", 1)
-    m.Load("a")
-    m.LoadOrStoreFn("b", func() int {
-        return 2
+func main() {
+    // Zero-value initialization - ready to use!
+    var cache pb.MapOf[string, int]
+    
+    // Basic operations
+    cache.Store("user:123", 42)
+    value, exists := cache.Load("user:123")
+    fmt.Printf("Value: %d, Exists: %t\n", value, exists)
+    
+    // Atomic operations
+    actual, loaded := cache.LoadOrStore("user:456", 100)
+    fmt.Printf("Actual: %d, Was loaded: %t\n", actual, loaded)
+    
+    // Lazy value generation
+    result := cache.LoadOrStoreFn("computed:key", func() int {
+        return 43
     })
-  
-    m.ProcessEntry("a", func(e *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
-        if e != nil {
-            return nil, e.Value, true
+    
+    // Advanced operations
+    cache.ProcessEntry("user:123", func(entry *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
+        if entry != nil {
+            // Update existing value
+            newEntry := &pb.EntryOf[string, int]{Value: entry.Value + 1}
+            return newEntry, entry.Value, true
         }
-        return &pb.EntryOf[string, int]{Value: rand.Int()}, 0, false
+        // Create new entry
+        return &pb.EntryOf[string, int]{Value: 1}, 0, false
     })
-  
-    t.Log(m.Size())
-    t.Log(m.IsZero())
-    t.Log(m.ToMap())
-    t.Log(&m)
-  
-    m.Range(func(k string, v int) bool {
-        t.Log(k, v)
-        return true
-    })
-  
-    // need go >= 1.23
-    for k, v := range m.All() {
-        t.Log(k, v)
+    
+    // Iteration (Go 1.23+)
+    for key, value := range cache.All() {
+        fmt.Printf("%s: %d\n", key, value)
     }
+
+    // Pre-sized map for known capacity
+    cache := pb.NewMapOf[string, int](pb.WithPresize(1000000))
+
+    // Clone existing map
+    clonedCache := cache.Clone()
+
+    // Convert to regular Go map
+    regularMap := cache.ToMap()
+
+    fmt.Printf("Cache size: %d\n", cache.Size())
 }
 ```
 
-## Implementation details
+
+### Compile-Time Optimizations
+
+Optimize for your specific use case with build tags:
+
+```bash
+# Cache line size optimization
+go build -tags mapof_opt_cachelinesize_64
+go build -tags mapof_opt_cachelinesize_128
+
+# Memory model optimization (x86/ARM strong memory models)
+go build -tags mapof_opt_atomiclevel_1
+go build -tags mapof_opt_atomiclevel_2
+
+# Counter performance optimization
+go build -tags mapof_opt_enablepadding
+
+# Hash caching for expensive hash functions
+go build -tags mapof_opt_embeddedhash
+```
+
+## 📚 API Documentation
+
+Complete API documentation is available at [pkg.go.dev/github.com/llxisdsh/pb](https://pkg.go.dev/github.com/llxisdsh/pb)
+
+## 🔬 Implementation Details
 
 See [mapof flow](mapof_flow.md) for implementation details.
 
+
+---
+
 # pb.HashTrieMap
 
-The HashTrieMap is an optimization of the built-in HashTrieMap.
 
-- Supports lazy value generation with LoadOrStoreFn
-- Faster than the built-in HashTrieMap by more than 50%
-- All tests passed
+**pb.HashTrieMap** is a highly optimized implementation of Go's built-in `HashTrieMap`, delivering **50%+ performance improvements** while maintaining full compatibility.
 
-The optimization for the built-in HashTrieMap is:
+## 🎯 Key Improvements
 
-- Remove inited field, use root instead
-- Lazy initialization, only init on write, and use the resulting root for subsequent logic to reduce atomic calls
+- **Lazy Value Generation**: `LoadOrStoreFn` support for expensive computations
+- **50%+ Performance Gain**: Optimized initialization and atomic operations
+- **Full Compatibility**: Drop-in replacement for built-in HashTrieMap
+- **Comprehensive Testing**: All original tests pass plus additional validation
 
-## License
+## 🔧 Technical Optimizations
 
-Licensed under MIT.
+- **Eliminated `inited` Field**: Uses root pointer directly for state management
+- **Lazy Initialization**: Defers initialization until first write operation
+- **Hash Caching**: Caches hash values to accelerate expand operations
+---
+
+## 📄 License
+
+Licensed under [MIT License](LICENSE).
