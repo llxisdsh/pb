@@ -356,6 +356,14 @@ func TestInsert_pb_MapOf(t *testing.T) {
 
 Doc [here](https://pkg.go.dev/github.com/llxisdsh/pb)
 
+The `pb.Map` implementation uses `golang.org/x/sys` to determine the system's `CacheLineSize`.
+For optimal performance, ensure your build environment has the latest version of this dependency:
+```
+go get golang.org/x/sys@latest
+```
+
+Example usage in test code:
+
 ```go
 import (
     "github.com/llxisdsh/pb"
