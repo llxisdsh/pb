@@ -505,6 +505,21 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	return
 }
 
+// LoadEntry finds and returns the entry pointer for the given key.
+// Returns nil if the key is not found or the map is uninitialized.
+//
+// Notes:
+//   - Never modify the Key or Value in an Entry under any circumstances.
+func (m *MapOf[K, V]) LoadEntry(key K) *EntryOf[K, V] {
+	table := m.table.Load()
+	if table == nil {
+		return nil
+	}
+
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
+	return m.findEntry(table, hash, &key)
+}
+
 func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key *K) *EntryOf[K, V] {
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
@@ -1747,6 +1762,44 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 	}
 	m.FromMap(a)
 	return nil
+}
+
+// BatchProcess processes multiple key-value pairs from an iterator with a custom function.
+//
+// This function provides a convenient way to batch process key-value pairs using Go's
+// iterator pattern (seq2 function). It's particularly useful for processing data from
+// external sources like databases, files, or other iterables.
+//
+// Parameters:
+//   - seq2: Iterator function that yields key-value pairs to process.
+//     The iterator should call yield(key, value) for each pair and return true to continue.
+//   - processFn: Function that receives key, value, and current entry (if exists),
+//     returns new entry, result value, and status.
+//   - growSize: Optional capacity pre-allocation hint. If provided, the map will
+//     grow by this amount before processing to reduce resize overhead.
+//
+// Notes:
+//   - The function processes items sequentially as yielded by the iterator.
+//   - Unlike batch functions that return slices, this function processes items
+//     immediately without collecting results.
+//   - Pre-growing the map with growSize can improve performance for large datasets
+//     by avoiding multiple resize operations during processing.
+//   - The processFn follows the same signature as other ProcessEntry functions,
+//     allowing for insert, update, delete, or conditional operations.
+func (m *MapOf[K, V]) BatchProcess(
+	seq2 func(yield func(K, V) bool),
+	processFn func(key K, value V, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	growSize ...int,
+) {
+	if len(growSize) != 0 {
+		m.Grow(growSize[0])
+	}
+	seq2(func(key K, value V) bool {
+		m.ProcessEntry(key, func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+			return processFn(key, value, loaded)
+		})
+		return true
+	})
 }
 
 // BatchProcessImmutableEntries batch processes multiple immutable key-value pairs with a custom function.

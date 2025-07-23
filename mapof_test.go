@@ -5419,3 +5419,292 @@ func TestMapOfCompareAndDelete(t *testing.T) {
 		}
 	})
 }
+
+func TestMapOf_LoadEntry(t *testing.T) {
+	m := NewMapOf[string, int]()
+
+	// Test loading from empty map
+	entry := m.LoadEntry("key1")
+	if entry != nil {
+		t.Errorf("Expected nil for non-existent key, got %v", entry)
+	}
+
+	// Verify Load also returns false for empty map
+	value, ok := m.Load("key1")
+	if ok {
+		t.Errorf("Expected Load to return false for non-existent key, got true with value %v", value)
+	}
+
+	// Store a value
+	m.Store("key1", 100)
+
+	// Test LoadEntry and Load consistency for existing key
+	entry = m.LoadEntry("key1")
+	if entry == nil {
+		t.Fatal("Expected entry for existing key, got nil")
+	}
+	if entry.Key != "key1" {
+		t.Errorf("Expected key 'key1', got %v", entry.Key)
+	}
+	if entry.Value != 100 {
+		t.Errorf("Expected value 100, got %v", entry.Value)
+	}
+
+	// Verify Load returns the same value
+	value, ok = m.Load("key1")
+	if !ok {
+		t.Error("Expected Load to return true for existing key")
+	}
+	if value != 100 {
+		t.Errorf("Expected Load value 100, got %v", value)
+	}
+	if entry.Value != value {
+		t.Errorf("LoadEntry and Load returned different values: %v vs %v", entry.Value, value)
+	}
+
+	// Test non-existent key with both functions
+	entry = m.LoadEntry("key2")
+	value, ok = m.Load("key2")
+	if entry != nil {
+		t.Errorf("Expected LoadEntry to return nil for non-existent key, got %v", entry)
+	}
+	if ok {
+		t.Errorf("Expected Load to return false for non-existent key, got true with value %v", value)
+	}
+
+	// Store multiple values and test consistency
+	m.Store("key2", 200)
+	m.Store("key3", 300)
+
+	// Test key2
+	entry = m.LoadEntry("key2")
+	value, ok = m.Load("key2")
+	if entry == nil || !ok {
+		t.Error("Both LoadEntry and Load should find key2")
+	}
+	if entry != nil && entry.Value != value {
+		t.Errorf("LoadEntry and Load returned different values for key2: %v vs %v", entry.Value, value)
+	}
+
+	// Test key3
+	entry = m.LoadEntry("key3")
+	value, ok = m.Load("key3")
+	if entry == nil || !ok {
+		t.Error("Both LoadEntry and Load should find key3")
+	}
+	if entry != nil && entry.Value != value {
+		t.Errorf("LoadEntry and Load returned different values for key3: %v vs %v", entry.Value, value)
+	}
+}
+
+func TestMapOfBatchProcess(t *testing.T) {
+	// Test with empty iterator
+	t.Run("EmptyIterator", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		processCount := 0
+
+		m.BatchProcess(
+			func(yield func(string, int) bool) {
+				// Empty iterator - no calls to yield
+			},
+			func(key string, value int, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
+				processCount++
+				return &EntryOf[string, int]{Value: value}, value, false
+			},
+		)
+
+		if processCount != 0 {
+			t.Fatalf("expected process count to be 0 for empty iterator, got: %d", processCount)
+		}
+		if m.Size() != 0 {
+			t.Fatalf("expected map size to be 0, got: %d", m.Size())
+		}
+	})
+
+	// Test with single item iterator
+	t.Run("SingleItem", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		processCount := 0
+
+		m.BatchProcess(
+			func(yield func(string, int) bool) {
+				yield("key1", 100)
+			},
+			func(key string, value int, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
+				processCount++
+				if loaded != nil {
+					t.Fatalf("expected loaded to be nil for new key, got: %v", loaded)
+				}
+				return &EntryOf[string, int]{Value: value}, value, false
+			},
+		)
+
+		if processCount != 1 {
+			t.Fatalf("expected process count to be 1, got: %d", processCount)
+		}
+		expectPresentMapOf(t, "key1", 100)(m.Load("key1"))
+	})
+
+	// Test with multiple items iterator
+	t.Run("MultipleItems", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		processCount := 0
+		expectedItems := map[string]int{
+			"key1": 100,
+			"key2": 200,
+			"key3": 300,
+		}
+
+		m.BatchProcess(
+			func(yield func(string, int) bool) {
+				for key, value := range expectedItems {
+					if !yield(key, value) {
+						break
+					}
+				}
+			},
+			func(key string, value int, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
+				processCount++
+				if loaded != nil {
+					t.Fatalf("expected loaded to be nil for new key %s, got: %v", key, loaded)
+				}
+				return &EntryOf[string, int]{Value: value}, value, false
+			},
+		)
+
+		if processCount != len(expectedItems) {
+			t.Fatalf("expected process count to be %d, got: %d", len(expectedItems), processCount)
+		}
+		for key, expectedValue := range expectedItems {
+			expectPresentMapOf(t, key, expectedValue)(m.Load(key))
+		}
+	})
+
+	// Test with existing entries (update scenario)
+	t.Run("UpdateExistingEntries", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		// Pre-populate map
+		m.Store("key1", 50)
+		m.Store("key2", 60)
+		processCount := 0
+
+		m.BatchProcess(
+			func(yield func(string, int) bool) {
+				yield("key1", 100) // Update existing
+				yield("key2", 200) // Update existing
+				yield("key3", 300) // Insert new
+			},
+			func(key string, value int, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
+				processCount++
+				if key == "key3" {
+					if loaded != nil {
+						t.Fatalf("expected loaded to be nil for new key %s, got: %v", key, loaded)
+					}
+				} else {
+					if loaded == nil {
+						t.Fatalf("expected loaded to be non-nil for existing key %s", key)
+					}
+				}
+				return &EntryOf[string, int]{Value: value}, value, loaded != nil
+			},
+		)
+
+		if processCount != 3 {
+			t.Fatalf("expected process count to be 3, got: %d", processCount)
+		}
+		expectPresentMapOf(t, "key1", 100)(m.Load("key1"))
+		expectPresentMapOf(t, "key2", 200)(m.Load("key2"))
+		expectPresentMapOf(t, "key3", 300)(m.Load("key3"))
+	})
+
+	// Test with delete operations
+	t.Run("DeleteOperations", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		// Pre-populate map
+		m.Store("key1", 100)
+		m.Store("key2", 200)
+		m.Store("key3", 300)
+		processCount := 0
+
+		m.BatchProcess(
+			func(yield func(string, int) bool) {
+				yield("key1", 0) // Delete key1
+				yield("key2", 0) // Delete key2
+			},
+			func(key string, value int, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
+				processCount++
+				if loaded == nil {
+					t.Fatalf("expected loaded to be non-nil for existing key %s", key)
+				}
+				// Return nil to delete the entry
+				return nil, loaded.Value, true
+			},
+		)
+
+		if processCount != 2 {
+			t.Fatalf("expected process count to be 2, got: %d", processCount)
+		}
+		expectMissingMapOf(t, "key1", 0)(m.Load("key1"))
+		expectMissingMapOf(t, "key2", 0)(m.Load("key2"))
+		expectPresentMapOf(t, "key3", 300)(m.Load("key3")) // Should still exist
+	})
+
+	// Test with growSize parameter
+	t.Run("WithGrowSize", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		processCount := 0
+
+		m.BatchProcess(
+			func(yield func(string, int) bool) {
+				for i := 0; i < 100; i++ {
+					if !yield(fmt.Sprintf("key%d", i), i) {
+						break
+					}
+				}
+			},
+			func(key string, value int, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
+				processCount++
+				return &EntryOf[string, int]{Value: value}, value, false
+			},
+			100, // growSize
+		)
+
+		if processCount != 100 {
+			t.Fatalf("expected process count to be 100, got: %d", processCount)
+		}
+		if m.Size() != 100 {
+			t.Fatalf("expected map size to be 100, got: %d", m.Size())
+		}
+	})
+
+	// Test early termination (yield returns false)
+	t.Run("EarlyTermination", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		processCount := 0
+
+		m.BatchProcess(
+			func(yield func(string, int) bool) {
+				for i := 0; i < 10; i++ {
+					if i == 5 {
+						// Simulate early termination
+						if !yield(fmt.Sprintf("key%d", i), i) {
+							break
+						}
+						break // Force early termination
+					}
+					if !yield(fmt.Sprintf("key%d", i), i) {
+						break
+					}
+				}
+			},
+			func(key string, value int, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
+				processCount++
+				return &EntryOf[string, int]{Value: value}, value, false
+			},
+		)
+
+		if processCount != 6 { // 0,1,2,3,4,5
+			t.Fatalf("expected process count to be 6, got: %d", processCount)
+		}
+	})
+}

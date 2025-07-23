@@ -387,84 +387,233 @@ For optimal performance, ensure your build environment has the latest version of
 go get golang.org/x/sys@latest
 ```
 
-### Basic Usage
-
+### Usage
 
 ```go
 package main
 
 import (
-    "fmt"
-    "github.com/llxisdsh/pb"
+	"encoding/json"
+	"fmt"
+	"github.com/llxisdsh/pb"
 )
 
 func main() {
-    // Zero-value initialization - ready to use!
-    var cache pb.MapOf[string, int]
-    
-    // Basic operations
-    cache.Store("user:123", 42)
-    value, exists := cache.Load("user:123")
-    fmt.Printf("Value: %d, Exists: %t\n", value, exists)
-    
-    // Atomic operations
-    actual, loaded := cache.LoadOrStore("user:456", 100)
-    fmt.Printf("Actual: %d, Was loaded: %t\n", actual, loaded)
-    
-    // Lazy value generation
-    result := cache.LoadOrStoreFn("computed:key", func() int {
-        return 43
-    })
-    
-    // Advanced operations
-    cache.ProcessEntry("user:123", func(entry *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
-        if entry != nil {
-            // Update existing value
-            newEntry := &pb.EntryOf[string, int]{Value: entry.Value + 1}
-            return newEntry, entry.Value, true
-        }
-        // Create new entry
-        return &pb.EntryOf[string, int]{Value: 1}, 0, false
-    })
-    
-    // Iteration (Go 1.23+)
-    for key, value := range cache.All() {
-        fmt.Printf("%s: %d\n", key, value)
-    }
+	// === Initialization ===
+	// Zero-value initialization - ready to use with lazy initialization
+	var cache pb.MapOf[string, int]
 
-    // Pre-sized map for known capacity
-    cache := pb.NewMapOf[string, int](pb.WithPresize(1000000))
+	// Pre-sized initialization - optimal for known capacity scenarios
+	cache2 := pb.NewMapOf[string, int](pb.WithPresize(1000000))
 
-    // Clone existing map
-    clonedCache := cache.Clone()
+	// Shrink-enabled initialization - suitable for fluctuating data volumes
+	cache3 := pb.NewMapOf[string, int](pb.WithShrinkEnabled())
 
-    // Convert to regular Go map
-    regularMap := cache.ToMap()
+	// === Basic Read/Write Operations ===
+	// Store: Insert or update a key-value pair
+	cache.Store("user:123", 42)
 
-    fmt.Printf("Cache size: %d\n", cache.Size())
+	// Load: Retrieve value with existence check
+	value, exists := cache.Load("user:123")
+	fmt.Printf("Value: %d, Exists: %t\n", value, exists)
+
+	// Delete: Remove a key-value pair
+	cache.Delete("user:123")
+
+	// === Atomic Operations ===
+	// LoadOrStore: Atomic read-or-insert operation
+	actual, loaded := cache.LoadOrStore("user:456", 100)
+	fmt.Printf("Actual: %d, Was loaded: %t\n", actual, loaded)
+
+	// LoadOrStoreFn: Lazy value generation - function called only if key doesn't exist
+	// Perfect for expensive computations
+	result := cache.LoadOrStoreFn("computed:key", func() int {
+		fmt.Println("Computing expensive value...")
+		return 43
+	})
+	fmt.Printf("Result: %d\n", result)
+
+	// LoadAndStore: Atomic store with old value return
+	oldValue, wasLoaded := cache.LoadAndStore("user:456", 200)
+	fmt.Printf("Old value: %d, Was loaded: %t\n", oldValue, wasLoaded)
+
+	// LoadAndDelete: Atomic read-and-delete operation
+	deletedValue, wasPresent := cache.LoadAndDelete("user:456")
+	fmt.Printf("Deleted value: %d, Was present: %t\n", deletedValue, wasPresent)
+
+	// LoadAndUpdate: Atomic update operation
+	previousValue, wasUpdated := cache.LoadAndUpdate("counter", 1)
+	fmt.Printf("Previous: %d, Updated: %t\n", previousValue, wasUpdated)
+
+	// === Compare-and-Swap Operations (requires comparable values) ===
+	// Note: These operations require a valEqual function when creating MapOf
+	comparableCache := pb.NewMapOfWithHasher[string, int](nil, func(a, b int) bool { return a == b })
+	comparableCache.Store("counter", 10)
+
+	// CompareAndSwap: Compare and swap if values match
+	swapped := comparableCache.CompareAndSwap("counter", 10, 20)
+	fmt.Printf("Swapped: %t\n", swapped)
+
+	// CompareAndDelete: Compare and delete if values match
+	deleted := comparableCache.CompareAndDelete("counter", 20)
+	fmt.Printf("Deleted: %t\n", deleted)
+
+	// Swap: Exchange value and return old one
+	oldVal, loaded := comparableCache.Swap("new_key", 30)
+	fmt.Printf("Old value: %d, Was loaded: %t\n", oldVal, loaded)
+
+	// === Advanced Operations ===
+	// ProcessEntry: Atomic conditional processing with complex business logic
+	cache.ProcessEntry("user:789", func(entry *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
+		if entry != nil {
+			// Update existing entry
+			newEntry := &pb.EntryOf[string, int]{Value: entry.Value + 1}
+			return newEntry, entry.Value, true
+		}
+		// Create new entry
+		return &pb.EntryOf[string, int]{Value: 1}, 0, false
+	})
+
+	// LoadEntry: Get entry pointer for high-performance scenarios
+	// Warning: Never modify the Key or Value in the returned Entry
+	entry := cache.LoadEntry("user:789")
+	if entry != nil {
+		fmt.Printf("Entry: %s -> %d\n", entry.Key, entry.Value)
+	}
+
+	// === Iteration Operations ===
+	// Range: Iterate over all key-value pairs
+	cache.Range(func(key string, value int) bool {
+		fmt.Printf("%s: %d\n", key, value)
+		return true // Return false to stop iteration early
+	})
+
+	// RangeEntry: Iterate over all entry pointers (more efficient)
+	cache.RangeEntry(func(entry *pb.EntryOf[string, int]) bool {
+		fmt.Printf("%s: %d\n", entry.Key, entry.Value)
+		return true
+	})
+
+	// All: Go 1.23+ iterator support
+	for key, value := range cache.All() {
+		fmt.Printf("%s: %d\n", key, value)
+	}
+
+	// === Batch Operations ===
+	// RangeProcessEntry: Batch process all entries
+	cache.RangeProcessEntry(func(loaded *pb.EntryOf[string, int]) *pb.EntryOf[string, int] {
+		if loaded != nil && loaded.Value < 100 {
+			// Double all values less than 100
+			return &pb.EntryOf[string, int]{Value: loaded.Value * 2}
+		}
+		return loaded // Keep unchanged
+	})
+
+	// BatchProcess: Batch process iterator data
+	data := map[string]int{"a": 1, "b": 2, "c": 3}
+	cache.BatchProcess(maps.All(data), func(_ string, v int, loaded *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
+		return &pb.EntryOf[string, int]{Value: v * 10}, v, true
+	})
+
+	// === Capacity Management ===
+	// Size: Get current number of elements
+	size := cache.Size()
+	fmt.Printf("Current size: %d\n", size)
+
+	// IsZero: Check if map is empty
+	isEmpty := cache.IsZero()
+	fmt.Printf("Is empty: %t\n", isEmpty)
+
+	// Grow: Pre-allocate capacity to avoid frequent resizing
+	cache.Grow(10000)
+
+	// Shrink: Manually shrink to release excess memory
+	cache.Shrink()
+
+	// Clear: Remove all data and reset to initial capacity
+	cache.Clear()
+
+	// === Data Conversion ===
+	// Repopulate with some data for demonstration
+	cache.Store("key1", 100)
+	cache.Store("key2", 200)
+
+	// Clone: Deep copy the entire map
+	clonedCache := cache.Clone()
+	fmt.Printf("Cloned size: %d\n", clonedCache.Size())
+
+	// ToMap: Convert to regular Go map
+	regularMap := cache.ToMap()
+	fmt.Printf("Regular map size: %d\n", len(regularMap))
+
+	// FromMap: Batch import from regular Go map
+	sourceMap := map[string]int{"import1": 1, "import2": 2}
+	cache.FromMap(sourceMap)
+
+	// === Output And Statistics ===
+	// String output
+	fmt.Printf("Final cache output: %v\n", &cache)
+	
+	// JSON Marshal
+	jsonData, _ := json.Marshal(&cache)
+	fmt.Printf("Final cache json output: %s\n", jsonData)
+
+	// Size output
+	fmt.Printf("Final cache size: %d\n", cache.Size())
+
+	// Stats: Get detailed performance statistics
+	stats := cache.Stats()
+	fmt.Printf("Stats: Buckets=%d, Growths=%d, Shrinks=%d\n",
+		stats.RootBuckets, stats.TotalGrowths, stats.TotalShrinks)
 }
 ```
 
 
 ### Compile-Time Optimizations
 
-Optimize for your specific use case with build tags:
+Optimize performance for specific use cases with build tags. Warning: Incorrect optimization choices may degrade performance. Choose carefully based on your actual scenario.
 
 ```bash
-# Cache line size optimization
-go build -tags mapof_opt_cachelinesize_64
-go build -tags mapof_opt_cachelinesize_128
+# === Cache Line Size Optimization ===
+# Optimize based on target CPU's cache line size
+# Auto-detection is default, but manual specification may be needed for cross-compilation
+go build -tags mapof_opt_cachelinesize_32   # For some embedded systems
+go build -tags mapof_opt_cachelinesize_64   # For most modern CPUs
+go build -tags mapof_opt_cachelinesize_128  # For some high-end server CPUs
+go build -tags mapof_opt_cachelinesize_256  # For some specialized architectures
 
-# Memory model optimization (x86/ARM strong memory models)
-go build -tags mapof_opt_atomiclevel_1
-go build -tags mapof_opt_atomiclevel_2
+# === Memory Model Optimization ===
+# For strong memory model CPU architectures (x86, Apple Silicon)
+# ⚠️ Warning: May cause data races on weak memory model architectures
+go build -tags mapof_opt_atomiclevel_1      # Reduce some atomic operations
+go build -tags mapof_opt_atomiclevel_2      # Further reduce atomics (more aggressive)
 
-# Counter performance optimization
+# === Counter Performance Optimization ===
+# Add padding around counters to reduce false sharing in high-concurrency scenarios
+# Increases memory usage - suitable for memory-abundant, high-concurrency environments
 go build -tags mapof_opt_enablepadding
 
-# Hash caching for expensive hash functions
+# === Hash Caching Optimization ===
+# Cache hash values in entries, suitable for expensive hash computation scenarios
+# ⚠️ Note: Go's built-in hashing is usually fast; this may increase memory overhead without performance gain
 go build -tags mapof_opt_embeddedhash
+
+# === Combined Optimization Examples ===
+
+# Build with optimizations for FUJITSU A64FX's CMG-based ccNUMA architecture:
+go build -tags "mapof_opt_cachelinesize_256 mapof_opt_enablepadding"
+
+# Complex key types configuration:
+go build -tags "mapof_opt_embeddedhash"
 ```
+
+Optimization Selection Guide:
+
+- Default Configuration : Suitable for most scenarios, no additional tags needed
+- NUMA architecture: Consider mapof_opt_enablepadding
+- Complex Key Types : If hash computation is expensive, consider mapof_opt_embeddedhash
+- Cross-Compilation : May need manual mapof_opt_cachelinesize_* specification
+  Performance Testing Recommendation: Before production use, benchmark different optimization combinations against your specific workload to determine the best configuration.
 
 ## 📚 API Documentation
 
