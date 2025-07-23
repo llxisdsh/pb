@@ -590,12 +590,12 @@ go build -tags mapof_opt_atomiclevel_2      # Further reduce atomics (more aggre
 
 # === Counter Performance Optimization ===
 # Add padding around counters to reduce false sharing in high-concurrency scenarios
-# Increases memory usage - suitable for memory-abundant, high-concurrency environments
+# Note: Increases memory usage - suitable for memory-abundant, high-concurrency environments
 go build -tags mapof_opt_enablepadding
 
 # === Hash Caching Optimization ===
 # Cache hash values in entries, suitable for expensive hash computation scenarios
-# ⚠️ Note: Go's built-in hashing is usually fast; this may increase memory overhead without performance gain
+# Note: Go's built-in hashing is usually fast; this may increase memory overhead without performance gain
 go build -tags mapof_opt_embeddedhash
 
 # === Combined Optimization Examples ===
