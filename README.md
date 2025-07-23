@@ -15,8 +15,7 @@ compared to sync.Map in read-heavy workloads, while also providing competitive
 write performance. The actual performance gain varies depending on workload
 characteristics, key types, and concurrency patterns.
 
-
-## 📊 Quick Benchmark Comparison
+Quick Benchmark Comparison:
 
 | Implementation  | Load (ns/op) | Store (ns/op) | Throughput (M ops/s) |
 |-----------------|-------------:|--------------:|---------------------:|
@@ -615,13 +614,11 @@ Optimization Selection Guide:
 - Cross-Compilation : May need manual mapof_opt_cachelinesize_* specification
   Performance Testing Recommendation: Before production use, benchmark different optimization combinations against your specific workload to determine the best configuration.
 
-## 📚 API Documentation
+## 📚 Documentation
 
-Complete API documentation is available at [pkg.go.dev/github.com/llxisdsh/pb](https://pkg.go.dev/github.com/llxisdsh/pb)
+- Complete API documentation is available at [pkg.go.dev/github.com/llxisdsh/pb](https://pkg.go.dev/github.com/llxisdsh/pb)
 
-## 🔬 Implementation Details
-
-See [mapof flow](mapof_flow.md) for implementation details.
+- See [mapof flow](mapof_flow.md) for implementation details.
 
 
 ---
