@@ -15,117 +15,73 @@ import (
 )
 
 const (
-	// opByteIdx reserve the meta highest byte for extended status flags (OpByte)
+	// opByteIdx reserves the highest byte of meta for extended status flags
 	opByteIdx         = 7
 	opByteMask uint64 = 0xff00000000000000
 	opLockMask uint64 = 1 << (opByteIdx*8 + 7)
 
-	// entriesPerMapOfBucket defines the number of MapOf entries per bucket.
-	// This value is automatically calculated to fit within a cache line,
-	// but will not exceed 8, which is the upper limit supported by the meta-field.
+	// entriesPerMapOfBucket defines the number of entries per bucket.
+	// Calculated to fit within a cache line, with a maximum of 8 entries
+	// (upper limit supported by the meta field).
 	entriesPerMapOfBucket = min(opByteIdx, (int(CacheLineSize)-int(unsafe.Sizeof(struct {
 		meta uint64
 		// entries [entriesPerMapOfBucket]unsafe.Pointer
 		next unsafe.Pointer
 	}{})))/int(unsafe.Sizeof(unsafe.Pointer(nil))))
 
+	// Metadata constants for bucket entry management
 	emptyMeta     uint64 = 0
 	emptyMetaSlot uint8  = 0
 	metaMask      uint64 = 0x8080808080808080 >> (64 - min(entriesPerMapOfBucket*8, 64))
 	metaSlotMask  uint8  = 0x80
 )
 
+// Performance and resizing configuration
 const (
-	// mapShrinkFraction defines the threshold fraction of table occupation that triggers
-	// table shrinking when deleting the last entry in a bucket chain.
+	// mapShrinkFraction: shrink table when occupancy < 1/mapShrinkFraction
 	mapShrinkFraction = 8
-	// mapLoadFactor defines the threshold that triggers a table resize during insertion.
-	// A map can hold up to mapLoadFactor*entriesPerMapOfBucket*tableLen key-value pairs
-	// (this is a soft limit).
+	// mapLoadFactor: resize table when occupancy > mapLoadFactor
 	mapLoadFactor = 0.75
-	// defaultMinMapTableLen defines the minimum table size (number of buckets).
-	// The minimum map capacity can be calculated as entriesPerMapOfBucket*defaultMinMapTableLen.
+	// defaultMinMapTableLen: minimum number of buckets
 	defaultMinMapTableLen = 32
-	// minBucketsPerGoroutine defines the minimum table size required to trigger parallel resizing.
-	// Tables smaller than this threshold will use single-threaded resizing for better efficiency.
+	// minBucketsPerGoroutine: threshold for parallel resizing
 	minBucketsPerGoroutine = 4
-	// minParallelBatchItems defines the minimum number of items required for parallel batch processing.
-	// Below this threshold, serial processing is used to avoid the overhead of goroutine creation.
+	// minParallelBatchItems: threshold for parallel batch processing
 	minParallelBatchItems = 256
-	// asyncResizeThreshold defines the minimum number of buckets required
-	// to trigger an asynchronous resize operation.
+	// asyncResizeThreshold: threshold for asynchronous resize
 	asyncResizeThreshold = 128 * 1024 / CacheLineSize
 )
 
+// Feature flags for performance optimization
 const (
-	// enableFastPath optimizes read-only operations by fast-returning results,
-	// avoiding expensive lock contention and write barriers. In extreme cases, it reduces latency by up to 100x.
+	// enableFastPath: optimize read operations by avoiding locks when possible
+	// Can reduce latency by up to 100x in read-heavy scenarios
 	enableFastPath = true
 
-	// enableHashSpread controls whether to apply hash spreading for non-integer keys.
-	// When enabled, it improves hash distribution by XORing the original hash with its high bits
-	// before calculating bucket indices (h1) and metadata values (h2).
-	// This reduces collisions for complex key types like strings, but adds a small computational overhead.
-	// For integer keys, spreading is not applied as their natural distribution is already sufficient.
+	// enableHashSpread: improve hash distribution for non-integer keys
+	// Reduces collisions for complex types but adds computational overhead
 	enableHashSpread = false
 
-	// enableSpin controls whether spinning is enabled in custom synchronization logic
-	// (e.g., bucket locks or other wait mechanisms). When true, waiting operations
-	// will call runtime_doSpin() directly, which uses the CPU's PAUSE instruction
-	// to reduce contention latency. This improves performance for short waits but
-	// may slightly reduce throughput under high contention.
+	// enableSpin: use CPU PAUSE instruction for short waits
+	// Improves performance for brief contention but may reduce throughput under high load
 	enableSpin = true
 )
 
-// MapOf is a high-performance concurrent map implementation that offers significant
-// performance improvements over sync.Map in many common scenarios.
+// MapOf is a high-performance concurrent map implementation that is fully compatible
+// with sync.Map API and significantly outperforms sync.Map in most scenarios.
 //
-// Benchmarks show that MapOf can achieve several times better read performance
-// compared to sync.Map in read-heavy workloads, while also providing competitive
-// write performance. The actual performance gain varies depending on workload
-// characteristics, key types, and concurrency patterns.
+// Core advantages:
+//   - Lock-free reads, fine-grained locking for writes
+//   - Zero-value ready with lazy initialization
+//   - Custom hash and value comparison function support
+//   - Rich batch operations and functional extensions
 //
-// MapOf is particularly well-suited for scenarios with:
-//   - High read-to-write ratios
-//   - Frequent lookups of existing keys
-//   - Need for atomic operations on values
+// Usage recommendations:
+//   - Direct declaration: var m MapOf[string, int]
+//   - Pre-allocate capacity: NewMapOf(WithPresize(1000))
+//   - Enable auto-shrinking: NewMapOf(WithShrinkEnabled())
 //
-// Key features of pb.MapOf:
-//   - Uses cache-line aligned structures to prevent false sharing
-//   - Implements zero-value usability for convenient initialization
-//   - Provides lazy initialization for better performance
-//   - Defaults to Go's built-in hash function, customizable on creation or initialization
-//   - Offers complete sync.Map API compatibility
-//   - Specially optimized for read operations
-//   - Supports parallel resizing for better scalability
-//   - Includes rich functional extensions such as LoadOrStoreFn, ProcessEntry, Size, IsZero,
-//     Clone, and batch processing functions
-//   - Thoroughly tested with comprehensive test coverage
-//   - Delivers exceptional performance (see benchmark results below)
-//
-// pb.MapOf is built upon xsync.MapOf. We extend our thanks to the authors of
-// [xsync](https://github.com/puzpuzpuz/xsync) and reproduce its introduction below:
-//
-// MapOf is like a Go map[K]V but is safe for concurrent
-// use by multiple goroutines without additional locking or
-// coordination. It follows the interface of sync.Map with
-// a number of valuable extensions like Compute or Size.
-//
-// A MapOf must not be copied after first use.
-//
-// MapOf uses a modified version of Cache-Line Hash Table (CLHT)
-// data structure: https://github.com/LPD-EPFL/CLHT
-//
-// CLHT is built around idea to organize the hash table in
-// cache-line-sized buckets, so that on all modern CPUs update
-// operations complete with at most one cache-line transfer.
-// Also, Get operations involve no write to memory, as well as no
-// mutexes or any other sort of locks. Due to this design, in all
-// considered scenarios MapOf outperforms sync.Map.
-//
-// MapOf also borrows ideas from Java's j.u.c.ConcurrentHashMap
-// (immutable K/V pair structs instead of atomic snapshots)
-// and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
+// Note: MapOf must not be copied after first use.
 type MapOf[K comparable, V any] struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
@@ -156,23 +112,22 @@ type MapOf[K comparable, V any] struct {
 // NewMapOf creates a new MapOf instance. Direct initialization is also supported.
 //
 // Parameters:
-//   - WithPresize option for initial capacity
-//   - WithShrinkEnabled option to enable shrinking
+//   - options: configuration options (WithPresize, WithShrinkEnabled)
 func NewMapOf[K comparable, V any](
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
 	return NewMapOfWithHasher[K, V](nil, nil, options...)
 }
 
-// NewMapOfWithHasher creates a MapOf with custom hashing and equality functions.
-// Allows custom key hashing (keyHash) and value equality (valEqual) functions for compare-and-swap operations
+// NewMapOfWithHasher creates a MapOf with custom hash and equality functions.
 //
 // Parameters:
-//   - keyHash: nil uses the built-in hasher
-//   - valEqual: nil uses the built-in comparison, but if the value is not of a comparable type,
-//     using the Compare series of functions will cause a panic
-//   - WithPresize option for initial capacity
-//   - WithShrinkEnabled option to enable shrinking
+//   - keyHash: custom key hashing function (nil = use built-in hasher)
+//   - valEqual: custom value equality function (nil = use built-in comparison)
+//   - options: configuration options (WithPresize, WithShrinkEnabled)
+//
+// Note: Using Compare* methods with non-comparable value types will panic
+// if valEqual is nil.
 func NewMapOfWithHasher[K comparable, V any](
 	keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
@@ -218,14 +173,10 @@ func WithPresize(sizeHint int) func(*MapConfig) {
 	}
 }
 
-// WithGrowOnly configures new MapOf instance to be grow-only.
-// This means that the underlying hash table grows in capacity when
-// new keys are added, but does not shrink when keys are deleted.
-// The only exception to this rule is the Clear method which
-// shrinks the hash table back to the initial capacity.
+// WithGrowOnly configures the map to be grow-only (deprecated).
 //
-// Deprecated: WithGrowOnly is now obsolete (default grow-only mode avoids performance jitter),
-// Explicitly enable WithShrinkEnabled() if shrinking is required
+// Deprecated: This function is obsolete as grow-only is now the default behavior.
+// Use WithShrinkEnabled() explicitly if automatic shrinking is needed.
 func WithGrowOnly() func(*MapConfig) {
 	return func(*MapConfig) {
 	}
@@ -240,10 +191,12 @@ func WithShrinkEnabled() func(*MapConfig) {
 	}
 }
 
-// bucketOf represents a single bucket in the hash table.
+// bucketOf represents a hash table bucket with cache-line alignment.
 type bucketOf struct {
-	meta uint64 // meta for fast entry lookups using SWAR, must be 64-bit aligned
+	// meta: SWAR-optimized metadata for fast entry lookups (must be 64-bit aligned)
+	meta uint64
 
+	// Cache line padding to prevent false sharing
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
 		meta    uint64
@@ -255,13 +208,9 @@ type bucketOf struct {
 	next    unsafe.Pointer                        // *bucketOf
 }
 
-// lock acquires the lock for the bucket.
-// Replace Mutex with a spinlock to avoid bucket false-sharing overhead.
-// Spinlock state is embedded in the Meta field for cache locality.
-// This function can be inlined.
-//
-// Partial references:
-// [https://github.com/facebook/folly/blob/main/folly/synchronization/PicoSpinLock.h]
+// lock acquires a spinlock for the bucket using embedded metadata.
+// Uses atomic operations on the meta field to avoid false sharing overhead.
+// Implements optimistic locking with fallback to spinning.
 func (b *bucketOf) lock() {
 	cur := atomic.LoadUint64(&b.meta)
 	if atomic.CompareAndSwapUint64(&b.meta, cur&(^opLockMask), cur|opLockMask) {
@@ -374,8 +323,7 @@ func (table *mapOfTable) isZero() bool {
 //   - keyHash: nil uses the built-in hasher
 //   - valEqual: nil uses the built-in comparison, but if the value is not of a comparable type,
 //     using the Compare series of functions will cause a panic
-//   - WithPresize option for initial capacity
-//   - WithShrinkEnabled option to enable shrinking
+//   - options: configuration options (WithPresize, WithShrinkEnabled)
 //
 // Notes:
 //   - This function is not thread-safe and can only be used before the MapOf is utilized.
@@ -472,7 +420,7 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	return table
 }
 
-// Load retrieves a value for a key, compatible with `sync.Map`.
+// Load retrieves a value for the given key, compatible with `sync.Map`.
 func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := m.table.Load()
 	if table == nil {
@@ -484,8 +432,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash, m.intKey)
-	rootb := &table.buckets[bidx]
-	for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
+	for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
@@ -524,8 +471,7 @@ func (m *MapOf[K, V]) findEntry(table *mapOfTable, hash uintptr, key *K) *EntryO
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash, m.intKey)
-	rootb := &table.buckets[bidx]
-	for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
+	for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
@@ -1614,8 +1560,7 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	}
 
 	for i := range table.buckets {
-		rootb := &table.buckets[i]
-		for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
+		for b := &table.buckets[i]; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 			metaw := loadUint64(&b.meta)
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				if e := (*EntryOf[K, V])(loadPointer(&b.entries[firstMarkedByteIndex(markedw)])); e != nil {
@@ -2172,9 +2117,7 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 	stats.CounterLen = len(table.size)
 	for i := range table.buckets {
 		nentries := 0
-		rootb := &table.buckets[i]
-
-		for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
+		for b := &table.buckets[i]; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 			stats.TotalBuckets++
 			nentriesLocal := 0
 			stats.Capacity += entriesPerMapOfBucket
@@ -2607,6 +2550,8 @@ func delay(spins *int) {
 		*spins = 0
 		// time.Sleep with non-zero duration (≈Millisecond level) works effectively
 		// as backoff under high concurrency.
+		// The 500µs duration is derived from Facebook/folly's implementation:
+		// https://github.com/facebook/folly/blob/main/folly/synchronization/detail/Sleeper.h
 		const yieldSleep = 500 * time.Microsecond
 		time.Sleep(yieldSleep)
 	}
