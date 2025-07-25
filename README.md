@@ -62,7 +62,7 @@ pb.MapOf excels in scenarios requiring:
 - Thoroughly tested with comprehensive test coverage
 - Delivers exceptional performance (see benchmark results below)
 
-## 📈 Comprehensive Benchmarks
+## 📊 Comprehensive Benchmarks
 
 Benchmark results (1,000,000 records) show `pb.MapOf` consistently outperforms other implementations, 
 achieving the fastest operations for Store (0.5893 ns/op), LoadOrStore (0.4760 ns/op), Load (0.1987 ns/op) 
