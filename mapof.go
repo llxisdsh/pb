@@ -2394,6 +2394,7 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 	return (w &^ (0xff << shift)) | (uint64(b) << shift)
 }
 
+////go:nosplit
 //func casByte(addr *uint64, idx int, old, new uint8 /*, tryCount int*/) bool {
 //	shift := idx << 3
 //	clearMask := ^(uint64(0xff) << shift)
@@ -2419,6 +2420,7 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 //	return uint8((w >> shift) & 0xff)
 //}
 //
+////go:nosplit
 //func storeByte(addr *uint64, idx int, newByte uint8) {
 //	shift := idx << 3
 //	mask := uint64(0xff) << shift
@@ -2432,6 +2434,7 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 //	}
 //}
 
+//go:nosplit
 func loadPointer(addr *unsafe.Pointer) unsafe.Pointer {
 	if //goland:noinspection ALL
 	atomicLevel == 0 {
@@ -2441,6 +2444,7 @@ func loadPointer(addr *unsafe.Pointer) unsafe.Pointer {
 	}
 }
 
+//go:nosplit
 func storePointer(addr *unsafe.Pointer, val unsafe.Pointer) {
 	if //goland:noinspection ALL
 	atomicLevel < 2 {
@@ -2450,6 +2454,7 @@ func storePointer(addr *unsafe.Pointer, val unsafe.Pointer) {
 	}
 }
 
+//go:nosplit
 func loadUint64(addr *uint64) uint64 {
 	if //goland:noinspection ALL
 	atomicLevel == 0 {
@@ -2459,6 +2464,7 @@ func loadUint64(addr *uint64) uint64 {
 	}
 }
 
+//go:nosplit
 func storeUint64(addr *uint64, val uint64) {
 	if //goland:noinspection ALL
 	atomicLevel < 2 {
@@ -2487,11 +2493,13 @@ func clearOp(meta uint64) uint64 {
 	return meta & (^opByteMask)
 }
 
+////go:nosplit
 //func loadOp(addr *uint64, mask uint64) bool {
 //	cur := atomic.LoadUint64(addr)
 //	return getOp(cur, mask)
 //}
 //
+////go:nosplit
 //func storeOp(addr *uint64, mask uint64, value bool) {
 //	if value {
 //		atomic.OrUint64(addr, mask)
@@ -2500,6 +2508,7 @@ func clearOp(meta uint64) uint64 {
 //	}
 //}
 
+//go:nosplit
 func casOp(addr *uint64, mask uint64, old, new bool) bool {
 	for {
 		cur := atomic.LoadUint64(addr)
