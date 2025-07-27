@@ -2589,7 +2589,7 @@ func TestNewMapOfPresized_DoesNotShrinkBelowMinTableLen(t *testing.T) {
 	}
 
 	stats := m.Stats()
-	if stats.RootBuckets <= minTableLen {
+	if stats.RootBuckets < minTableLen {
 		t.Fatalf("table did not grow: %d", stats.RootBuckets)
 	}
 
