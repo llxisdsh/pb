@@ -3,10 +3,11 @@
 package pb
 
 import (
-	"golang.org/x/sys/cpu"
 	"unsafe"
+
+	"golang.org/x/sys/cpu"
 )
 
 // CacheLineSize is used in structure padding to prevent false sharing.
-// It's automatically calculated using the `golang.org/x/sys/cpu` package.
+// It's automatically calculated using the `golang.org/x/sys` package.
 const CacheLineSize = unsafe.Sizeof(cpu.CacheLinePad{})

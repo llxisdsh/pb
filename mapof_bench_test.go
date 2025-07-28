@@ -38,6 +38,7 @@ func benchmarkMapOfLoad(b *testing.B, data []string) {
 func BenchmarkMapOfLoadOrStore(b *testing.B) {
 	benchmarkMapOfLoadOrStore(b, testData[:])
 }
+
 func BenchmarkMapOfLoadOrStoreLarge(b *testing.B) {
 	benchmarkMapOfLoadOrStore(b, testDataLarge[:])
 }
@@ -84,9 +85,11 @@ func benchmarkMapOfLoadOrStore(b *testing.B, data []string) {
 func BenchmarkMapOfLoadOrStoreInt(b *testing.B) {
 	benchmarkMapOfLoadOrStoreInt(b, testDataInt[:])
 }
+
 func BenchmarkMapOfLoadOrStoreIntLarge(b *testing.B) {
 	benchmarkMapOfLoadOrStoreInt(b, testDataIntLarge[:])
 }
+
 func benchmarkMapOfLoadOrStoreInt(b *testing.B, data []int) {
 	b.ReportAllocs()
 	var m MapOf[int, int]
