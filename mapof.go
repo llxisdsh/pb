@@ -187,6 +187,8 @@ func WithPresize(sizeHint int) func(*MapConfig) {
 // Deprecated: This function is obsolete as grow-only is now the default
 // behavior. Use WithShrinkEnabled() explicitly if automatic shrinking is
 // needed.
+//
+//goland:noinspection ALL
 func WithGrowOnly() func(*MapConfig) {
 	return func(*MapConfig) {
 	}
@@ -2740,12 +2742,11 @@ func casOp(addr *uint64, mask uint64, old, new bool) bool {
 // compiles down to zero instructions.
 // USE CAREFULLY!
 //
-// nolint:all
-//
 //go:nosplit
-//goland:noinspection ALL
 func noescape(p unsafe.Pointer) unsafe.Pointer {
 	x := uintptr(p)
+	//nolint:all
+	//goland:noinspection ALL
 	return unsafe.Pointer(x ^ 0)
 }
 
