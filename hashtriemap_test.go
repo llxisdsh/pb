@@ -58,17 +58,16 @@ func TestHashTrieMapStructSize(t *testing.T) {
 		t.Logf("Field: %-10s Type: %-10s Offset: %d Size: %d bytes\n",
 			fieldName, fieldType, fieldOffset, fieldSize)
 	}
-
 }
 
 func TestMyHashTrieMap(t *testing.T) {
-	//var a *SyncMap[int, int] = NewSyncMap[int, int]()
+	// var a *SyncMap[int, int] = NewSyncMap[int, int]()
 	var a, a1, a2, a3, a4 HashTrieMap[int, int]
 	var str string
 	t.Log(unsafe.Sizeof(HashTrieMap[string, int]{}))
 	t.Log(unsafe.Sizeof(indirect[string, int]{}))
 	t.Log(unsafe.Sizeof(entry[string, int]{}))
-	//t.Log(unsafe.Sizeof(pool[string]{}))
+	// t.Log(unsafe.Sizeof(pool[string]{}))
 	t.Log(unsafe.Sizeof(indirect[int, int]{}))
 	t.Log(unsafe.Sizeof(indirect[int, string]{}))
 
@@ -155,6 +154,7 @@ func NewTruncHashTrieMap[K, V comparable]() *HashTrieMap[K, V] {
 	}
 	return &m
 }
+
 func TestHashTrieMap(t *testing.T) {
 	testHashTrieMap(t, func() *HashTrieMap[string, int] {
 		return &HashTrieMap[string, int]{}
@@ -1111,7 +1111,7 @@ func TestHashTrieMapLoadAndDelete(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		m.Store("key1", 10)
 		m.Store("key2", 20)
-		
+
 		value, loaded := m.LoadAndDelete("key1")
 		if !loaded {
 			t.Fatal("Expected key1 to be loaded")
@@ -1119,24 +1119,24 @@ func TestHashTrieMapLoadAndDelete(t *testing.T) {
 		if value != 10 {
 			t.Fatalf("Expected value 10, got %d", value)
 		}
-		
+
 		// Verify key1 is deleted
 		_, found := m.Load("key1")
 		if found {
 			t.Fatal("Expected key1 to be deleted")
 		}
-		
+
 		// Verify key2 still exists
 		value2, found := m.Load("key2")
 		if !found || value2 != 20 {
 			t.Fatal("Expected key2 to still exist with value 20")
 		}
 	})
-	
+
 	t.Run("LoadAndDeleteNonExisting", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		m.Store("key1", 10)
-		
+
 		value, loaded := m.LoadAndDelete("nonexistent")
 		if loaded {
 			t.Fatal("Expected nonexistent key to not be loaded")
@@ -1145,10 +1145,10 @@ func TestHashTrieMapLoadAndDelete(t *testing.T) {
 			t.Fatalf("Expected zero value, got %d", value)
 		}
 	})
-	
+
 	t.Run("LoadAndDeleteEmptyMap", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
-		
+
 		value, loaded := m.LoadAndDelete("key")
 		if loaded {
 			t.Fatal("Expected empty map to not load anything")
@@ -1157,20 +1157,20 @@ func TestHashTrieMapLoadAndDelete(t *testing.T) {
 			t.Fatalf("Expected zero value, got %d", value)
 		}
 	})
-	
+
 	t.Run("LoadAndDeleteOverflowChain", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		// Create multiple entries that might hash to same bucket
 		for i := 0; i < 10; i++ {
 			m.Store(fmt.Sprintf("key%d", i), i*10)
 		}
-		
+
 		// Delete from middle of potential chain
 		value, loaded := m.LoadAndDelete("key5")
 		if !loaded || value != 50 {
 			t.Fatalf("Expected to load and delete key5 with value 50, got loaded=%v, value=%d", loaded, value)
 		}
-		
+
 		// Verify other keys still exist
 		for i := 0; i < 10; i++ {
 			if i == 5 {
@@ -1190,7 +1190,7 @@ func TestHashTrieMapSwap(t *testing.T) {
 	t.Run("SwapExisting", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		m.Store("key1", 10)
-		
+
 		oldValue, loaded := m.Swap("key1", 20)
 		if !loaded {
 			t.Fatal("Expected key1 to be loaded")
@@ -1198,17 +1198,17 @@ func TestHashTrieMapSwap(t *testing.T) {
 		if oldValue != 10 {
 			t.Fatalf("Expected old value 10, got %d", oldValue)
 		}
-		
+
 		// Verify new value
 		newValue, found := m.Load("key1")
 		if !found || newValue != 20 {
 			t.Fatalf("Expected new value 20, got found=%v, value=%d", found, newValue)
 		}
 	})
-	
+
 	t.Run("SwapNonExisting", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
-		
+
 		oldValue, loaded := m.Swap("newkey", 30)
 		if loaded {
 			t.Fatal("Expected newkey to not be loaded")
@@ -1216,27 +1216,27 @@ func TestHashTrieMapSwap(t *testing.T) {
 		if oldValue != 0 {
 			t.Fatalf("Expected zero old value, got %d", oldValue)
 		}
-		
+
 		// Verify key was created with new value (Swap creates if not exists)
 		value, found := m.Load("newkey")
 		if !found || value != 30 {
 			t.Fatalf("Expected newkey to be created with value 30, got found=%v, value=%d", found, value)
 		}
 	})
-	
+
 	t.Run("SwapOverflowChain", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		// Create multiple entries
 		for i := 0; i < 5; i++ {
 			m.Store(fmt.Sprintf("key%d", i), i*10)
 		}
-		
+
 		// Swap middle entry
 		oldValue, loaded := m.Swap("key2", 999)
 		if !loaded || oldValue != 20 {
 			t.Fatalf("Expected to swap key2 with old value 20, got loaded=%v, oldValue=%d", loaded, oldValue)
 		}
-		
+
 		// Verify swap worked
 		newValue, found := m.Load("key2")
 		if !found || newValue != 999 {
@@ -1254,51 +1254,51 @@ func TestHashTrieMapOverflowChainOperations(t *testing.T) {
 		for i, key := range keys {
 			m.Store(key, i*10)
 		}
-		
+
 		// Test loadAndDelete on head of chain
 		value, loaded := m.LoadAndDelete("a")
 		if !loaded || value != 0 {
 			t.Fatalf("Expected to load and delete 'a' with value 0, got loaded=%v, value=%d", loaded, value)
 		}
-		
+
 		// Test loadAndDelete on middle of chain
 		value, loaded = m.LoadAndDelete("aaa")
 		if !loaded || value != 20 {
 			t.Fatalf("Expected to load and delete 'aaa' with value 20, got loaded=%v, value=%d", loaded, value)
 		}
-		
+
 		// Test loadAndDelete on non-existing key
 		value, loaded = m.LoadAndDelete("nonexist")
 		if loaded || value != 0 {
 			t.Fatalf("Expected not to load non-existing key, got loaded=%v, value=%d", loaded, value)
 		}
 	})
-	
+
 	t.Run("CompareAndSwapOverflowChain", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		keys := []string{"b", "bb", "bbb"}
 		for i, key := range keys {
 			m.Store(key, i*5)
 		}
-		
+
 		// Test compareAndSwap on head with correct old value
 		swapped := m.CompareAndSwap("b", 0, 100)
 		if !swapped {
 			t.Fatal("Expected to swap 'b' from 0 to 100")
 		}
-		
+
 		// Test compareAndSwap on middle with wrong old value
 		swapped = m.CompareAndSwap("bb", 999, 200)
 		if swapped {
 			t.Fatal("Expected not to swap 'bb' with wrong old value")
 		}
-		
+
 		// Test compareAndSwap on middle with correct old value
 		swapped = m.CompareAndSwap("bb", 5, 200)
 		if !swapped {
 			t.Fatal("Expected to swap 'bb' from 5 to 200")
 		}
-		
+
 		// Verify values
 		if val, _ := m.Load("b"); val != 100 {
 			t.Fatalf("Expected 'b' to be 100, got %d", val)
@@ -1307,32 +1307,32 @@ func TestHashTrieMapOverflowChainOperations(t *testing.T) {
 			t.Fatalf("Expected 'bb' to be 200, got %d", val)
 		}
 	})
-	
+
 	t.Run("CompareAndDeleteOverflowChain", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		keys := []string{"c", "cc", "ccc"}
 		for i, key := range keys {
 			m.Store(key, i*3)
 		}
-		
+
 		// Test compareAndDelete on head with wrong value
 		deleted := m.CompareAndDelete("c", 999)
 		if deleted {
 			t.Fatal("Expected not to delete 'c' with wrong value")
 		}
-		
+
 		// Test compareAndDelete on head with correct value
 		deleted = m.CompareAndDelete("c", 0)
 		if !deleted {
 			t.Fatal("Expected to delete 'c' with correct value")
 		}
-		
+
 		// Test compareAndDelete on middle with correct value
 		deleted = m.CompareAndDelete("cc", 3)
 		if !deleted {
 			t.Fatal("Expected to delete 'cc' with correct value")
 		}
-		
+
 		// Verify deletions
 		if _, found := m.Load("c"); found {
 			t.Fatal("Expected 'c' to be deleted")
@@ -1344,26 +1344,26 @@ func TestHashTrieMapOverflowChainOperations(t *testing.T) {
 			t.Fatalf("Expected 'ccc' to remain with value 6, got found=%v, val=%d", found, val)
 		}
 	})
-	
+
 	t.Run("SwapOverflowChainEdgeCases", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		keys := []string{"d", "dd", "ddd"}
 		for i, key := range keys {
 			m.Store(key, i*7)
 		}
-		
+
 		// Test swap on tail of chain
 		oldVal, loaded := m.Swap("ddd", 999)
 		if !loaded || oldVal != 14 {
 			t.Fatalf("Expected to swap 'ddd' from 14, got loaded=%v, oldVal=%d", loaded, oldVal)
 		}
-		
+
 		// Test swap on non-existing key (should create new entry)
 		oldVal, loaded = m.Swap("dddd", 888)
 		if loaded || oldVal != 0 {
 			t.Fatalf("Expected not to load non-existing 'dddd', got loaded=%v, oldVal=%d", loaded, oldVal)
 		}
-		
+
 		// Verify new entry was created
 		if val, found := m.Load("dddd"); !found || val != 888 {
 			t.Fatalf("Expected 'dddd' to be created with value 888, got found=%v, val=%d", found, val)
@@ -1381,23 +1381,23 @@ func TestHashTrieMapInternalFunctionCoverage(t *testing.T) {
 			t.Fatalf("Expected not to load from empty map, got loaded=%v, value=%d", loaded, value)
 		}
 	})
-	
+
 	t.Run("LoadAndDeleteSingleEntry", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		m.Store("single", 42)
-		
+
 		// Test loadAndDelete on single entry (head of chain)
 		value, loaded := m.LoadAndDelete("single")
 		if !loaded || value != 42 {
 			t.Fatalf("Expected to load and delete single entry, got loaded=%v, value=%d", loaded, value)
 		}
-		
+
 		// Verify it's gone
 		if _, found := m.Load("single"); found {
 			t.Fatal("Expected entry to be deleted")
 		}
 	})
-	
+
 	t.Run("LoadAndDeleteTailOfChain", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		// Create a chain by using keys that likely hash to same bucket
@@ -1405,13 +1405,13 @@ func TestHashTrieMapInternalFunctionCoverage(t *testing.T) {
 		for i, key := range keys {
 			m.Store(key, i*11)
 		}
-		
+
 		// Delete from tail of chain
 		value, loaded := m.LoadAndDelete("xxxx")
 		if !loaded || value != 33 {
 			t.Fatalf("Expected to load and delete tail entry, got loaded=%v, value=%d", loaded, value)
 		}
-		
+
 		// Verify others still exist
 		for i, key := range keys[:3] {
 			if val, found := m.Load(key); !found || val != i*11 {
@@ -1419,39 +1419,39 @@ func TestHashTrieMapInternalFunctionCoverage(t *testing.T) {
 			}
 		}
 	})
-	
+
 	t.Run("CompareAndSwapNonMatchingValue", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		m.Store("test", 100)
-		
+
 		// Try to swap with wrong old value
 		swapped := m.CompareAndSwap("test", 999, 200)
 		if swapped {
 			t.Fatal("Expected not to swap with wrong old value")
 		}
-		
+
 		// Verify original value unchanged
 		if val, _ := m.Load("test"); val != 100 {
 			t.Fatalf("Expected original value 100, got %d", val)
 		}
 	})
-	
+
 	t.Run("CompareAndDeleteNonMatchingValue", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		m.Store("test", 100)
-		
+
 		// Try to delete with wrong value
 		deleted := m.CompareAndDelete("test", 999)
 		if deleted {
 			t.Fatal("Expected not to delete with wrong value")
 		}
-		
+
 		// Verify entry still exists
 		if val, found := m.Load("test"); !found || val != 100 {
 			t.Fatalf("Expected entry to still exist with value 100, got found=%v, val=%d", found, val)
 		}
 	})
-	
+
 	t.Run("SwapNonExistentInChain", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		// Create a chain
@@ -1459,30 +1459,30 @@ func TestHashTrieMapInternalFunctionCoverage(t *testing.T) {
 		for i, key := range keys {
 			m.Store(key, i*13)
 		}
-		
+
 		// Try to swap non-existent key in same hash bucket
 		oldVal, loaded := m.Swap("yyyy", 999)
 		if loaded || oldVal != 0 {
 			t.Fatalf("Expected not to load non-existent key, got loaded=%v, oldVal=%d", loaded, oldVal)
 		}
-		
+
 		// Verify new entry was added
 		if val, found := m.Load("yyyy"); !found || val != 999 {
 			t.Fatalf("Expected new entry to be created, got found=%v, val=%d", found, val)
 		}
 	})
-	
+
 	t.Run("LoadOrStoreFnWithExistingKey", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		m.Store("existing", 50)
-		
+
 		// LoadOrStoreFn should return existing value without calling fn
 		fnCalled := false
 		value, loaded := m.LoadOrStoreFn("existing", func() int {
 			fnCalled = true
 			return 999
 		})
-		
+
 		if !loaded || value != 50 {
 			t.Fatalf("Expected to load existing value 50, got loaded=%v, value=%d", loaded, value)
 		}
@@ -1490,24 +1490,24 @@ func TestHashTrieMapInternalFunctionCoverage(t *testing.T) {
 			t.Fatal("Expected function not to be called for existing key")
 		}
 	})
-	
+
 	t.Run("LoadOrStoreFnWithNewKey", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
-		
+
 		// LoadOrStoreFn should call fn and store result
 		fnCalled := false
 		value, loaded := m.LoadOrStoreFn("new", func() int {
 			fnCalled = true
 			return 777
 		})
-		
+
 		if loaded || value != 777 {
 			t.Fatalf("Expected to store new value 777, got loaded=%v, value=%d", loaded, value)
 		}
 		if !fnCalled {
 			t.Fatal("Expected function to be called for new key")
 		}
-		
+
 		// Verify value was stored
 		if val, found := m.Load("new"); !found || val != 777 {
 			t.Fatalf("Expected stored value 777, got found=%v, val=%d", found, val)
@@ -1519,12 +1519,12 @@ func TestHashTrieMapInternalFunctionCoverage(t *testing.T) {
 func TestHashTrieMapNodeCleanupCoverage(t *testing.T) {
 	t.Run("LoadAndDeleteWithNodeCleanup", func(t *testing.T) {
 		m := &HashTrieMap[int, string]{}
-		
+
 		// Add many entries to force tree expansion
 		for i := 0; i < 100; i++ {
 			m.Store(i, fmt.Sprintf("value%d", i))
 		}
-		
+
 		// Delete entries to trigger node cleanup
 		for i := 0; i < 50; i++ {
 			value, loaded := m.LoadAndDelete(i)
@@ -1532,7 +1532,7 @@ func TestHashTrieMapNodeCleanupCoverage(t *testing.T) {
 				t.Fatalf("Expected to delete entry %d, got loaded=%v, value=%s", i, loaded, value)
 			}
 		}
-		
+
 		// Verify remaining entries
 		for i := 50; i < 100; i++ {
 			if val, found := m.Load(i); !found || val != fmt.Sprintf("value%d", i) {
@@ -1540,135 +1540,135 @@ func TestHashTrieMapNodeCleanupCoverage(t *testing.T) {
 			}
 		}
 	})
-	
+
 	t.Run("LoadAndDeleteEmptyAfterDeletion", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		m.Store("temp", 123)
-		
+
 		// Delete the only entry
 		value, loaded := m.LoadAndDelete("temp")
 		if !loaded || value != 123 {
 			t.Fatalf("Expected to delete temp entry, got loaded=%v, value=%d", loaded, value)
 		}
-		
+
 		// Try to delete again (should not find anything)
 		value, loaded = m.LoadAndDelete("temp")
 		if loaded || value != 0 {
 			t.Fatalf("Expected not to find deleted entry, got loaded=%v, value=%d", loaded, value)
 		}
 	})
-	
+
 	t.Run("LoadAndDeleteNonExistentAfterExpansion", func(t *testing.T) {
 		m := &HashTrieMap[int, string]{}
-		
+
 		// Force expansion by adding many entries
 		for i := 0; i < 64; i++ {
 			m.Store(i, fmt.Sprintf("val%d", i))
 		}
-		
+
 		// Try to delete non-existent key
 		value, loaded := m.LoadAndDelete(999)
 		if loaded || value != "" {
 			t.Fatalf("Expected not to find non-existent key, got loaded=%v, value=%s", loaded, value)
 		}
 	})
-	
+
 	t.Run("SwapInExpandedTree", func(t *testing.T) {
 		m := &HashTrieMap[int, string]{}
-		
+
 		// Force tree expansion
 		for i := 0; i < 32; i++ {
 			m.Store(i, fmt.Sprintf("initial%d", i))
 		}
-		
+
 		// Test swap in expanded tree
 		oldVal, loaded := m.Swap(15, "swapped15")
 		if !loaded || oldVal != "initial15" {
 			t.Fatalf("Expected to swap key 15, got loaded=%v, oldVal=%s", loaded, oldVal)
 		}
-		
+
 		// Verify swap worked
 		if val, found := m.Load(15); !found || val != "swapped15" {
 			t.Fatalf("Expected swapped value, got found=%v, val=%s", found, val)
 		}
 	})
-	
+
 	t.Run("CompareAndSwapInExpandedTree", func(t *testing.T) {
 		m := &HashTrieMap[int, string]{}
-		
+
 		// Force tree expansion
 		for i := 0; i < 32; i++ {
 			m.Store(i, fmt.Sprintf("orig%d", i))
 		}
-		
+
 		// Test compareAndSwap with correct old value
 		swapped := m.CompareAndSwap(20, "orig20", "new20")
 		if !swapped {
 			t.Fatal("Expected to swap with correct old value")
 		}
-		
+
 		// Test compareAndSwap with wrong old value
 		swapped = m.CompareAndSwap(21, "wrong", "new21")
 		if swapped {
 			t.Fatal("Expected not to swap with wrong old value")
 		}
 	})
-	
+
 	t.Run("CompareAndDeleteInExpandedTree", func(t *testing.T) {
 		m := &HashTrieMap[int, string]{}
-		
+
 		// Force tree expansion
 		for i := 0; i < 32; i++ {
 			m.Store(i, fmt.Sprintf("data%d", i))
 		}
-		
+
 		// Test compareAndDelete with correct value
 		deleted := m.CompareAndDelete(25, "data25")
 		if !deleted {
 			t.Fatal("Expected to delete with correct value")
 		}
-		
+
 		// Verify deletion
 		if _, found := m.Load(25); found {
 			t.Fatal("Expected entry to be deleted")
 		}
-		
+
 		// Test compareAndDelete with wrong value
 		deleted = m.CompareAndDelete(26, "wrong")
 		if deleted {
 			t.Fatal("Expected not to delete with wrong value")
 		}
 	})
-	
+
 	t.Run("LoadOrStoreFnInExpandedTree", func(t *testing.T) {
 		m := &HashTrieMap[int, string]{}
-		
+
 		// Force tree expansion
 		for i := 0; i < 32; i++ {
 			m.Store(i, fmt.Sprintf("existing%d", i))
 		}
-		
+
 		// Test LoadOrStoreFn with existing key
 		fnCalled := false
 		value, loaded := m.LoadOrStoreFn(10, func() string {
 			fnCalled = true
 			return "should_not_be_called"
 		})
-		
+
 		if !loaded || value != "existing10" {
 			t.Fatalf("Expected to load existing value, got loaded=%v, value=%s", loaded, value)
 		}
 		if fnCalled {
 			t.Fatal("Expected function not to be called for existing key")
 		}
-		
+
 		// Test LoadOrStoreFn with new key
 		fnCalled = false
 		value, loaded = m.LoadOrStoreFn(100, func() string {
 			fnCalled = true
 			return "new_value"
 		})
-		
+
 		if loaded || value != "new_value" {
 			t.Fatalf("Expected to store new value, got loaded=%v, value=%s", loaded, value)
 		}
@@ -1686,14 +1686,14 @@ func TestHashTrieMapIsZero(t *testing.T) {
 			t.Fatal("Expected uninitialized map to be zero")
 		}
 	})
-	
+
 	t.Run("EmptyInitializedMap", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		if !m.IsZero() {
 			t.Fatal("Expected empty initialized map to be zero")
 		}
 	})
-	
+
 	t.Run("MapWithData", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		m.Store("key", 1)
@@ -1701,7 +1701,7 @@ func TestHashTrieMapIsZero(t *testing.T) {
 			t.Fatal("Expected map with data to not be zero")
 		}
 	})
-	
+
 	t.Run("MapAfterClear", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		m.Store("key", 1)
@@ -1724,7 +1724,7 @@ func TestHashTrieMapUnmarshalJSON(t *testing.T) {
 			t.Fatal("Expected empty map after unmarshaling empty JSON")
 		}
 	})
-	
+
 	t.Run("InvalidJSON", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		err := m.UnmarshalJSON([]byte("invalid json"))
@@ -1732,23 +1732,23 @@ func TestHashTrieMapUnmarshalJSON(t *testing.T) {
 			t.Fatal("Expected error for invalid JSON")
 		}
 	})
-	
+
 	t.Run("ValidJSON", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		err := m.UnmarshalJSON([]byte(`{"key1":10,"key2":20}`))
 		if err != nil {
 			t.Fatalf("Expected no error for valid JSON, got %v", err)
 		}
-		
+
 		if m.Size() != 2 {
 			t.Fatalf("Expected size 2, got %d", m.Size())
 		}
-		
+
 		value1, found1 := m.Load("key1")
 		if !found1 || value1 != 10 {
 			t.Fatalf("Expected key1=10, got found=%v, value=%d", found1, value1)
 		}
-		
+
 		value2, found2 := m.Load("key2")
 		if !found2 || value2 != 20 {
 			t.Fatalf("Expected key2=20, got found=%v, value=%d", found2, value2)
@@ -1866,23 +1866,23 @@ func TestHashTrieMapCompareAndDelete(t *testing.T) {
 func TestHashTrieMapEdgeCases(t *testing.T) {
 	t.Run("ZeroValues", func(t *testing.T) {
 		var m HashTrieMap[string, int]
-		
+
 		// Store zero value
 		m.Store("zero", 0)
 		expectPresent(t, "zero", 0)(m.Load("zero"))
-		
+
 		// LoadOrStore with zero value
 		val, loaded := m.LoadOrStore("zero", 42)
 		if !loaded || val != 0 {
 			t.Fatalf("LoadOrStore should return existing zero value: got %d, loaded=%v", val, loaded)
 		}
-		
+
 		// CompareAndSwap with zero values
 		if !m.CompareAndSwap("zero", 0, 1) {
 			t.Fatal("CompareAndSwap should work with zero values")
 		}
 		expectPresent(t, "zero", 1)(m.Load("zero"))
-		
+
 		// CompareAndDelete with zero value
 		m.Store("zero2", 0)
 		if !m.CompareAndDelete("zero2", 0) {
@@ -1893,11 +1893,11 @@ func TestHashTrieMapEdgeCases(t *testing.T) {
 
 	t.Run("EmptyStringKeys", func(t *testing.T) {
 		var m HashTrieMap[string, int]
-		
+
 		// Store with empty string key
 		m.Store("", 42)
 		expectPresent(t, "", 42)(m.Load(""))
-		
+
 		// Delete empty string key
 		m.Delete("")
 		expectMissing(t, "", 0)(m.Load(""))
@@ -1905,12 +1905,12 @@ func TestHashTrieMapEdgeCases(t *testing.T) {
 
 	t.Run("LargeKeys", func(t *testing.T) {
 		var m HashTrieMap[string, int]
-		
+
 		// Very long key
 		longKey := strings.Repeat("a", 1000)
 		m.Store(longKey, 999)
 		expectPresent(t, longKey, 999)(m.Load(longKey))
-		
+
 		// Delete long key
 		m.Delete(longKey)
 		expectMissing(t, longKey, 0)(m.Load(longKey))
@@ -1919,13 +1919,13 @@ func TestHashTrieMapEdgeCases(t *testing.T) {
 	t.Run("ManyOperationsOnSameKey", func(t *testing.T) {
 		var m HashTrieMap[string, int]
 		key := "test"
-		
+
 		// Multiple stores
 		for i := 0; i < 100; i++ {
 			m.Store(key, i)
 			expectPresent(t, key, i)(m.Load(key))
 		}
-		
+
 		// Multiple LoadOrStore operations
 		for i := 100; i < 200; i++ {
 			val, loaded := m.LoadOrStore(key, i)
@@ -1933,7 +1933,7 @@ func TestHashTrieMapEdgeCases(t *testing.T) {
 				t.Fatalf("LoadOrStore iteration %d: expected loaded=true, val=99, got loaded=%v, val=%d", i, loaded, val)
 			}
 		}
-		
+
 		// Multiple CompareAndSwap operations
 		for i := 0; i < 10; i++ {
 			oldVal := 99 + i
@@ -1942,7 +1942,7 @@ func TestHashTrieMapEdgeCases(t *testing.T) {
 				t.Fatalf("CompareAndSwap iteration %d should succeed", i)
 			}
 		}
-		
+
 		expectPresent(t, key, 109)(m.Load(key))
 	})
 }
@@ -1953,10 +1953,10 @@ func TestHashTrieMapConcurrentOperations(t *testing.T) {
 		var m HashTrieMap[int, int]
 		const numGoroutines = 10
 		const numOperations = 100
-		
+
 		var wg sync.WaitGroup
 		wg.Add(numGoroutines * 2)
-		
+
 		// Concurrent stores
 		for i := 0; i < numGoroutines; i++ {
 			go func(base int) {
@@ -1967,7 +1967,7 @@ func TestHashTrieMapConcurrentOperations(t *testing.T) {
 				}
 			}(i)
 		}
-		
+
 		// Concurrent loads
 		for i := 0; i < numGoroutines; i++ {
 			go func(base int) {
@@ -1979,9 +1979,9 @@ func TestHashTrieMapConcurrentOperations(t *testing.T) {
 				}
 			}(i)
 		}
-		
+
 		wg.Wait()
-		
+
 		// Verify some data exists
 		if m.Size() == 0 {
 			t.Fatal("Map should not be empty after concurrent operations")
@@ -1991,13 +1991,13 @@ func TestHashTrieMapConcurrentOperations(t *testing.T) {
 	t.Run("ConcurrentCompareAndSwap", func(t *testing.T) {
 		var m HashTrieMap[string, int]
 		m.Store("counter", 0)
-		
+
 		const numGoroutines = 10
 		const incrementsPerGoroutine = 10
-		
+
 		var wg sync.WaitGroup
 		wg.Add(numGoroutines)
-		
+
 		for i := 0; i < numGoroutines; i++ {
 			go func() {
 				defer wg.Done()
@@ -2014,9 +2014,9 @@ func TestHashTrieMapConcurrentOperations(t *testing.T) {
 				}
 			}()
 		}
-		
+
 		wg.Wait()
-		
+
 		expectedValue := numGoroutines * incrementsPerGoroutine
 		actualValue, ok := m.Load("counter")
 		if !ok {

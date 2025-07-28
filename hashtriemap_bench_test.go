@@ -65,9 +65,11 @@ func benchmarkHashTrieMapLoadOrCompute(b *testing.B, data []string) {
 func BenchmarkHashTrieMapLoadOrStoreInt(b *testing.B) {
 	benchmarkHashTrieMapLoadOrStoreInt(b, testDataInt[:])
 }
+
 func BenchmarkHashTrieMapLoadOrStoreIntLarge(b *testing.B) {
 	benchmarkHashTrieMapLoadOrStoreInt(b, testDataIntLarge[:])
 }
+
 func benchmarkHashTrieMapLoadOrStoreInt(b *testing.B, data []int) {
 	b.ReportAllocs()
 	var m HashTrieMap[int, int]

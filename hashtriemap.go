@@ -100,7 +100,7 @@ func (ht *HashTrieMap[K, V]) LoadOrStoreFn(key K, valueFn func() V) (result V, l
 	var n *node[K, V]
 	for ; ; i = ht.root.Load() {
 		// Find the key or a candidate location for insertion.
-		//i = ht.root.Load()
+		// i = ht.root.Load()
 		hashShift = 8 * ptrSize
 		haveInsertPoint := false
 		for hashShift != 0 {
@@ -144,7 +144,7 @@ func (ht *HashTrieMap[K, V]) LoadOrStoreFn(key K, valueFn func() V) (result V, l
 	// One option is to break this out into a new function instead, but
 	// there's so much local iteration state used below that this turns out
 	// to be cleaner.
-	//defer i.mu.Unlock()
+	// defer i.mu.Unlock()
 
 	var oldEntry *entry[K, V]
 	if n != nil {
@@ -255,7 +255,7 @@ func (ht *HashTrieMap[K, V]) Swap(key K, new V) (previous V, loaded bool) {
 	// One option is to break this out into a new function instead, but
 	// there's so much local iteration state used below that this turns out
 	// to be cleaner.
-	//defer i.mu.Unlock()
+	// defer i.mu.Unlock()
 
 	var zero V
 	var oldEntry *entry[K, V]

@@ -123,7 +123,6 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 		t.Logf("Field: %-10s Type: %-10s Offset: %d Size: %d bytes\n",
 			fieldName, fieldType, fieldOffset, fieldSize)
 	}
-
 }
 
 // TestMapOfStoreLoadLatency tests the latency between Store and Load operations
@@ -511,7 +510,7 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 //}
 
 func TestMapOfMisc(t *testing.T) {
-	//var a *SyncMap[int, int] = NewSyncMap[int, int]()
+	// var a *SyncMap[int, int] = NewSyncMap[int, int]()
 	var a, a1, a2, a3, a4 MapOf[int, int]
 
 	t.Log(unsafe.Sizeof(MapOf[string, int]{}))
@@ -762,7 +761,7 @@ func TestMapOfConcurrentReadWriteStress(t *testing.T) {
 				for k := 0; k < keyCount; k++ {
 					_, _ = m.Load(k) // we only care about crashes or deadlocks
 				}
-				//time.Sleep(time.Microsecond) // slightly slow down reading
+				// time.Sleep(time.Microsecond) // slightly slow down reading
 			}
 		}()
 	}
@@ -794,7 +793,7 @@ func TestMapOfCalcLen(t *testing.T) {
 	for i := 0; i < 1000000; i++ {
 		tableLen = calcTableLen(i)
 		sizeLen = calcSizeLen(i, cpus)
-		//const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
+		// const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
 		growThreshold := int(float64(tableLen*entriesPerMapOfBucket) * mapLoadFactor)
 		growTableLen = calcTableLen(growThreshold)
 		_, parallelism = calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
@@ -837,6 +836,7 @@ func NewTruncMapOf[K, V comparable]() *MapOf[K, V] {
 	}
 	return &m
 }
+
 func TestMapOf(t *testing.T) {
 	testMapOf(t, func() *MapOf[string, int] {
 		return &MapOf[string, int]{}
@@ -2521,17 +2521,17 @@ func assertMapOfCapacity[K comparable, V any](t *testing.T, m *MapOf[K, V], expe
 }
 
 func TestNewMapOfPresized(t *testing.T) {
-	//assertMapOfCapacity(t, NewMapOf[string, string](), DefaultMinMapOfTableCap)
-	//assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(0)), DefaultMinMapOfTableCap)
-	//assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(0)), DefaultMinMapOfTableCap)
-	//assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(-100)), DefaultMinMapOfTableCap)
-	//assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(-100)), DefaultMinMapOfTableCap)
-	//assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(500)), 1280)
-	//assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(500)), 1280)
-	//assertMapOfCapacity(t, NewMapOf[int, int](WithPresize(1_000_000)), 2621440)
-	//assertMapOfCapacity(t, NewMapOf[int, int](WithPresize(1_000_000)), 2621440)
-	//assertMapOfCapacity(t, NewMapOf[point, point](WithPresize(100)), 160)
-	//assertMapOfCapacity(t, NewMapOf[point, point](WithPresize(100)), 160)
+	// assertMapOfCapacity(t, NewMapOf[string, string](), DefaultMinMapOfTableCap)
+	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(0)), DefaultMinMapOfTableCap)
+	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(0)), DefaultMinMapOfTableCap)
+	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(-100)), DefaultMinMapOfTableCap)
+	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(-100)), DefaultMinMapOfTableCap)
+	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(500)), 1280)
+	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(500)), 1280)
+	// assertMapOfCapacity(t, NewMapOf[int, int](WithPresize(1_000_000)), 2621440)
+	// assertMapOfCapacity(t, NewMapOf[int, int](WithPresize(1_000_000)), 2621440)
+	// assertMapOfCapacity(t, NewMapOf[point, point](WithPresize(100)), 160)
+	// assertMapOfCapacity(t, NewMapOf[point, point](WithPresize(100)), 160)
 
 	var capacity, expectedCap int
 	capacity, expectedCap = NewMapOf[string, string]().Stats().Capacity, DefaultMinMapOfTableCap
@@ -2742,7 +2742,7 @@ func TestMapOfParallelResize_GrowOnly(t *testing.T) {
 }
 
 func parallelRandTypedResizer(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
-	//r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
+	// r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		coin := rand.Int64N(2)
 		for j := 0; j < numEntries; j++ {
@@ -2788,7 +2788,7 @@ func TestMapOfParallelResize(t *testing.T) {
 }
 
 func parallelRandTypedClearer(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
-	//r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
+	// r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		coin := rand.Int64N(2)
 		for j := 0; j < numEntries; j++ {
@@ -2870,7 +2870,7 @@ func TestMapOfParallelStores(t *testing.T) {
 }
 
 func parallelRandTypedStorer(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
-	//r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
+	// r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		j := rand.IntN(numEntries)
 		if v, loaded := m.LoadOrStore(strconv.Itoa(j), j); loaded {
@@ -2883,7 +2883,7 @@ func parallelRandTypedStorer(t *testing.T, m *MapOf[string, int], numIters, numE
 }
 
 func parallelRandTypedDeleter(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
-	//r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
+	// r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		j := rand.IntN(numEntries)
 		if v, loaded := m.LoadAndDelete(strconv.Itoa(j)); loaded {
@@ -3388,13 +3388,14 @@ const (
 	// key prefix used in benchmarks
 	benchmarkKeyPrefix = "what_a_looooooooooooooooooooooong_key_prefix_"
 )
+
 const (
-	//entriesPerMapBucket     = 3
-	//EntriesPerMapBucket     = entriesPerMapBucket
+	// entriesPerMapBucket     = 3
+	// EntriesPerMapBucket     = entriesPerMapBucket
 	EntriesPerMapOfBucket = entriesPerMapOfBucket
 	MapLoadFactor         = mapLoadFactor
 	DefaultMinMapTableLen = defaultMinMapTableLen
-	//DefaultMinMapTableCap   = defaultMinMapTableLen * entriesPerMapBucket
+	// DefaultMinMapTableCap   = defaultMinMapTableLen * entriesPerMapBucket
 	DefaultMinMapOfTableCap = defaultMinMapTableLen * entriesPerMapOfBucket
 )
 
