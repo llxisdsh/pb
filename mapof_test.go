@@ -2648,7 +2648,7 @@ func TestMapOfResize(t *testing.T) {
 	if stats.Size != numEntries {
 		t.Fatalf("size was too small: %d", stats.Size)
 	}
-	expectedCapacity := int(math.RoundToEven(MapLoadFactor+1)) * stats.RootBuckets * EntriesPerMapOfBucket
+	expectedCapacity := (calcTableLen(numEntries) * EntriesPerMapOfBucket) + (numEntries/EntriesPerMapOfBucket + 1)
 	if stats.Capacity > expectedCapacity {
 		t.Fatalf("capacity was too large: %d, expected: %d", stats.Capacity, expectedCapacity)
 	}
