@@ -2770,8 +2770,7 @@ func delay(spins *int) {
 	} else {
 		*spins = 0
 		// time.Sleep with non-zero duration (≈Millisecond level) works
-		// effectively
-		// as backoff under high concurrency.
+		// effectively as backoff under high concurrency.
 		// The 500µs duration is derived from Facebook/folly's implementation:
 		// https://github.com/facebook/folly/blob/main/folly/synchronization/detail/Sleeper.h
 		const yieldSleep = 500 * time.Microsecond

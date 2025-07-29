@@ -522,15 +522,16 @@ func main() {
 	cache.FromMap(sourceMap)
 
 	// === Output And Statistics ===
-	// String output
-	fmt.Printf("Final cache output: %v\n", &cache)
-	
 	// JSON Marshal
 	jsonData, _ := json.Marshal(&cache)
 	fmt.Printf("Final cache json output: %s\n", jsonData)
 
-	// Size output
-	fmt.Printf("Final cache size: %d\n", cache.Size())
+	// JSON Unmarshal
+	cache.Clear()
+	_ = json.Unmarshal(jsonData, &cache)
+
+	// String output
+	fmt.Printf("Final cache output: %v\n", &cache)
 
 	// Stats: Get detailed performance statistics
 	stats := cache.Stats()
