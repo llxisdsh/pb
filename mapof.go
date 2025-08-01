@@ -564,7 +564,7 @@ func (m *MapOf[K, V]) InitWithOptions(
 	m.init(c)
 }
 
-// InitWithConfig initializes the MapOf instance using a pre-built MapConfig.
+// initWithConfig initializes the MapOf instance using a pre-built MapConfig.
 // This is a more direct initialization method, suitable for scenarios where the
 // same configuration needs to be reused.
 //
@@ -578,14 +578,14 @@ func (m *MapOf[K, V]) InitWithOptions(
 //	    SizeHint: 1000,
 //	    ShrinkEnabled: true,
 //	}
-//	m.InitWithConfig(config)
+//	m.initWithConfig(config)
 //
 // Notes:
 //   - This function is not thread-safe and should only be called before MapOf
 //     is used
 //   - The passed MapConfig will be used directly without copying
 //   - The behavior of calling this function multiple times is undefined
-func (m *MapOf[K, V]) InitWithConfig(
+func (m *MapOf[K, V]) initWithConfig(
 	config *MapConfig,
 ) {
 	m.init(config)

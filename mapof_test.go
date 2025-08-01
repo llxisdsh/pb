@@ -6892,7 +6892,7 @@ func TestMapOf_InitWithConfig(t *testing.T) {
 			ShrinkEnabled: false,
 		}
 
-		m.InitWithConfig(config)
+		m.initWithConfig(config)
 
 		// Test basic operations
 		m.Store("key1", 100)
@@ -6923,7 +6923,7 @@ func TestMapOf_InitWithConfig(t *testing.T) {
 			ShrinkEnabled: true,
 		}
 
-		m.InitWithConfig(config)
+		m.initWithConfig(config)
 
 		// Test operations
 		m.Store("test", 42)
@@ -6949,8 +6949,8 @@ func TestMapOf_InitWithConfig(t *testing.T) {
 		}
 
 		var m1, m2 MapOf[string, int]
-		m1.InitWithConfig(config)
-		m2.InitWithConfig(config)
+		m1.initWithConfig(config)
+		m2.initWithConfig(config)
 
 		// Test that both maps work independently
 		m1.Store("key1", 100)
@@ -6978,7 +6978,7 @@ func TestMapOf_InitWithConfig(t *testing.T) {
 		var m MapOf[string, int]
 		config := &MapConfig{} // Empty config, should use defaults
 
-		m.InitWithConfig(config)
+		m.initWithConfig(config)
 
 		// Test basic operations with default settings
 		m.Store("default", 999)
@@ -7001,7 +7001,7 @@ func TestMapOf_InitWithConfig(t *testing.T) {
 			SizeHint: 100,
 		}
 
-		m.InitWithConfig(config)
+		m.initWithConfig(config)
 
 		// Test operations
 		m.Store("hash", 123)
@@ -7025,7 +7025,7 @@ func TestMapOf_InitWithConfig(t *testing.T) {
 			SizeHint: 100,
 		}
 
-		m.InitWithConfig(config)
+		m.initWithConfig(config)
 
 		// Test operations
 		m.Store("equal", 456)
