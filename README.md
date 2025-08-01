@@ -380,6 +380,20 @@ func main() {
 	// Shrink-enabled initialization - suitable for fluctuating data volumes
 	cache3 := pb.NewMapOf[string, int](pb.WithShrinkEnabled())
 
+	// Custom Hash Function initialization - default is Go's built-in hash function
+	type UserID struct {
+		UserID   int64
+		TenantID int64
+	}
+	userCache := pb.NewMapOf[UserID, string](pb.WithKeyHasher(func(key UserID, seed uintptr) uintptr {
+		return uintptr(key.UserID)
+	}))
+
+	// Custom Value Equals Function initialization - default is Go's built-in value comparison
+	comparableCache := pb.NewMapOf[string, int](pb.WithValueEqual(func(a, b int) bool { 
+		return a == b 
+	}))
+
 	// === Basic Read/Write Operations ===
 	// Store: Insert or update a key-value pair
 	cache.Store("user:123", 42)
@@ -417,8 +431,6 @@ func main() {
 	fmt.Printf("Previous: %d, Updated: %t\n", previousValue, wasUpdated)
 
 	// === Compare-and-Swap Operations (requires comparable values) ===
-	// Note: These operations require a valEqual function when creating MapOf
-	comparableCache := pb.NewMapOfWithHasher[string, int](nil, func(a, b int) bool { return a == b })
 	comparableCache.Store("counter", 10)
 
 	// CompareAndSwap: Compare and swap if values match

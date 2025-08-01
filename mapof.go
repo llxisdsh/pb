@@ -85,9 +85,9 @@ const (
 // Usage recommendations:
 //   - Direct declaration: var m MapOf[string, int]
 //   - Pre-allocate capacity: NewMapOf(WithPresize(1000))
-//   - Enable auto-shrinking: NewMapOf(WithShrinkEnabled())
 //
-// Note: MapOf must not be copied after first use.
+// Notes:
+//   - MapOf must not be copied after first use.
 type MapOf[K comparable, V any] struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
@@ -108,10 +108,10 @@ type MapOf[K comparable, V any] struct {
 	totalGrowths  atomic.Uint32
 	totalShrinks  atomic.Uint32
 	seed          uintptr
-	keyHash       hashFunc
-	valEqual      equalFunc
-	minTableLen   int  // WithPresize
-	shrinkEnabled bool // WithShrinkEnabled
+	keyHash       hashFunc  // WithKeyHasher
+	valEqual      equalFunc // WithValueEqual
+	minTableLen   int       // WithPresize
+	shrinkEnabled bool      // WithShrinkEnabled
 	intKey        bool
 }
 
@@ -119,11 +119,13 @@ type MapOf[K comparable, V any] struct {
 // supported.
 //
 // Parameters:
-//   - options: configuration options (WithPresize, WithShrinkEnabled)
+//   - options: configuration options (WithPresize, WithKeyHasher, etc.)
 func NewMapOf[K comparable, V any](
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
-	return NewMapOfWithHasher[K, V](nil, nil, options...)
+	m := &MapOf[K, V]{}
+	m.InitWithOptions(options...)
+	return m
 }
 
 // NewMapOfWithHasher creates a MapOf with custom hash and equality functions.
@@ -131,18 +133,28 @@ func NewMapOf[K comparable, V any](
 // Parameters:
 //   - keyHash: custom key hashing function (nil = use built-in hasher)
 //   - valEqual: custom value equality function (nil = use built-in comparison)
-//   - options: configuration options (WithPresize, WithShrinkEnabled)
+//   - options: configuration options (WithPresize, WithShrinkEnabled, etc.)
 //
-// Note:
+// Notes:
 //   - Using Compare* methods with non-comparable value types will panic
 //     if valEqual is nil.
+//
+// Deprecated: Use NewMapOf with WithKeyHasher and WithValueEqual instead.
+//
+//goland:noinspection ALL
 func NewMapOfWithHasher[K comparable, V any](
 	keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
 	m := &MapOf[K, V]{}
-	m.Init(keyHash, valEqual, options...)
+	m.InitWithOptions(
+		append(
+			options,
+			WithKeyHasher(keyHash),
+			WithValueEqual(valEqual),
+		)...,
+	)
 	return m
 }
 
@@ -155,20 +167,58 @@ func NewMapOfWithHasher[K comparable, V any](
 //		func(ptr unsafe.Pointer, _ uintptr) uintptr {
 //			return *(*uintptr)(ptr)
 //		}, nil)
+//
+// Deprecated: Use NewMapOf with WithKeyHasherUnsafe and WithValueEqualUnsafe
+// instead.
+//
+//goland:noinspection ALL
 func NewMapOfWithHasherUnsafe[K comparable, V any](
 	keyHash func(ptr unsafe.Pointer, seed uintptr) uintptr,
 	valEqual func(ptr unsafe.Pointer, ptr2 unsafe.Pointer) bool,
 	options ...func(*MapConfig),
 ) *MapOf[K, V] {
 	m := &MapOf[K, V]{}
-	m.init(keyHash, valEqual, options...)
+	m.InitWithOptions(
+		append(
+			options,
+			WithKeyHasherUnsafe(keyHash),
+			WithValueEqualUnsafe(valEqual),
+		)...,
+	)
 	return m
 }
 
-// MapConfig defines configurable MapOf options.
+// MapConfig defines configurable options for MapOf initialization.
+// This structure contains all the configuration parameters that can be used
+// to customize the behavior and performance characteristics of a MapOf
+// instance.
 type MapConfig struct {
-	sizeHint      int
-	shrinkEnabled bool
+	// KeyHash specifies a custom hash function for keys.
+	// If nil, the built-in hash function will be used.
+	// Custom hash functions can improve performance for specific key types
+	// or provide better hash distribution.
+	KeyHash hashFunc
+
+	// ValEqual specifies a custom equality function for values.
+	// If nil, the built-in equality comparison will be used.
+	// This is primarily used for compare-and-swap operations.
+	// Note: Using Compare* methods with non-comparable value types
+	// will panic if ValEqual is nil.
+	ValEqual equalFunc
+
+	// SizeHint provides an estimate of the expected number of entries.
+	// This is used to pre-allocate the underlying hash table with appropriate
+	// capacity, reducing the need for resizing during initial population.
+	// If zero or negative, the default minimum capacity will be used.
+	// The actual capacity will be rounded up to the next power of 2.
+	SizeHint int
+
+	// ShrinkEnabled controls whether the map can automatically shrink
+	// when the load factor falls below the shrink threshold.
+	// When false (default), the map will only grow and never shrink,
+	// which provides better performance but may use more memory.
+	// When true, the map will shrink when occupancy < 1/mapShrinkFraction.
+	ShrinkEnabled bool
 }
 
 // WithPresize configuring new MapOf instance with capacity enough
@@ -178,11 +228,11 @@ type MapConfig struct {
 // is ignored.
 func WithPresize(sizeHint int) func(*MapConfig) {
 	return func(c *MapConfig) {
-		c.sizeHint = sizeHint
+		c.SizeHint = sizeHint
 	}
 }
 
-// WithGrowOnly configures the map to be grow-only (deprecated).
+// WithGrowOnly configures the map to be grow-only.
 //
 // Deprecated: This function is obsolete as grow-only is now the default
 // behavior. Use WithShrinkEnabled() explicitly if automatic shrinking is
@@ -199,7 +249,130 @@ func WithGrowOnly() func(*MapConfig) {
 // Disabled by default to prioritize performance.
 func WithShrinkEnabled() func(*MapConfig) {
 	return func(c *MapConfig) {
-		c.shrinkEnabled = true
+		c.ShrinkEnabled = true
+	}
+}
+
+// WithKeyHasher sets a custom key hashing function for the map.
+// This allows you to optimize hash distribution for specific key types
+// or implement custom hashing strategies.
+//
+// Parameters:
+//   - keyHash: custom hash function that takes a key and seed,
+//     returns hash value Pass nil to use the default built-in hasher
+//
+// Usage:
+//
+//	m := NewMapOf[string, int](WithKeyHasher(myCustomHashFunc))
+//
+// Use cases:
+//   - Optimize hash distribution for specific data patterns
+//   - Implement case-insensitive string hashing
+//   - Custom hashing for complex key types
+//   - Performance tuning for known key distributions
+func WithKeyHasher[K comparable](
+	keyHash func(key K, seed uintptr) uintptr,
+) func(*MapConfig) {
+	return func(c *MapConfig) {
+		if keyHash != nil {
+			c.KeyHash = func(pointer unsafe.Pointer, u uintptr) uintptr {
+				return keyHash(*(*K)(pointer), u)
+			}
+		}
+	}
+}
+
+// WithKeyHasherUnsafe sets a low-level unsafe key hashing function.
+// This is the high-performance version that operates directly on memory
+// pointers. Use this when you need maximum performance and are comfortable with
+// unsafe operations.
+//
+// Parameters:
+//   - hs: unsafe hash function that operates on raw unsafe.Pointer
+//     The pointer points to the key data in memory
+//     Pass nil to use the default built-in hasher
+//
+// Usage:
+//
+//	unsafeHasher := func(ptr unsafe.Pointer, seed uintptr) uintptr {
+//		// Cast ptr to your key type and implement hashing
+//		key := *(*string)(ptr)
+//		return uintptr(len(key)) // example hash
+//	}
+//	m := NewMapOf[string, int](WithKeyHasherUnsafe(unsafeHasher))
+//
+// ⚠️  SAFETY WARNING:
+//   - You must correctly cast unsafe.Pointer to the actual key type
+//   - Incorrect pointer operations will cause crashes or memory corruption
+//   - Only use if you understand Go's unsafe package
+func WithKeyHasherUnsafe(hs hashFunc) func(*MapConfig) {
+	return func(c *MapConfig) {
+		c.KeyHash = hs
+	}
+}
+
+// WithValueEqual sets a custom value equality function for the map.
+// This is essential for CompareAndSwap and CompareAndDelete operations
+// when working with non-comparable value types or custom equality logic.
+//
+// Parameters:
+//   - valEqual: custom equality function that compares two values
+//     Pass nil to use the default built-in comparison (for comparable types)
+//
+// Usage:
+//
+//	// For custom structs with specific equality logic
+//	equalFunc := func(a, b MyStruct) bool {
+//		return a.ID == b.ID && a.Name == b.Name
+//	}
+//	m := NewMapOf[string, MyStruct](WithValueEqual(equalFunc))
+//
+// Use cases:
+//   - Custom equality for structs (compare specific fields)
+//   - Case-insensitive string comparison
+//   - Floating-point comparison with tolerance
+//   - Deep equality for slices/maps
+//   - Required for non-comparable types (slices, maps, functions)
+func WithValueEqual[V any](
+	valEqual func(val, val2 V) bool,
+) func(*MapConfig) {
+	return func(c *MapConfig) {
+		if valEqual != nil {
+			c.ValEqual = func(val unsafe.Pointer, val2 unsafe.Pointer) bool {
+				return valEqual(*(*V)(val), *(*V)(val2))
+			}
+		}
+	}
+}
+
+// WithValueEqualUnsafe sets a low-level unsafe value equality function.
+// This is the high-performance version that operates directly on memory
+// pointers. Use this when you need maximum performance and are comfortable with
+// unsafe operations.
+//
+// Parameters:
+//   - eq: unsafe equality function that operates on raw unsafe.Pointer
+//     Both pointers point to value data in memory
+//     Pass nil to use the default built-in comparison
+//
+// Usage:
+//
+//	unsafeEqual := func(ptr1, ptr2 unsafe.Pointer) bool {
+//		// Cast pointers to your value type and implement comparison
+//		val1 := *(*MyStruct)(ptr1)
+//		val2 := *(*MyStruct)(ptr2)
+//		return val1.ID == val2.ID // example comparison
+//	}
+//	m := NewMapOf[string, MyStruct](WithValueEqualUnsafe(unsafeEqual))
+//
+// ⚠️  SAFETY WARNING:
+//   - You must correctly cast unsafe.Pointer to the actual value type
+//   - Both pointers must point to valid memory of the same type
+//   - Incorrect pointer operations will cause crashes or memory corruption
+//   - Only use if you understand Go's unsafe package
+func WithValueEqualUnsafe(eq equalFunc) func(*MapConfig) {
+	return func(c *MapConfig) {
+		c.ValEqual = eq
 	}
 }
 
@@ -339,53 +512,99 @@ func (table *mapOfTable) isZero() bool {
 //   - keyHash: nil uses the built-in hasher
 //   - valEqual: nil uses the built-in comparison, but if the value is not of a
 //     comparable type, using the Compare series of functions will cause a panic
-//   - options: configuration options (WithPresize, WithShrinkEnabled)
+//   - options: configuration options (WithPresize, WithShrinkEnabled, etc.)
 //
 // Notes:
 //   - This function is not thread-safe and can only be used before
 //     the MapOf is utilized.
 //   - If this function is not called, MapOf will use the default configuration.
+//
+// Deprecated: Use InitWithOptions with WithKeyHasher and WithValueEqual
+// instead.
+//
+//goland:noinspection ALL
 func (m *MapOf[K, V]) Init(
 	keyHash func(key K, seed uintptr) uintptr,
 	valEqual func(val, val2 V) bool,
 	options ...func(*MapConfig),
 ) {
-	var hs hashFunc
-	var eq equalFunc
-	if keyHash != nil {
-		hs = func(pointer unsafe.Pointer, u uintptr) uintptr {
-			return keyHash(*(*K)(pointer), u)
-		}
-	}
-	if valEqual != nil {
-		eq = func(val unsafe.Pointer, val2 unsafe.Pointer) bool {
-			return valEqual(*(*V)(val), *(*V)(val2))
-		}
-	}
-	m.init(hs, eq, options...)
+	m.InitWithOptions(
+		append(
+			options,
+			WithKeyHasher(keyHash),
+			WithValueEqual(valEqual),
+		)...,
+	)
 }
 
-func (m *MapOf[K, V]) init(
-	hs hashFunc,
-	eq equalFunc,
+// InitWithOptions initializes the MapOf instance using variadic option
+// parameters. This is a convenience method that allows configuring MapOf
+// through the functional options pattern.
+//
+// Parameters:
+//   - options: configuration option functions such as WithPresize,
+//     WithShrinkEnabled, WithKeyHasher, WithValueEqual, etc.
+//
+// Usage example:
+//
+//	m.InitWithOptions(WithPresize(1000), WithShrinkEnabled())
+//
+// Notes:
+//   - This function is not thread-safe and should only be called before MapOf
+//     is used
+//   - If this function is not called, MapOf will use default configuration
+//   - The behavior of calling this function multiple times is undefined
+func (m *MapOf[K, V]) InitWithOptions(
 	options ...func(*MapConfig),
-) *mapOfTable {
+) {
 	c := &MapConfig{}
 	for _, o := range options {
 		o(c)
 	}
+	m.init(c)
+}
 
+// InitWithConfig initializes the MapOf instance using a pre-built MapConfig.
+// This is a more direct initialization method, suitable for scenarios where the
+// same configuration needs to be reused.
+//
+// Parameters:
+//   - config: a pre-configured MapConfig instance containing all necessary
+//     configuration parameters
+//
+// Usage example:
+//
+//	config := &MapConfig{
+//	    SizeHint: 1000,
+//	    ShrinkEnabled: true,
+//	}
+//	m.InitWithConfig(config)
+//
+// Notes:
+//   - This function is not thread-safe and should only be called before MapOf
+//     is used
+//   - The passed MapConfig will be used directly without copying
+//   - The behavior of calling this function multiple times is undefined
+func (m *MapOf[K, V]) InitWithConfig(
+	config *MapConfig,
+) {
+	m.init(config)
+}
+
+func (m *MapOf[K, V]) init(
+	c *MapConfig,
+) *mapOfTable {
 	m.seed = uintptr(rand.Uint64())
 	m.keyHash, m.valEqual, m.intKey = defaultHasher[K, V]()
-	if hs != nil {
-		m.keyHash = hs
+	if c.KeyHash != nil {
+		m.keyHash = c.KeyHash
 	}
-	if eq != nil {
-		m.valEqual = eq
+	if c.ValEqual != nil {
+		m.valEqual = c.ValEqual
 	}
 
-	m.minTableLen = calcTableLen(c.sizeHint)
-	m.shrinkEnabled = c.shrinkEnabled
+	m.minTableLen = calcTableLen(c.SizeHint)
+	m.shrinkEnabled = c.ShrinkEnabled
 
 	table := newMapOfTable(m.minTableLen, runtime.GOMAXPROCS(0))
 	m.table.Store(table)
@@ -429,7 +648,8 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	}
 
 	// Perform initialization
-	table = m.init(nil, nil)
+	c := &MapConfig{}
+	table = m.init(c)
 	m.table.Store(table)
 	m.resizeState.Store(nil)
 	rs.wg.Done()
@@ -994,7 +1214,7 @@ func copyBucketOf[K comparable, V any](
 // Parameters:
 //   - fn: callback that processes each entry and returns an operation indicator
 //
-// Note:
+// Notes:
 //
 //   - The input parameter loaded is immutable and should not be modified
 //     directly
@@ -2266,22 +2486,42 @@ func (m *MapOf[K, V]) Merge(
 //   - A new MapOf instance with the same key-value pairs.
 //
 // Notes:
-// - The clone operation is not atomic with respect to concurrent modifications.
-//   - The returned map will have the same configuration as the original.
+//
+//   - This operation is not atomic with respect to concurrent modifications.
+//
+//   - The returned map will have the same configuration as the source.
 func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
+	clone := &MapOf[K, V]{}
+	m.CloneTo(clone)
+	return clone
+}
+
+// CloneTo copies all key-value pairs from this map to the destination map.
+// The destination map is cleared before copying.
+//
+// Parameters:
+//   - clone: The destination map to copy into. Must not be nil.
+//
+// Notes:
+//
+//   - This operation is not atomic with respect to concurrent modifications.
+//
+//   - The destination map will have the same configuration as the source.
+//
+//   - The destination map is cleared before copying to ensure a clean state.
+func (m *MapOf[K, V]) CloneTo(clone *MapOf[K, V]) {
+	clone.Clear()
 	table := m.table.Load()
 	if table == nil {
-		return &MapOf[K, V]{}
+		return
 	}
-	// Create a new MapOf with the same configuration as the original
-	clone := &MapOf[K, V]{
-		seed:          m.seed,
-		keyHash:       m.keyHash,
-		valEqual:      m.valEqual,
-		minTableLen:   m.minTableLen,
-		shrinkEnabled: m.shrinkEnabled,
-		intKey:        m.intKey,
-	}
+
+	clone.seed = m.seed
+	clone.keyHash = m.keyHash
+	clone.valEqual = m.valEqual
+	clone.minTableLen = m.minTableLen
+	clone.shrinkEnabled = m.shrinkEnabled
+	clone.intKey = m.intKey
 	clone.table.Store(newMapOfTable(clone.minTableLen, runtime.GOMAXPROCS(0)))
 
 	// Pre-fetch size to optimize initial capacity
@@ -2294,7 +2534,6 @@ func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 		)
 		return true
 	})
-	return clone
 }
 
 // Stats returns statistics for the MapOf. Just like other map

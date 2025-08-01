@@ -295,12 +295,22 @@ func TestMapOfStoreLoadLatency(t *testing.T) {
 	}
 
 	if counts[len(counts)-1] > 0 {
-		percentage := float64(counts[len(counts)-1]) * 100 / float64(len(latencies))
-		t.Logf("  >= %v: %d (%.2f%%)", buckets[len(buckets)-1], counts[len(counts)-1], percentage)
+		percentage := float64(
+			counts[len(counts)-1],
+		) * 100 / float64(
+			len(latencies),
+		)
+		t.Logf(
+			"  >= %v: %d (%.2f%%)",
+			buckets[len(buckets)-1],
+			counts[len(counts)-1],
+			percentage,
+		)
 	}
 }
 
-// TestMapOfStoreLoadMultiThreadLatency tests Store-Load latency in a multi-threaded environment
+// TestMapOfStoreLoadMultiThreadLatency tests Store-Load latency in a
+// multi-threaded environment
 func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping multi-thread latency test in short mode")
@@ -448,7 +458,10 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 	stdDev := time.Duration(math.Sqrt(variance))
 
 	// Output results
-	t.Logf("Multi-thread Store-Load Latency Statistics (samples: %d):", len(latencies))
+	t.Logf(
+		"Multi-thread Store-Load Latency Statistics (samples: %d):",
+		len(latencies),
+	)
 	t.Logf("  Average latency: %v", avgLatency)
 	t.Logf("  Standard deviation: %v", stdDev)
 	t.Logf("  Min latency: %v", latencies[0])
@@ -497,14 +510,16 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 //	}
 //
 //	t.Logf("Inserted %d items in %v", total, elapsed)
-//	t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
-//	t.Logf("Throughput: %.2f million ops/sec", float64(total)/(elapsed.Seconds()*1000000))
+// 	t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
+// 	t.Logf("Throughput: %.2f million ops/sec",
+// float64(total)/(elapsed.Seconds()*1000000))
 //
 //	// rand check
 //	for i := 0; i < 1000; i++ {
 //		idx := i * (total / 1000)
 //		if val, ok := m.Load(idx); !ok || val != idx {
-//			t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val, ok)
+// 			t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val,
+// ok)
 //		}
 //	}
 //}
@@ -586,7 +601,8 @@ func TestMapOfMisc(t *testing.T) {
 	}
 }
 
-// TestMapOfSimpleConcurrentReadWrite test 1 goroutine for store and 1 goroutine for load
+// TestMapOfSimpleConcurrentReadWrite test 1 goroutine for store and 1 goroutine
+// for load
 func TestMapOfSimpleConcurrentReadWrite(t *testing.T) {
 	const iterations = 1000
 
@@ -649,7 +665,8 @@ func TestMapOfSimpleConcurrentReadWrite(t *testing.T) {
 	}
 }
 
-// TestMapOfMultiKeyConcurrentReadWrite tests concurrent read/write with multiple keys
+// TestMapOfMultiKeyConcurrentReadWrite tests concurrent read/write with
+// multiple keys
 func TestMapOfMultiKeyConcurrentReadWrite(t *testing.T) {
 	const (
 		iterations = 1000
@@ -721,7 +738,8 @@ func TestMapOfMultiKeyConcurrentReadWrite(t *testing.T) {
 	}
 }
 
-// TestMapOfConcurrentReadWriteStress performs intensive concurrent stress testing
+// TestMapOfConcurrentReadWriteStress performs intensive concurrent stress
+// testing
 func TestMapOfConcurrentReadWriteStress(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping stress test")
@@ -794,15 +812,24 @@ func TestMapOfCalcLen(t *testing.T) {
 		tableLen = calcTableLen(i)
 		sizeLen = calcSizeLen(i, cpus)
 		// const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
-		growThreshold := int(float64(tableLen*entriesPerMapOfBucket) * mapLoadFactor)
+		growThreshold := int(
+			float64(tableLen*entriesPerMapOfBucket) * mapLoadFactor,
+		)
 		growTableLen = calcTableLen(growThreshold)
 		_, parallelism = calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
 		if tableLen != lastTableLen ||
 			growTableLen != lastGrowTableLen ||
 			sizeLen != lastSizeLen ||
 			parallelism != lastParallelism {
-			t.Logf("sizeHint: %v, tableLen: %v, growThreshold: %v, growTableLen: %v, counterLen: %v, parallelism: %v",
-				i, tableLen, growThreshold, growTableLen, sizeLen, parallelism)
+			t.Logf(
+				"sizeHint: %v, tableLen: %v, growThreshold: %v, growTableLen: %v, counterLen: %v, parallelism: %v",
+				i,
+				tableLen,
+				growThreshold,
+				growTableLen,
+				sizeLen,
+				parallelism,
+			)
 			lastTableLen, lastGrowTableLen, lastSizeLen, lastParallelism = tableLen, growTableLen, sizeLen, parallelism
 		}
 	}
@@ -884,9 +911,14 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 	t.Run("All", func(t *testing.T) {
 		m := newMap()
 
-		testAllMapOf(t, m, testDataMapMapOf(testData[:]), func(_ string, _ int) bool {
-			return true
-		})
+		testAllMapOf(
+			t,
+			m,
+			testDataMapMapOf(testData[:]),
+			func(_ string, _ int) bool {
+				return true
+			},
+		)
 	})
 	t.Run("Clear", func(t *testing.T) {
 		t.Run("Simple", func(t *testing.T) {
@@ -920,8 +952,18 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 
 					for _, s := range testData {
 						// Try a couple things to interfere with the clear.
-						expectNotDeletedMapOf(t, s, math.MaxInt)(m.CompareAndDelete(s, math.MaxInt))
-						m.CompareAndSwap(s, i, i+1) // May succeed or fail; we don't care.
+						expectNotDeletedMapOf(
+							t,
+							s,
+							math.MaxInt,
+						)(
+							m.CompareAndDelete(s, math.MaxInt),
+						)
+						m.CompareAndSwap(
+							s,
+							i,
+							i+1,
+						) // May succeed or fail; we don't care.
 					}
 				}(i)
 			}
@@ -952,7 +994,13 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 				}
 				for i, s := range testData {
 					expectPresentMapOf(t, s, i)(m.Load(s))
-					expectNotDeletedMapOf(t, s, math.MaxInt)(m.CompareAndDelete(s, math.MaxInt))
+					expectNotDeletedMapOf(
+						t,
+						s,
+						math.MaxInt,
+					)(
+						m.CompareAndDelete(s, math.MaxInt),
+					)
 					expectDeletedMapOf(t, s, i)(m.CompareAndDelete(s, i))
 					expectNotDeletedMapOf(t, s, i)(m.CompareAndDelete(s, i))
 					expectMissingMapOf(t, s, 0)(m.Load(s))
@@ -971,9 +1019,27 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 				expectPresentMapOf(t, s, i)(m.Load(s))
 				expectLoadedMapOf(t, s, i)(m.LoadOrStore(s, 0))
 			}
-			expectNotDeletedMapOf(t, testData[15], math.MaxInt)(m.CompareAndDelete(testData[15], math.MaxInt))
-			expectDeletedMapOf(t, testData[15], 15)(m.CompareAndDelete(testData[15], 15))
-			expectNotDeletedMapOf(t, testData[15], 15)(m.CompareAndDelete(testData[15], 15))
+			expectNotDeletedMapOf(
+				t,
+				testData[15],
+				math.MaxInt,
+			)(
+				m.CompareAndDelete(testData[15], math.MaxInt),
+			)
+			expectDeletedMapOf(
+				t,
+				testData[15],
+				15,
+			)(
+				m.CompareAndDelete(testData[15], 15),
+			)
+			expectNotDeletedMapOf(
+				t,
+				testData[15],
+				15,
+			)(
+				m.CompareAndDelete(testData[15], 15),
+			)
 			for i, s := range testData {
 				if i == 15 {
 					expectMissingMapOf(t, s, 0)(m.Load(s))
@@ -992,9 +1058,27 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 				expectLoadedMapOf(t, s, i)(m.LoadOrStore(s, 0))
 			}
 			for _, i := range []int{1, 105, 6, 85} {
-				expectNotDeletedMapOf(t, testData[i], math.MaxInt)(m.CompareAndDelete(testData[i], math.MaxInt))
-				expectDeletedMapOf(t, testData[i], i)(m.CompareAndDelete(testData[i], i))
-				expectNotDeletedMapOf(t, testData[i], i)(m.CompareAndDelete(testData[i], i))
+				expectNotDeletedMapOf(
+					t,
+					testData[i],
+					math.MaxInt,
+				)(
+					m.CompareAndDelete(testData[i], math.MaxInt),
+				)
+				expectDeletedMapOf(
+					t,
+					testData[i],
+					i,
+				)(
+					m.CompareAndDelete(testData[i], i),
+				)
+				expectNotDeletedMapOf(
+					t,
+					testData[i],
+					i,
+				)(
+					m.CompareAndDelete(testData[i], i),
+				)
 			}
 			for i, s := range testData {
 				if i == 1 || i == 105 || i == 6 || i == 85 {
@@ -1007,10 +1091,15 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 		t.Run("Iterate", func(t *testing.T) {
 			m := newMap()
 
-			testAllMapOf(t, m, testDataMapMapOf(testData[:]), func(s string, i int) bool {
-				expectDeletedMapOf(t, s, i)(m.CompareAndDelete(s, i))
-				return true
-			})
+			testAllMapOf(
+				t,
+				m,
+				testDataMapMapOf(testData[:]),
+				func(s string, i int) bool {
+					expectDeletedMapOf(t, s, i)(m.CompareAndDelete(s, i))
+					return true
+				},
+			)
 			for _, s := range testData {
 				expectMissingMapOf(t, s, 0)(m.Load(s))
 			}
@@ -1038,7 +1127,13 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 					for _, s := range testData {
 						key := makeKey(s)
 						expectPresentMapOf(t, key, id)(m.Load(key))
-						expectDeletedMapOf(t, key, id)(m.CompareAndDelete(key, id))
+						expectDeletedMapOf(
+							t,
+							key,
+							id,
+						)(
+							m.CompareAndDelete(key, id),
+						)
 						expectMissingMapOf(t, key, 0)(m.Load(key))
 					}
 					for _, s := range testData {
@@ -1065,7 +1160,13 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 					defer wg.Done()
 
 					for i, s := range testData {
-						expectNotDeletedMapOf(t, s, math.MaxInt)(m.CompareAndDelete(s, math.MaxInt))
+						expectNotDeletedMapOf(
+							t,
+							s,
+							math.MaxInt,
+						)(
+							m.CompareAndDelete(s, math.MaxInt),
+						)
 						m.CompareAndDelete(s, i)
 						expectMissingMapOf(t, s, 0)(m.Load(s))
 					}
@@ -1090,9 +1191,30 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 			for j := range 3 {
 				for i, s := range testData {
 					expectPresentMapOf(t, s, i+j)(m.Load(s))
-					expectNotSwappedMapOf(t, s, math.MaxInt, i+j+1)(m.CompareAndSwap(s, math.MaxInt, i+j+1))
-					expectSwappedMapOf(t, s, i, i+j+1)(m.CompareAndSwap(s, i+j, i+j+1))
-					expectNotSwappedMapOf(t, s, i+j, i+j+1)(m.CompareAndSwap(s, i+j, i+j+1))
+					expectNotSwappedMapOf(
+						t,
+						s,
+						math.MaxInt,
+						i+j+1,
+					)(
+						m.CompareAndSwap(s, math.MaxInt, i+j+1),
+					)
+					expectSwappedMapOf(
+						t,
+						s,
+						i,
+						i+j+1,
+					)(
+						m.CompareAndSwap(s, i+j, i+j+1),
+					)
+					expectNotSwappedMapOf(
+						t,
+						s,
+						i+j,
+						i+j+1,
+					)(
+						m.CompareAndSwap(s, i+j, i+j+1),
+					)
 					expectPresentMapOf(t, s, i+j+1)(m.Load(s))
 				}
 			}
@@ -1109,9 +1231,30 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 				expectPresentMapOf(t, s, i)(m.Load(s))
 				expectLoadedMapOf(t, s, i)(m.LoadOrStore(s, 0))
 			}
-			expectNotSwappedMapOf(t, testData[15], math.MaxInt, 16)(m.CompareAndSwap(testData[15], math.MaxInt, 16))
-			expectSwappedMapOf(t, testData[15], 15, 16)(m.CompareAndSwap(testData[15], 15, 16))
-			expectNotSwappedMapOf(t, testData[15], 15, 16)(m.CompareAndSwap(testData[15], 15, 16))
+			expectNotSwappedMapOf(
+				t,
+				testData[15],
+				math.MaxInt,
+				16,
+			)(
+				m.CompareAndSwap(testData[15], math.MaxInt, 16),
+			)
+			expectSwappedMapOf(
+				t,
+				testData[15],
+				15,
+				16,
+			)(
+				m.CompareAndSwap(testData[15], 15, 16),
+			)
+			expectNotSwappedMapOf(
+				t,
+				testData[15],
+				15,
+				16,
+			)(
+				m.CompareAndSwap(testData[15], 15, 16),
+			)
 			for i, s := range testData {
 				if i == 15 {
 					expectPresentMapOf(t, s, 16)(m.Load(s))
@@ -1130,9 +1273,30 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 				expectLoadedMapOf(t, s, i)(m.LoadOrStore(s, 0))
 			}
 			for _, i := range []int{1, 105, 6, 85} {
-				expectNotSwappedMapOf(t, testData[i], math.MaxInt, i+1)(m.CompareAndSwap(testData[i], math.MaxInt, i+1))
-				expectSwappedMapOf(t, testData[i], i, i+1)(m.CompareAndSwap(testData[i], i, i+1))
-				expectNotSwappedMapOf(t, testData[i], i, i+1)(m.CompareAndSwap(testData[i], i, i+1))
+				expectNotSwappedMapOf(
+					t,
+					testData[i],
+					math.MaxInt,
+					i+1,
+				)(
+					m.CompareAndSwap(testData[i], math.MaxInt, i+1),
+				)
+				expectSwappedMapOf(
+					t,
+					testData[i],
+					i,
+					i+1,
+				)(
+					m.CompareAndSwap(testData[i], i, i+1),
+				)
+				expectNotSwappedMapOf(
+					t,
+					testData[i],
+					i,
+					i+1,
+				)(
+					m.CompareAndSwap(testData[i], i, i+1),
+				)
 			}
 			for i, s := range testData {
 				if i == 1 || i == 105 || i == 6 || i == 85 {
@@ -1166,7 +1330,14 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 					for _, s := range testData {
 						key := makeKey(s)
 						expectPresentMapOf(t, key, id)(m.Load(key))
-						expectSwappedMapOf(t, key, id, id+1)(m.CompareAndSwap(key, id, id+1))
+						expectSwappedMapOf(
+							t,
+							key,
+							id,
+							id+1,
+						)(
+							m.CompareAndSwap(key, id, id+1),
+						)
 						expectPresentMapOf(t, key, id+1)(m.Load(key))
 					}
 					for _, s := range testData {
@@ -1200,11 +1371,37 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 					for _, s := range testData {
 						key := makeKey(s)
 						expectPresentMapOf(t, key, id)(m.Load(key))
-						expectSwappedMapOf(t, key, id, id+1)(m.CompareAndSwap(key, id, id+1))
+						expectSwappedMapOf(
+							t,
+							key,
+							id,
+							id+1,
+						)(
+							m.CompareAndSwap(key, id, id+1),
+						)
 						expectPresentMapOf(t, key, id+1)(m.Load(key))
-						expectDeletedMapOf(t, key, id+1)(m.CompareAndDelete(key, id+1))
-						expectNotSwappedMapOf(t, key, id+1, id+2)(m.CompareAndSwap(key, id+1, id+2))
-						expectNotDeletedMapOf(t, key, id+1)(m.CompareAndDelete(key, id+1))
+						expectDeletedMapOf(
+							t,
+							key,
+							id+1,
+						)(
+							m.CompareAndDelete(key, id+1),
+						)
+						expectNotSwappedMapOf(
+							t,
+							key,
+							id+1,
+							id+2,
+						)(
+							m.CompareAndSwap(key, id+1, id+2),
+						)
+						expectNotDeletedMapOf(
+							t,
+							key,
+							id+1,
+						)(
+							m.CompareAndDelete(key, id+1),
+						)
 						expectMissingMapOf(t, key, 0)(m.Load(key))
 					}
 					for _, s := range testData {
@@ -1231,7 +1428,14 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 					defer wg.Done()
 
 					for i, s := range testData {
-						expectNotSwappedMapOf(t, s, math.MaxInt, i+1)(m.CompareAndSwap(s, math.MaxInt, i+1))
+						expectNotSwappedMapOf(
+							t,
+							s,
+							math.MaxInt,
+							i+1,
+						)(
+							m.CompareAndSwap(s, math.MaxInt, i+1),
+						)
 						m.CompareAndSwap(s, i, i+1)
 						expectPresentMapOf(t, s, i+1)(m.Load(s))
 					}
@@ -1256,7 +1460,14 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 			for j := range 3 {
 				for i, s := range testData {
 					expectPresentMapOf(t, s, i+j)(m.Load(s))
-					expectLoadedFromSwapMapOf(t, s, i+j, i+j+1)(m.Swap(s, i+j+1))
+					expectLoadedFromSwapMapOf(
+						t,
+						s,
+						i+j,
+						i+j+1,
+					)(
+						m.Swap(s, i+j+1),
+					)
 					expectPresentMapOf(t, s, i+j+1)(m.Load(s))
 				}
 			}
@@ -1273,7 +1484,14 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 				expectPresentMapOf(t, s, i)(m.Load(s))
 				expectLoadedFromSwapMapOf(t, s, i, i)(m.Swap(s, i))
 			}
-			expectLoadedFromSwapMapOf(t, testData[15], 15, 16)(m.Swap(testData[15], 16))
+			expectLoadedFromSwapMapOf(
+				t,
+				testData[15],
+				15,
+				16,
+			)(
+				m.Swap(testData[15], 16),
+			)
 			for i, s := range testData {
 				if i == 15 {
 					expectPresentMapOf(t, s, 16)(m.Load(s))
@@ -1292,7 +1510,14 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 				expectLoadedFromSwapMapOf(t, s, i, i)(m.Swap(s, i))
 			}
 			for _, i := range []int{1, 105, 6, 85} {
-				expectLoadedFromSwapMapOf(t, testData[i], i, i+1)(m.Swap(testData[i], i+1))
+				expectLoadedFromSwapMapOf(
+					t,
+					testData[i],
+					i,
+					i+1,
+				)(
+					m.Swap(testData[i], i+1),
+				)
 			}
 			for i, s := range testData {
 				if i == 1 || i == 105 || i == 6 || i == 85 {
@@ -1318,14 +1543,34 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 					for _, s := range testData {
 						key := makeKey(s)
 						expectMissingMapOf(t, key, 0)(m.Load(key))
-						expectNotLoadedFromSwapMapOf(t, key, id)(m.Swap(key, id))
+						expectNotLoadedFromSwapMapOf(
+							t,
+							key,
+							id,
+						)(
+							m.Swap(key, id),
+						)
 						expectPresentMapOf(t, key, id)(m.Load(key))
-						expectLoadedFromSwapMapOf(t, key, id, id)(m.Swap(key, id))
+						expectLoadedFromSwapMapOf(
+							t,
+							key,
+							id,
+							id,
+						)(
+							m.Swap(key, id),
+						)
 					}
 					for _, s := range testData {
 						key := makeKey(s)
 						expectPresentMapOf(t, key, id)(m.Load(key))
-						expectLoadedFromSwapMapOf(t, key, id, id+1)(m.Swap(key, id+1))
+						expectLoadedFromSwapMapOf(
+							t,
+							key,
+							id,
+							id+1,
+						)(
+							m.Swap(key, id+1),
+						)
 						expectPresentMapOf(t, key, id+1)(m.Load(key))
 					}
 					for _, s := range testData {
@@ -1352,17 +1597,49 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 					for _, s := range testData {
 						key := makeKey(s)
 						expectMissingMapOf(t, key, 0)(m.Load(key))
-						expectNotLoadedFromSwapMapOf(t, key, id)(m.Swap(key, id))
+						expectNotLoadedFromSwapMapOf(
+							t,
+							key,
+							id,
+						)(
+							m.Swap(key, id),
+						)
 						expectPresentMapOf(t, key, id)(m.Load(key))
-						expectLoadedFromSwapMapOf(t, key, id, id)(m.Swap(key, id))
+						expectLoadedFromSwapMapOf(
+							t,
+							key,
+							id,
+							id,
+						)(
+							m.Swap(key, id),
+						)
 					}
 					for _, s := range testData {
 						key := makeKey(s)
 						expectPresentMapOf(t, key, id)(m.Load(key))
-						expectLoadedFromSwapMapOf(t, key, id, id+1)(m.Swap(key, id+1))
+						expectLoadedFromSwapMapOf(
+							t,
+							key,
+							id,
+							id+1,
+						)(
+							m.Swap(key, id+1),
+						)
 						expectPresentMapOf(t, key, id+1)(m.Load(key))
-						expectDeletedMapOf(t, key, id+1)(m.CompareAndDelete(key, id+1))
-						expectNotLoadedFromSwapMapOf(t, key, id+2)(m.Swap(key, id+2))
+						expectDeletedMapOf(
+							t,
+							key,
+							id+1,
+						)(
+							m.CompareAndDelete(key, id+1),
+						)
+						expectNotLoadedFromSwapMapOf(
+							t,
+							key,
+							id+2,
+						)(
+							m.Swap(key, id+2),
+						)
 						expectPresentMapOf(t, key, id+2)(m.Load(key))
 					}
 					for _, s := range testData {
@@ -1432,9 +1709,21 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 				expectLoadedMapOf(t, s, i)(m.LoadOrStore(s, 0))
 			}
 			expectPresentMapOf(t, testData[15], 15)(m.Load(testData[15]))
-			expectLoadedFromDeleteMapOf(t, testData[15], 15)(m.LoadAndDelete(testData[15]))
+			expectLoadedFromDeleteMapOf(
+				t,
+				testData[15],
+				15,
+			)(
+				m.LoadAndDelete(testData[15]),
+			)
 			expectMissingMapOf(t, testData[15], 0)(m.Load(testData[15]))
-			expectNotLoadedFromDeleteMapOf(t, testData[15], 0)(m.LoadAndDelete(testData[15]))
+			expectNotLoadedFromDeleteMapOf(
+				t,
+				testData[15],
+				0,
+			)(
+				m.LoadAndDelete(testData[15]),
+			)
 			for i, s := range testData {
 				if i == 15 {
 					expectMissingMapOf(t, s, 0)(m.Load(s))
@@ -1454,9 +1743,21 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 			}
 			for _, i := range []int{1, 105, 6, 85} {
 				expectPresentMapOf(t, testData[i], i)(m.Load(testData[i]))
-				expectLoadedFromDeleteMapOf(t, testData[i], i)(m.LoadAndDelete(testData[i]))
+				expectLoadedFromDeleteMapOf(
+					t,
+					testData[i],
+					i,
+				)(
+					m.LoadAndDelete(testData[i]),
+				)
 				expectMissingMapOf(t, testData[i], 0)(m.Load(testData[i]))
-				expectNotLoadedFromDeleteMapOf(t, testData[i], 0)(m.LoadAndDelete(testData[i]))
+				expectNotLoadedFromDeleteMapOf(
+					t,
+					testData[i],
+					0,
+				)(
+					m.LoadAndDelete(testData[i]),
+				)
 			}
 			for i, s := range testData {
 				if i == 1 || i == 105 || i == 6 || i == 85 {
@@ -1469,10 +1770,15 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 		t.Run("Iterate", func(t *testing.T) {
 			m := newMap()
 
-			testAllMapOf(t, m, testDataMapMapOf(testData[:]), func(s string, i int) bool {
-				expectLoadedFromDeleteMapOf(t, s, i)(m.LoadAndDelete(s))
-				return true
-			})
+			testAllMapOf(
+				t,
+				m,
+				testDataMapMapOf(testData[:]),
+				func(s string, i int) bool {
+					expectLoadedFromDeleteMapOf(t, s, i)(m.LoadAndDelete(s))
+					return true
+				},
+			)
 			for _, s := range testData {
 				expectMissingMapOf(t, s, 0)(m.Load(s))
 			}
@@ -1500,7 +1806,13 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 					for _, s := range testData {
 						key := makeKey(s)
 						expectPresentMapOf(t, key, id)(m.Load(key))
-						expectLoadedFromDeleteMapOf(t, key, id)(m.LoadAndDelete(key))
+						expectLoadedFromDeleteMapOf(
+							t,
+							key,
+							id,
+						)(
+							m.LoadAndDelete(key),
+						)
 						expectMissingMapOf(t, key, 0)(m.Load(key))
 					}
 					for _, s := range testData {
@@ -1540,7 +1852,12 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 	})
 }
 
-func testAllMapOf[K, V comparable](t *testing.T, m *MapOf[K, V], testData map[K]V, yield func(K, V) bool) {
+func testAllMapOf[K, V comparable](
+	t *testing.T,
+	m *MapOf[K, V],
+	testData map[K]V,
+	yield func(K, V) bool,
+) {
 	for k, v := range testData {
 		expectStoredMapOf(t, k, v)(m.LoadOrStore(k, v))
 	}
@@ -1565,7 +1882,11 @@ func testAllMapOf[K, V comparable](t *testing.T, m *MapOf[K, V], testData map[K]
 	}
 }
 
-func expectPresentMapOf[K, V comparable](t *testing.T, key K, want V) func(got V, ok bool) {
+func expectPresentMapOf[K, V comparable](
+	t *testing.T,
+	key K,
+	want V,
+) func(got V, ok bool) {
 	t.Helper()
 	return func(got V, ok bool) {
 		t.Helper()
@@ -1579,10 +1900,15 @@ func expectPresentMapOf[K, V comparable](t *testing.T, key K, want V) func(got V
 	}
 }
 
-func expectMissingMapOf[K, V comparable](t *testing.T, key K, want V) func(got V, ok bool) {
+func expectMissingMapOf[K, V comparable](
+	t *testing.T,
+	key K,
+	want V,
+) func(got V, ok bool) {
 	t.Helper()
 	if want != *new(V) {
-		// This is awkward, but the want argument is necessary to smooth over type inference.
+		// This is awkward, but the want argument is necessary to smooth over
+		// type inference.
 		// Just make sure the want argument always looks the same.
 		panic("expectMissingMapOf must always have a zero value variable")
 	}
@@ -1590,15 +1916,27 @@ func expectMissingMapOf[K, V comparable](t *testing.T, key K, want V) func(got V
 		t.Helper()
 
 		if ok {
-			t.Errorf("expected key %v to be missing from map, got value %v", key, got)
+			t.Errorf(
+				"expected key %v to be missing from map, got value %v",
+				key,
+				got,
+			)
 		}
 		if !ok && got != want {
-			t.Errorf("expected missing key %v to be paired with the zero value; got %v", key, got)
+			t.Errorf(
+				"expected missing key %v to be paired with the zero value; got %v",
+				key,
+				got,
+			)
 		}
 	}
 }
 
-func expectLoadedMapOf[K, V comparable](t *testing.T, key K, want V) func(got V, loaded bool) {
+func expectLoadedMapOf[K, V comparable](
+	t *testing.T,
+	key K,
+	want V,
+) func(got V, loaded bool) {
 	t.Helper()
 	return func(got V, loaded bool) {
 		t.Helper()
@@ -1612,89 +1950,156 @@ func expectLoadedMapOf[K, V comparable](t *testing.T, key K, want V) func(got V,
 	}
 }
 
-func expectStoredMapOf[K, V comparable](t *testing.T, key K, want V) func(got V, loaded bool) {
+func expectStoredMapOf[K, V comparable](
+	t *testing.T,
+	key K,
+	want V,
+) func(got V, loaded bool) {
 	t.Helper()
 	return func(got V, loaded bool) {
 		t.Helper()
 
 		if loaded {
-			t.Errorf("expected inserted key %v to have been stored, not loaded", key)
+			t.Errorf(
+				"expected inserted key %v to have been stored, not loaded",
+				key,
+			)
 		}
 		if got != want {
-			t.Errorf("expected inserted key %v to have value %v, got %v", key, want, got)
+			t.Errorf(
+				"expected inserted key %v to have value %v, got %v",
+				key,
+				want,
+				got,
+			)
 		}
 	}
 }
 
-func expectDeletedMapOf[K, V comparable](t *testing.T, key K, old V) func(deleted bool) {
+func expectDeletedMapOf[K, V comparable](
+	t *testing.T,
+	key K,
+	old V,
+) func(deleted bool) {
 	t.Helper()
 	return func(deleted bool) {
 		t.Helper()
 
 		if !deleted {
-			t.Errorf("expected key %v with value %v to be in map and deleted", key, old)
+			t.Errorf(
+				"expected key %v with value %v to be in map and deleted",
+				key,
+				old,
+			)
 		}
 	}
 }
 
-func expectNotDeletedMapOf[K, V comparable](t *testing.T, key K, old V) func(deleted bool) {
+func expectNotDeletedMapOf[K, V comparable](
+	t *testing.T,
+	key K,
+	old V,
+) func(deleted bool) {
 	t.Helper()
 	return func(deleted bool) {
 		t.Helper()
 
 		if deleted {
-			t.Errorf("expected key %v with value %v to not be in map and thus not deleted", key, old)
+			t.Errorf(
+				"expected key %v with value %v to not be in map and thus not deleted",
+				key,
+				old,
+			)
 		}
 	}
 }
 
-func expectSwappedMapOf[K, V comparable](t *testing.T, key K, old, new V) func(swapped bool) {
+func expectSwappedMapOf[K, V comparable](
+	t *testing.T,
+	key K,
+	old, new V,
+) func(swapped bool) {
 	t.Helper()
 	return func(swapped bool) {
 		t.Helper()
 
 		if !swapped {
-			t.Errorf("expected key %v with value %v to be in map and swapped for %v", key, old, new)
+			t.Errorf(
+				"expected key %v with value %v to be in map and swapped for %v",
+				key,
+				old,
+				new,
+			)
 		}
 	}
 }
 
-func expectNotSwappedMapOf[K, V comparable](t *testing.T, key K, old, new V) func(swapped bool) {
+func expectNotSwappedMapOf[K, V comparable](
+	t *testing.T,
+	key K,
+	old, new V,
+) func(swapped bool) {
 	t.Helper()
 	return func(swapped bool) {
 		t.Helper()
 
 		if swapped {
-			t.Errorf("expected key %v with value %v to not be in map or not swapped for %v", key, old, new)
+			t.Errorf(
+				"expected key %v with value %v to not be in map or not swapped for %v",
+				key,
+				old,
+				new,
+			)
 		}
 	}
 }
 
-func expectLoadedFromSwapMapOf[K, V comparable](t *testing.T, key K, want, new V) func(got V, loaded bool) {
+func expectLoadedFromSwapMapOf[K, V comparable](
+	t *testing.T,
+	key K,
+	want, new V,
+) func(got V, loaded bool) {
 	t.Helper()
 	return func(got V, loaded bool) {
 		t.Helper()
 
 		if !loaded {
-			t.Errorf("expected key %v to be in map and for %v to have been swapped for %v", key, want, new)
+			t.Errorf(
+				"expected key %v to be in map and for %v to have been swapped for %v",
+				key,
+				want,
+				new,
+			)
 		} else if want != got {
 			t.Errorf("key %v had its value %v swapped for %v, but expected it to have value %v", key, got, new, want)
 		}
 	}
 }
 
-func expectNotLoadedFromSwapMapOf[K, V comparable](t *testing.T, key K, new V) func(old V, loaded bool) {
+func expectNotLoadedFromSwapMapOf[K, V comparable](
+	t *testing.T,
+	key K,
+	new V,
+) func(old V, loaded bool) {
 	t.Helper()
 	return func(old V, loaded bool) {
 		t.Helper()
 
 		if loaded {
-			t.Errorf("expected key %v to not be in map, but found value %v for it", key, old)
+			t.Errorf(
+				"expected key %v to not be in map, but found value %v for it",
+				key,
+				old,
+			)
 		}
 	}
 }
 
-func expectLoadedFromDeleteMapOf[K, V comparable](t *testing.T, key K, want V) func(got V, loaded bool) {
+func expectLoadedFromDeleteMapOf[K, V comparable](
+	t *testing.T,
+	key K,
+	want V,
+) func(got V, loaded bool) {
 	t.Helper()
 	return func(got V, loaded bool) {
 		t.Helper()
@@ -1707,13 +2112,21 @@ func expectLoadedFromDeleteMapOf[K, V comparable](t *testing.T, key K, want V) f
 	}
 }
 
-func expectNotLoadedFromDeleteMapOf[K, V comparable](t *testing.T, key K, _ V) func(old V, loaded bool) {
+func expectNotLoadedFromDeleteMapOf[K, V comparable](
+	t *testing.T,
+	key K,
+	_ V,
+) func(old V, loaded bool) {
 	t.Helper()
 	return func(old V, loaded bool) {
 		t.Helper()
 
 		if loaded {
-			t.Errorf("expected key %v to not be in map, but found value %v for it", key, old)
+			t.Errorf(
+				"expected key %v to not be in map, but found value %v for it",
+				key,
+				old,
+			)
 		}
 	}
 }
@@ -1810,7 +2223,8 @@ func testDataMapMapOf(data []string) map[string]int {
 //			a := get(&m, i%P)
 //			b := get(&m, i%P)
 //			if a != b {
-//				t.Errorf("consecutive cache reads returned different values: a != b (%p vs %p)\n", a, b)
+// 				t.Errorf("consecutive cache reads returned different values: a != b (%p
+// vs %p)\n", a, b)
 //			}
 //		}()
 //	}
@@ -1951,7 +2365,12 @@ func TestMapOfRange(t *testing.T) {
 	met := make(map[string]int)
 	m.Range(func(key string, value int) bool {
 		if key != strconv.Itoa(value) {
-			t.Fatalf("got unexpected key/value for iteration %d: %v/%v", iters, key, value)
+			t.Fatalf(
+				"got unexpected key/value for iteration %d: %v/%v",
+				iters,
+				key,
+				value,
+			)
 			return false
 		}
 		met[key] += 1
@@ -2073,7 +2492,7 @@ func TestMapOfStore_StructKeys_StructValues(t *testing.T) {
 
 func TestMapOfWithHasher(t *testing.T) {
 	const numEntries = 10000
-	m := NewMapOfWithHasher[int, int](murmur3Finalizer, nil)
+	m := NewMapOf[int, int](WithKeyHasher(murmur3Finalizer))
 	for i := 0; i < numEntries; i++ {
 		m.Store(i, i)
 	}
@@ -2113,11 +2532,14 @@ func murmur3Finalizer(i int, _ uintptr) uintptr {
 
 func TestMapOfWithHasher_HashCodeCollisions(t *testing.T) {
 	const numEntries = 1000
-	m := NewMapOfWithHasher[int, int](func(i int, _ uintptr) uintptr {
-		// We intentionally use an awful hash function here to make sure
-		// that the map copes with key collisions.
-		return 42
-	}, nil, WithPresize(numEntries))
+	m := NewMapOf[int, int](WithKeyHasher(
+		func(i int, _ uintptr) uintptr {
+			// We intentionally use an awful hash function here to make sure
+			// that the map copes with key collisions.
+			return 42
+		}),
+		WithPresize(numEntries),
+	)
 	for i := 0; i < numEntries; i++ {
 		m.Store(i, i)
 	}
@@ -2149,9 +2571,12 @@ func TestMapOfLoadOrCompute(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[string, int]()
 	for i := 0; i < numEntries; i++ {
-		v, loaded := m.LoadOrCompute(strconv.Itoa(i), func() (newValue int, cancel bool) {
-			return i, true
-		})
+		v, loaded := m.LoadOrCompute(
+			strconv.Itoa(i),
+			func() (newValue int, cancel bool) {
+				return i, true
+			},
+		)
 		if loaded {
 			t.Fatalf("value not computed for %d", i)
 		}
@@ -2163,9 +2588,12 @@ func TestMapOfLoadOrCompute(t *testing.T) {
 		t.Fatalf("zero map size expected: %d", m.Size())
 	}
 	for i := 0; i < numEntries; i++ {
-		v, loaded := m.LoadOrCompute(strconv.Itoa(i), func() (newValue int, cancel bool) {
-			return i, false
-		})
+		v, loaded := m.LoadOrCompute(
+			strconv.Itoa(i),
+			func() (newValue int, cancel bool) {
+				return i, false
+			},
+		)
 		if loaded {
 			t.Fatalf("value not computed for %d", i)
 		}
@@ -2174,10 +2602,13 @@ func TestMapOfLoadOrCompute(t *testing.T) {
 		}
 	}
 	for i := 0; i < numEntries; i++ {
-		v, loaded := m.LoadOrCompute(strconv.Itoa(i), func() (newValue int, cancel bool) {
-			t.Fatalf("value func invoked")
-			return newValue, false
-		})
+		v, loaded := m.LoadOrCompute(
+			strconv.Itoa(i),
+			func() (newValue int, cancel bool) {
+				t.Fatalf("value func invoked")
+				return newValue, false
+			},
+		)
 		if !loaded {
 			t.Fatalf("value not loaded for %d", i)
 		}
@@ -2206,17 +2637,23 @@ func TestMapOfLoadOrCompute_FunctionCalledOnce(t *testing.T) {
 func TestMapOfCompute(t *testing.T) {
 	m := NewMapOf[string, int]()
 	// Store a new value.
-	v, ok := m.Compute("foobar", func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
-		if oldValue != 0 {
-			t.Fatalf("oldValue should be 0 when computing a new value: %d", oldValue)
-		}
-		if loaded {
-			t.Fatal("loaded should be false when computing a new value")
-		}
-		newValue = 42
-		op = UpdateOp
-		return
-	})
+	v, ok := m.Compute(
+		"foobar",
+		func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
+			if oldValue != 0 {
+				t.Fatalf(
+					"oldValue should be 0 when computing a new value: %d",
+					oldValue,
+				)
+			}
+			if loaded {
+				t.Fatal("loaded should be false when computing a new value")
+			}
+			newValue = 42
+			op = UpdateOp
+			return
+		},
+	)
 	if v != 42 {
 		t.Fatalf("v should be 42 when computing a new value: %d", v)
 	}
@@ -2224,17 +2661,23 @@ func TestMapOfCompute(t *testing.T) {
 		t.Fatal("ok should be true when computing a new value")
 	}
 	// Update an existing value.
-	v, ok = m.Compute("foobar", func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
-		if oldValue != 42 {
-			t.Fatalf("oldValue should be 42 when updating the value: %d", oldValue)
-		}
-		if !loaded {
-			t.Fatal("loaded should be true when updating the value")
-		}
-		newValue = oldValue + 42
-		op = UpdateOp
-		return
-	})
+	v, ok = m.Compute(
+		"foobar",
+		func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
+			if oldValue != 42 {
+				t.Fatalf(
+					"oldValue should be 42 when updating the value: %d",
+					oldValue,
+				)
+			}
+			if !loaded {
+				t.Fatal("loaded should be true when updating the value")
+			}
+			newValue = oldValue + 42
+			op = UpdateOp
+			return
+		},
+	)
 	if v != 84 {
 		t.Fatalf("v should be 84 when updating the value: %d", v)
 	}
@@ -2242,9 +2685,12 @@ func TestMapOfCompute(t *testing.T) {
 		t.Fatal("ok should be true when updating the value")
 	}
 	// Check that NoOp doesn't update the value
-	v, ok = m.Compute("foobar", func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
-		return 0, CancelOp
-	})
+	v, ok = m.Compute(
+		"foobar",
+		func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
+			return 0, CancelOp
+		},
+	)
 	if v != 84 {
 		t.Fatalf("v should be 84 after using NoOp: %d", v)
 	}
@@ -2252,16 +2698,22 @@ func TestMapOfCompute(t *testing.T) {
 		t.Fatal("ok should be true when updating the value")
 	}
 	// Delete an existing value.
-	v, ok = m.Compute("foobar", func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
-		if oldValue != 84 {
-			t.Fatalf("oldValue should be 84 when deleting the value: %d", oldValue)
-		}
-		if !loaded {
-			t.Fatal("loaded should be true when deleting the value")
-		}
-		op = DeleteOp
-		return
-	})
+	v, ok = m.Compute(
+		"foobar",
+		func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
+			if oldValue != 84 {
+				t.Fatalf(
+					"oldValue should be 84 when deleting the value: %d",
+					oldValue,
+				)
+			}
+			if !loaded {
+				t.Fatal("loaded should be true when deleting the value")
+			}
+			op = DeleteOp
+			return
+		},
+	)
 	if v != 84 {
 		t.Fatalf("v should be 84 when deleting the value: %d", v)
 	}
@@ -2269,39 +2721,61 @@ func TestMapOfCompute(t *testing.T) {
 		t.Fatal("ok should be false when deleting the value")
 	}
 	// Try to delete a non-existing value. Notice different key.
-	v, ok = m.Compute("barbaz", func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
-		if oldValue != 0 {
-			t.Fatalf("oldValue should be 0 when trying to delete a non-existing value: %d", oldValue)
-		}
-		if loaded {
-			t.Fatal("loaded should be false when trying to delete a non-existing value")
-		}
-		// We're returning a non-zero value, but the map should ignore it.
-		newValue = 42
-		op = DeleteOp
-		return
-	})
+	v, ok = m.Compute(
+		"barbaz",
+		func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
+			if oldValue != 0 {
+				t.Fatalf(
+					"oldValue should be 0 when trying to delete a non-existing value: %d",
+					oldValue,
+				)
+			}
+			if loaded {
+				t.Fatal(
+					"loaded should be false when trying to delete a non-existing value",
+				)
+			}
+			// We're returning a non-zero value, but the map should ignore it.
+			newValue = 42
+			op = DeleteOp
+			return
+		},
+	)
 	if v != 0 {
-		t.Fatalf("v should be 0 when trying to delete a non-existing value: %d", v)
+		t.Fatalf(
+			"v should be 0 when trying to delete a non-existing value: %d",
+			v,
+		)
 	}
 	if ok {
 		t.Fatal("ok should be false when trying to delete a non-existing value")
 	}
 	// Try NoOp on a non-existing value
-	v, ok = m.Compute("barbaz", func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
-		if oldValue != 0 {
-			t.Fatalf("oldValue should be 0 when trying to delete a non-existing value: %d", oldValue)
-		}
-		if loaded {
-			t.Fatal("loaded should be false when trying to delete a non-existing value")
-		}
-		// We're returning a non-zero value, but the map should ignore it.
-		newValue = 42
-		op = CancelOp
-		return
-	})
+	v, ok = m.Compute(
+		"barbaz",
+		func(oldValue int, loaded bool) (newValue int, op ComputeOp) {
+			if oldValue != 0 {
+				t.Fatalf(
+					"oldValue should be 0 when trying to delete a non-existing value: %d",
+					oldValue,
+				)
+			}
+			if loaded {
+				t.Fatal(
+					"loaded should be false when trying to delete a non-existing value",
+				)
+			}
+			// We're returning a non-zero value, but the map should ignore it.
+			newValue = 42
+			op = CancelOp
+			return
+		},
+	)
 	if v != 0 {
-		t.Fatalf("v should be 0 when trying to delete a non-existing value: %d", v)
+		t.Fatalf(
+			"v should be 0 when trying to delete a non-existing value: %d",
+			v,
+		)
 	}
 	if ok {
 		t.Fatal("ok should be false when trying to delete a non-existing value")
@@ -2398,7 +2872,9 @@ func TestMapOfStructStoreThenLoadAndDelete(t *testing.T) {
 	}
 }
 
-func TestMapOfStoreThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T) {
+func TestMapOfStoreThenParallelDelete_DoesNotShrinkBelowMinTableLen(
+	t *testing.T,
+) {
 	const numEntries = 1000
 	m := NewMapOf[int, int](WithShrinkEnabled())
 	for i := 0; i < numEntries; i++ {
@@ -2445,7 +2921,10 @@ func TestMapOfStoreThenParallelDelete_DoesNotShrinkBelowMinTableLen(t *testing.T
 	m.Shrink()
 	stats := m.Stats()
 	if stats.RootBuckets != DefaultMinMapTableLen {
-		t.Fatalf("table length was different from the minimum: %d", stats.RootBuckets)
+		t.Fatalf(
+			"table length was different from the minimum: %d",
+			stats.RootBuckets,
+		)
 	}
 }
 
@@ -2475,7 +2954,11 @@ func TestMapOfSize(t *testing.T) {
 		}
 		rsize := sizeBasedOnTypedRange(m)
 		if size != rsize {
-			t.Fatalf("size does not match number of entries in Range: %v, %v", size, rsize)
+			t.Fatalf(
+				"size does not match number of entries in Range: %v, %v",
+				size,
+				rsize,
+			)
 		}
 	}
 	for i := 0; i < numEntries; i++ {
@@ -2487,7 +2970,11 @@ func TestMapOfSize(t *testing.T) {
 		}
 		rsize := sizeBasedOnTypedRange(m)
 		if size != rsize {
-			t.Fatalf("size does not match number of entries in Range: %v, %v", size, rsize)
+			t.Fatalf(
+				"size does not match number of entries in Range: %v, %v",
+				size,
+				rsize,
+			)
 		}
 	}
 }
@@ -2513,68 +3000,122 @@ func TestMapOfClear(t *testing.T) {
 	}
 }
 
-func assertMapOfCapacity[K comparable, V any](t *testing.T, m *MapOf[K, V], expectedCap int) {
+func assertMapOfCapacity[K comparable, V any](
+	t *testing.T,
+	m *MapOf[K, V],
+	expectedCap int,
+) {
 	stats := m.Stats()
 	if stats.Capacity != expectedCap {
-		t.Fatalf("capacity was different from %d: %d", expectedCap, stats.Capacity)
+		t.Fatalf(
+			"capacity was different from %d: %d",
+			expectedCap,
+			stats.Capacity,
+		)
 	}
 }
 
 func TestNewMapOfPresized(t *testing.T) {
-	// assertMapOfCapacity(t, NewMapOf[string, string](), DefaultMinMapOfTableCap)
-	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(0)), DefaultMinMapOfTableCap)
-	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(0)), DefaultMinMapOfTableCap)
-	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(-100)), DefaultMinMapOfTableCap)
-	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(-100)), DefaultMinMapOfTableCap)
+	// assertMapOfCapacity(t, NewMapOf[string, string](),
+	// DefaultMinMapOfTableCap) assertMapOfCapacity(t, NewMapOf[string,
+	// string](WithPresize(0)), DefaultMinMapOfTableCap) assertMapOfCapacity(t,
+	// NewMapOf[string, string](WithPresize(0)), DefaultMinMapOfTableCap)
+	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(-100)),
+	// DefaultMinMapOfTableCap) assertMapOfCapacity(t, NewMapOf[string,
+	// string](WithPresize(-100)), DefaultMinMapOfTableCap)
 	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(500)), 1280)
 	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(500)), 1280)
-	// assertMapOfCapacity(t, NewMapOf[int, int](WithPresize(1_000_000)), 2621440)
-	// assertMapOfCapacity(t, NewMapOf[int, int](WithPresize(1_000_000)), 2621440)
+	// assertMapOfCapacity(t, NewMapOf[int, int](WithPresize(1_000_000)),
+	// 2621440) assertMapOfCapacity(t, NewMapOf[int,
+	// int](WithPresize(1_000_000)), 2621440)
 	// assertMapOfCapacity(t, NewMapOf[point, point](WithPresize(100)), 160)
 	// assertMapOfCapacity(t, NewMapOf[point, point](WithPresize(100)), 160)
 
 	var capacity, expectedCap int
-	capacity, expectedCap = NewMapOf[string, string]().Stats().Capacity, DefaultMinMapOfTableCap
+	capacity, expectedCap = NewMapOf[string, string]().Stats().
+		Capacity, DefaultMinMapOfTableCap
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
-	capacity, expectedCap = NewMapOf[string, string](WithPresize(0)).Stats().Capacity, DefaultMinMapOfTableCap
+	capacity, expectedCap = NewMapOf[string, string](
+		WithPresize(0),
+	).Stats().
+		Capacity, DefaultMinMapOfTableCap
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
-	capacity, expectedCap = NewMapOf[string, string](WithPresize(0)).Stats().Capacity, DefaultMinMapOfTableCap
+	capacity, expectedCap = NewMapOf[string, string](
+		WithPresize(0),
+	).Stats().
+		Capacity, DefaultMinMapOfTableCap
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
-	capacity, expectedCap = NewMapOf[string, string](WithPresize(-100)).Stats().Capacity, DefaultMinMapOfTableCap
+	capacity, expectedCap = NewMapOf[string, string](
+		WithPresize(-100),
+	).Stats().
+		Capacity, DefaultMinMapOfTableCap
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
-	capacity, expectedCap = NewMapOf[string, string](WithPresize(-100)).Stats().Capacity, DefaultMinMapOfTableCap
+	capacity, expectedCap = NewMapOf[string, string](
+		WithPresize(-100),
+	).Stats().
+		Capacity, DefaultMinMapOfTableCap
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
-	capacity, expectedCap = NewMapOf[string, string](WithPresize(500)).Stats().Capacity, calcTableLen(500)*entriesPerMapOfBucket
+	capacity, expectedCap = NewMapOf[string, string](
+		WithPresize(500),
+	).Stats().
+		Capacity, calcTableLen(
+		500,
+	)*entriesPerMapOfBucket
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
-	capacity, expectedCap = NewMapOf[string, string](WithPresize(500)).Stats().Capacity, calcTableLen(500)*entriesPerMapOfBucket
+	capacity, expectedCap = NewMapOf[string, string](
+		WithPresize(500),
+	).Stats().
+		Capacity, calcTableLen(
+		500,
+	)*entriesPerMapOfBucket
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
-	capacity, expectedCap = NewMapOf[string, string](WithPresize(1_000_000)).Stats().Capacity, calcTableLen(1_000_000)*entriesPerMapOfBucket
+	capacity, expectedCap = NewMapOf[string, string](
+		WithPresize(1_000_000),
+	).Stats().
+		Capacity, calcTableLen(
+		1_000_000,
+	)*entriesPerMapOfBucket
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
-	capacity, expectedCap = NewMapOf[string, string](WithPresize(1_000_000)).Stats().Capacity, calcTableLen(1_000_000)*entriesPerMapOfBucket
+	capacity, expectedCap = NewMapOf[string, string](
+		WithPresize(1_000_000),
+	).Stats().
+		Capacity, calcTableLen(
+		1_000_000,
+	)*entriesPerMapOfBucket
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
-	capacity, expectedCap = NewMapOf[string, string](WithPresize(100)).Stats().Capacity, calcTableLen(100)*entriesPerMapOfBucket
+	capacity, expectedCap = NewMapOf[string, string](
+		WithPresize(100),
+	).Stats().
+		Capacity, calcTableLen(
+		100,
+	)*entriesPerMapOfBucket
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
-	capacity, expectedCap = NewMapOf[string, string](WithPresize(100)).Stats().Capacity, calcTableLen(100)*entriesPerMapOfBucket
+	capacity, expectedCap = NewMapOf[string, string](
+		WithPresize(100),
+	).Stats().
+		Capacity, calcTableLen(
+		100,
+	)*entriesPerMapOfBucket
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
@@ -2627,13 +3168,19 @@ func TestNewMapOfGrowOnly_OnlyShrinksOnClear(t *testing.T) {
 	}
 	stats = m.Stats()
 	if stats.RootBuckets != maxTableLen {
-		t.Fatalf("table length was different from the expected: %d", stats.RootBuckets)
+		t.Fatalf(
+			"table length was different from the expected: %d",
+			stats.RootBuckets,
+		)
 	}
 
 	m.Clear()
 	stats = m.Stats()
 	if stats.RootBuckets != initialTableLen {
-		t.Fatalf("table length was different from the initial: %d", stats.RootBuckets)
+		t.Fatalf(
+			"table length was different from the initial: %d",
+			stats.RootBuckets,
+		)
 	}
 }
 
@@ -2650,7 +3197,11 @@ func TestMapOfResize(t *testing.T) {
 	}
 	expectedCapacity := (calcTableLen(numEntries) * EntriesPerMapOfBucket) + (numEntries/EntriesPerMapOfBucket + 1)
 	if stats.Capacity > expectedCapacity {
-		t.Fatalf("capacity was too large: %d, expected: %d", stats.Capacity, expectedCapacity)
+		t.Fatalf(
+			"capacity was too large: %d, expected: %d",
+			stats.Capacity,
+			expectedCapacity,
+		)
 	}
 	if stats.RootBuckets <= DefaultMinMapTableLen {
 		t.Fatalf("table was too small: %d", stats.RootBuckets)
@@ -2677,7 +3228,11 @@ func TestMapOfResize(t *testing.T) {
 	// TODO: Asynchronous shrinking requires a delay period
 	expectedCapacity = stats.RootBuckets * EntriesPerMapOfBucket
 	if stats.Capacity != expectedCapacity {
-		t.Logf("capacity was too large: %d, expected: %d", stats.Capacity, expectedCapacity)
+		t.Logf(
+			"capacity was too large: %d, expected: %d",
+			stats.Capacity,
+			expectedCapacity,
+		)
 	}
 	if stats.RootBuckets != DefaultMinMapTableLen {
 		t.Logf("table was too large: %d", stats.RootBuckets)
@@ -2706,7 +3261,12 @@ func TestMapOfResize_CounterLenLimit(t *testing.T) {
 	}
 }
 
-func parallelSeqTypedResizer(m *MapOf[int, int], numEntries int, positive bool, cdone chan bool) {
+func parallelSeqTypedResizer(
+	m *MapOf[int, int],
+	numEntries int,
+	positive bool,
+	cdone chan bool,
+) {
 	for i := 0; i < numEntries; i++ {
 		if positive {
 			m.Store(i, i)
@@ -2741,7 +3301,12 @@ func TestMapOfParallelResize_GrowOnly(t *testing.T) {
 	}
 }
 
-func parallelRandTypedResizer(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
+func parallelRandTypedResizer(
+	t *testing.T,
+	m *MapOf[string, int],
+	numIters, numEntries int,
+	cdone chan bool,
+) {
 	// r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		coin := rand.Int64N(2)
@@ -2783,11 +3348,20 @@ func TestMapOfParallelResize(t *testing.T) {
 	}
 	rs := sizeBasedOnTypedRange(m)
 	if s != rs {
-		t.Fatalf("size does not match number of entries in Range: %v, %v", s, rs)
+		t.Fatalf(
+			"size does not match number of entries in Range: %v, %v",
+			s,
+			rs,
+		)
 	}
 }
 
-func parallelRandTypedClearer(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
+func parallelRandTypedClearer(
+	t *testing.T,
+	m *MapOf[string, int],
+	numIters, numEntries int,
+	cdone chan bool,
+) {
 	// r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		coin := rand.Int64N(2)
@@ -2819,11 +3393,20 @@ func TestMapOfParallelClear(t *testing.T) {
 	}
 	rs := sizeBasedOnTypedRange(m)
 	if s != rs {
-		t.Fatalf("size does not match number of entries in Range: %v, %v", s, rs)
+		t.Fatalf(
+			"size does not match number of entries in Range: %v, %v",
+			s,
+			rs,
+		)
 	}
 }
 
-func parallelSeqTypedStorer(t *testing.T, m *MapOf[string, int], storeEach, numIters, numEntries int, cdone chan bool) {
+func parallelSeqTypedStorer(
+	t *testing.T,
+	m *MapOf[string, int],
+	storeEach, numIters, numEntries int,
+	cdone chan bool,
+) {
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numEntries; j++ {
 			if storeEach == 0 || j%storeEach == 0 {
@@ -2869,7 +3452,12 @@ func TestMapOfParallelStores(t *testing.T) {
 	}
 }
 
-func parallelRandTypedStorer(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
+func parallelRandTypedStorer(
+	t *testing.T,
+	m *MapOf[string, int],
+	numIters, numEntries int,
+	cdone chan bool,
+) {
 	// r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		j := rand.IntN(numEntries)
@@ -2882,7 +3470,12 @@ func parallelRandTypedStorer(t *testing.T, m *MapOf[string, int], numIters, numE
 	cdone <- true
 }
 
-func parallelRandTypedDeleter(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
+func parallelRandTypedDeleter(
+	t *testing.T,
+	m *MapOf[string, int],
+	numIters, numEntries int,
+	cdone chan bool,
+) {
 	// r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
 	for i := 0; i < numIters; i++ {
 		j := rand.IntN(numEntries)
@@ -2895,10 +3488,16 @@ func parallelRandTypedDeleter(t *testing.T, m *MapOf[string, int], numIters, num
 	cdone <- true
 }
 
-func parallelTypedLoader(t *testing.T, m *MapOf[string, int], numIters, numEntries int, cdone chan bool) {
+func parallelTypedLoader(
+	t *testing.T,
+	m *MapOf[string, int],
+	numIters, numEntries int,
+	cdone chan bool,
+) {
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numEntries; j++ {
-			// Due to atomic snapshots we must either see no entry, or a "<j>"/j pair.
+			// Due to atomic snapshots we must either see no entry, or a "<j>"/j
+			// pair.
 			if v, ok := m.Load(strconv.Itoa(j)); ok {
 				if v != j {
 					t.Errorf("value was not expected for %d: %d", j, v)
@@ -2941,12 +3540,19 @@ func TestMapOfParallelStoresAndDeletes(t *testing.T) {
 	}
 }
 
-func parallelTypedComputer(m *MapOf[uint64, uint64], numIters, numEntries int, cdone chan bool) {
+func parallelTypedComputer(
+	m *MapOf[uint64, uint64],
+	numIters, numEntries int,
+	cdone chan bool,
+) {
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numEntries; j++ {
-			m.Compute(uint64(j), func(oldValue uint64, loaded bool) (newValue uint64, op ComputeOp) {
-				return oldValue + 1, UpdateOp
-			})
+			m.Compute(
+				uint64(j),
+				func(oldValue uint64, loaded bool) (newValue uint64, op ComputeOp) {
+					return oldValue + 1, UpdateOp
+				},
+			)
 		}
 	}
 	cdone <- true
@@ -2976,7 +3582,12 @@ func TestMapOfParallelComputes(t *testing.T) {
 	}
 }
 
-func parallelTypedRangeStorer(m *MapOf[int, int], numEntries int, stopFlag *int64, cdone chan bool) {
+func parallelTypedRangeStorer(
+	m *MapOf[int, int],
+	numEntries int,
+	stopFlag *int64,
+	cdone chan bool,
+) {
 	for {
 		for i := 0; i < numEntries; i++ {
 			m.Store(i, i)
@@ -2988,7 +3599,12 @@ func parallelTypedRangeStorer(m *MapOf[int, int], numEntries int, stopFlag *int6
 	cdone <- true
 }
 
-func parallelTypedRangeDeleter(m *MapOf[int, int], numEntries int, stopFlag *int64, cdone chan bool) {
+func parallelTypedRangeDeleter(
+	m *MapOf[int, int],
+	numEntries int,
+	stopFlag *int64,
+	cdone chan bool,
+) {
 	for {
 		for i := 0; i < numEntries; i++ {
 			m.Delete(i)
@@ -3035,7 +3651,13 @@ func TestMapOfParallelRange(t *testing.T) {
 	<-cdone
 }
 
-func parallelTypedShrinker(t *testing.T, m *MapOf[uint64, *point], numIters, numEntries int, stopFlag *int64, cdone chan bool) {
+func parallelTypedShrinker(
+	t *testing.T,
+	m *MapOf[uint64, *point],
+	numIters, numEntries int,
+	stopFlag *int64,
+	cdone chan bool,
+) {
 	for i := 0; i < numIters; i++ {
 		for j := 0; j < numEntries; j++ {
 			if p, loaded := m.LoadOrStore(uint64(j), &point{int32(j), int32(j)}); loaded {
@@ -3050,7 +3672,13 @@ func parallelTypedShrinker(t *testing.T, m *MapOf[uint64, *point], numIters, num
 	cdone <- true
 }
 
-func parallelTypedUpdater(t *testing.T, m *MapOf[uint64, *point], idx int, stopFlag *int64, cdone chan bool) {
+func parallelTypedUpdater(
+	t *testing.T,
+	m *MapOf[uint64, *point],
+	idx int,
+	stopFlag *int64,
+	cdone chan bool,
+) {
 	for atomic.LoadInt64(stopFlag) != 1 {
 		sleepUs := int(rand.IntN(10))
 		if p, loaded := m.LoadOrStore(uint64(idx), &point{int32(idx), int32(idx)}); loaded {
@@ -3265,7 +3893,10 @@ func BenchmarkMapOfInt_WarmUp(b *testing.B) {
 func BenchmarkMapOfInt_Murmur3Finalizer_WarmUp(b *testing.B) {
 	for _, bc := range benchmarkCases {
 		b.Run(bc.name, func(b *testing.B) {
-			m := NewMapOfWithHasher[int, int](murmur3Finalizer, nil, WithPresize(benchmarkNumEntries))
+			m := NewMapOf[int, int](
+				WithKeyHasher(murmur3Finalizer),
+				WithPresize(benchmarkNumEntries),
+			)
 			for i := 0; i < benchmarkNumEntries; i++ {
 				m.Store(i, i)
 			}
@@ -3430,7 +4061,10 @@ func TestMapOfClone(t *testing.T) {
 			t.Fatalf("expected cloned empty map to be zero, got non-zero")
 		}
 		if clone.Size() != 0 {
-			t.Fatalf("expected cloned empty map size to be 0, got: %d", clone.Size())
+			t.Fatalf(
+				"expected cloned empty map size to be 0, got: %d",
+				clone.Size(),
+			)
 		}
 	})
 
@@ -3446,7 +4080,11 @@ func TestMapOfClone(t *testing.T) {
 
 		// Verify size
 		if clone.Size() != numEntries {
-			t.Fatalf("expected cloned map size to be %d, got: %d", numEntries, clone.Size())
+			t.Fatalf(
+				"expected cloned map size to be %d, got: %d",
+				numEntries,
+				clone.Size(),
+			)
 		}
 
 		// Verify all entries were copied correctly
@@ -3487,7 +4125,10 @@ func TestMapOfMerge(t *testing.T) {
 		m.Merge(nil, nil)
 
 		if m.Size() != 2 {
-			t.Fatalf("expected map size to remain 2 after merging with nil, got: %d", m.Size())
+			t.Fatalf(
+				"expected map size to remain 2 after merging with nil, got: %d",
+				m.Size(),
+			)
 		}
 		expectPresentMapOf(t, "a", 1)(m.Load("a"))
 		expectPresentMapOf(t, "b", 2)(m.Load("b"))
@@ -3505,7 +4146,10 @@ func TestMapOfMerge(t *testing.T) {
 		m.Merge(empty, nil)
 
 		if m.Size() != 2 {
-			t.Fatalf("expected map size to remain 2 after merging with empty map, got: %d", m.Size())
+			t.Fatalf(
+				"expected map size to remain 2 after merging with empty map, got: %d",
+				m.Size(),
+			)
 		}
 		expectPresentMapOf(t, "a", 1)(m.Load("a"))
 		expectPresentMapOf(t, "b", 2)(m.Load("b"))
@@ -3552,7 +4196,13 @@ func TestMapOfMerge(t *testing.T) {
 		}
 		expectPresentMapOf(t, "a", 1)(m1.Load("a"))
 		expectPresentMapOf(t, "b", 2)(m1.Load("b"))
-		expectPresentMapOf(t, "c", 3)(m1.Load("c")) // Should be overwritten with value from m2
+		expectPresentMapOf(
+			t,
+			"c",
+			3,
+		)(
+			m1.Load("c"),
+		) // Should be overwritten with value from m2
 		expectPresentMapOf(t, "d", 4)(m1.Load("d"))
 	})
 
@@ -3568,16 +4218,25 @@ func TestMapOfMerge(t *testing.T) {
 		m2.Store("d", 4)
 
 		// Custom conflict resolution: sum the values
-		m1.Merge(m2, func(this, other *EntryOf[string, int]) *EntryOf[string, int] {
-			return &EntryOf[string, int]{Value: this.Value + other.Value}
-		})
+		m1.Merge(
+			m2,
+			func(this, other *EntryOf[string, int]) *EntryOf[string, int] {
+				return &EntryOf[string, int]{Value: this.Value + other.Value}
+			},
+		)
 
 		if m1.Size() != 4 {
 			t.Fatalf("expected merged map size to be 4, got: %d", m1.Size())
 		}
 		expectPresentMapOf(t, "a", 1)(m1.Load("a"))
 		expectPresentMapOf(t, "b", 2)(m1.Load("b"))
-		expectPresentMapOf(t, "c", 33)(m1.Load("c")) // Should be sum of values (30+3)
+		expectPresentMapOf(
+			t,
+			"c",
+			33,
+		)(
+			m1.Load("c"),
+		) // Should be sum of values (30+3)
 		expectPresentMapOf(t, "d", 4)(m1.Load("d"))
 	})
 }
@@ -3595,7 +4254,10 @@ func TestMapOfFilterAndTransform(t *testing.T) {
 		)
 
 		if m.Size() != 0 {
-			t.Fatalf("expected empty map to remain empty, got size: %d", m.Size())
+			t.Fatalf(
+				"expected empty map to remain empty, got size: %d",
+				m.Size(),
+			)
 		}
 	})
 
@@ -3619,7 +4281,10 @@ func TestMapOfFilterAndTransform(t *testing.T) {
 		// Verify only even numbers remain
 		m.Range(func(key string, value int) bool {
 			if value%2 != 0 {
-				t.Fatalf("expected only even values, found odd value: %d", value)
+				t.Fatalf(
+					"expected only even values, found odd value: %d",
+					value,
+				)
 			}
 			return true
 		})
@@ -3717,7 +4382,13 @@ func TestMapOfFilterAndTransform(t *testing.T) {
 		for i := 0; i < 10; i++ {
 			key := strconv.Itoa(i)
 			if i%2 == 0 {
-				expectPresentMapOf(t, key, i*2)(m.Load(key)) // Even numbers doubled
+				expectPresentMapOf(
+					t,
+					key,
+					i*2,
+				)(
+					m.Load(key),
+				) // Even numbers doubled
 			} else {
 				expectPresentMapOf(t, key, i)(m.Load(key)) // Odd numbers unchanged
 			}
@@ -3834,7 +4505,10 @@ func TestMapOfBatchUpsert(t *testing.T) {
 		previous, loaded := m.BatchUpsert(entries)
 
 		if len(previous) != 0 {
-			t.Fatalf("expected empty previous values slice, got length: %d", len(previous))
+			t.Fatalf(
+				"expected empty previous values slice, got length: %d",
+				len(previous),
+			)
 		}
 		if len(loaded) != 0 {
 			t.Fatalf("expected empty loaded slice, got length: %d", len(loaded))
@@ -3854,7 +4528,10 @@ func TestMapOfBatchUpsert(t *testing.T) {
 
 		// Check return values
 		if len(previous) != 3 {
-			t.Fatalf("expected previous values slice length 3, got: %d", len(previous))
+			t.Fatalf(
+				"expected previous values slice length 3, got: %d",
+				len(previous),
+			)
 		}
 		if len(loaded) != 3 {
 			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
@@ -3863,7 +4540,11 @@ func TestMapOfBatchUpsert(t *testing.T) {
 		// Check all entries should have zero values and loaded=false
 		for i, val := range previous {
 			if val != 0 {
-				t.Fatalf("expected zero value for new entry at index %d, got: %d", i, val)
+				t.Fatalf(
+					"expected zero value for new entry at index %d, got: %d",
+					i,
+					val,
+				)
 			}
 			if loaded[i] {
 				t.Fatalf("expected loaded[%d] to be false for new entry", i)
@@ -3896,7 +4577,10 @@ func TestMapOfBatchUpsert(t *testing.T) {
 
 		// Check return values
 		if len(previous) != 3 {
-			t.Fatalf("expected previous values slice length 3, got: %d", len(previous))
+			t.Fatalf(
+				"expected previous values slice length 3, got: %d",
+				len(previous),
+			)
 		}
 		if len(loaded) != 3 {
 			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
@@ -3908,10 +4592,20 @@ func TestMapOfBatchUpsert(t *testing.T) {
 
 		for i := range entries {
 			if previous[i] != expectedPrevious[i] {
-				t.Fatalf("expected previous[%d] to be %d, got: %d", i, expectedPrevious[i], previous[i])
+				t.Fatalf(
+					"expected previous[%d] to be %d, got: %d",
+					i,
+					expectedPrevious[i],
+					previous[i],
+				)
 			}
 			if loaded[i] != expectedLoaded[i] {
-				t.Fatalf("expected loaded[%d] to be %v, got: %v", i, expectedLoaded[i], loaded[i])
+				t.Fatalf(
+					"expected loaded[%d] to be %v, got: %v",
+					i,
+					expectedLoaded[i],
+					loaded[i],
+				)
 			}
 		}
 
@@ -3939,10 +4633,18 @@ func TestMapOfBatchUpsert(t *testing.T) {
 
 		// Check return values
 		if len(previous) != numEntries {
-			t.Fatalf("expected previous values slice length %d, got: %d", numEntries, len(previous))
+			t.Fatalf(
+				"expected previous values slice length %d, got: %d",
+				numEntries,
+				len(previous),
+			)
 		}
 		if len(loaded) != numEntries {
-			t.Fatalf("expected loaded slice length %d, got: %d", numEntries, len(loaded))
+			t.Fatalf(
+				"expected loaded slice length %d, got: %d",
+				numEntries,
+				len(loaded),
+			)
 		}
 
 		// All entries should be new
@@ -3954,7 +4656,11 @@ func TestMapOfBatchUpsert(t *testing.T) {
 
 		// Verify map size
 		if m.Size() != numEntries {
-			t.Fatalf("expected map size to be %d, got: %d", numEntries, m.Size())
+			t.Fatalf(
+				"expected map size to be %d, got: %d",
+				numEntries,
+				m.Size(),
+			)
 		}
 
 		// Check random samples
@@ -3975,7 +4681,10 @@ func TestMapOfBatchInsert(t *testing.T) {
 		actual, loaded := m.BatchInsert(entries)
 
 		if len(actual) != 0 {
-			t.Fatalf("expected empty actual values slice, got length: %d", len(actual))
+			t.Fatalf(
+				"expected empty actual values slice, got length: %d",
+				len(actual),
+			)
 		}
 		if len(loaded) != 0 {
 			t.Fatalf("expected empty loaded slice, got length: %d", len(loaded))
@@ -3995,7 +4704,10 @@ func TestMapOfBatchInsert(t *testing.T) {
 
 		// Check return values
 		if len(actual) != 3 {
-			t.Fatalf("expected actual values slice length 3, got: %d", len(actual))
+			t.Fatalf(
+				"expected actual values slice length 3, got: %d",
+				len(actual),
+			)
 		}
 		if len(loaded) != 3 {
 			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
@@ -4004,7 +4716,12 @@ func TestMapOfBatchInsert(t *testing.T) {
 		// Check all entries should have inserted values and loaded=false
 		for i, entry := range entries {
 			if actual[i] != entry.Value {
-				t.Fatalf("expected actual[%d] to be %d, got: %d", i, entry.Value, actual[i])
+				t.Fatalf(
+					"expected actual[%d] to be %d, got: %d",
+					i,
+					entry.Value,
+					actual[i],
+				)
 			}
 			if loaded[i] {
 				t.Fatalf("expected loaded[%d] to be false for new entry", i)
@@ -4037,22 +4754,39 @@ func TestMapOfBatchInsert(t *testing.T) {
 
 		// Check return values
 		if len(actual) != 3 {
-			t.Fatalf("expected actual values slice length 3, got: %d", len(actual))
+			t.Fatalf(
+				"expected actual values slice length 3, got: %d",
+				len(actual),
+			)
 		}
 		if len(loaded) != 3 {
 			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
 		}
 
 		// Check actual values and loaded status
-		expectedActual := []int{100, 200, 3} // Existing values for a,b; new value for c
+		expectedActual := []int{
+			100,
+			200,
+			3,
+		} // Existing values for a,b; new value for c
 		expectedLoaded := []bool{true, true, false}
 
 		for i := range entries {
 			if actual[i] != expectedActual[i] {
-				t.Fatalf("expected actual[%d] to be %d, got: %d", i, expectedActual[i], actual[i])
+				t.Fatalf(
+					"expected actual[%d] to be %d, got: %d",
+					i,
+					expectedActual[i],
+					actual[i],
+				)
 			}
 			if loaded[i] != expectedLoaded[i] {
-				t.Fatalf("expected loaded[%d] to be %v, got: %v", i, expectedLoaded[i], loaded[i])
+				t.Fatalf(
+					"expected loaded[%d] to be %v, got: %v",
+					i,
+					expectedLoaded[i],
+					loaded[i],
+				)
 			}
 		}
 
@@ -4080,10 +4814,18 @@ func TestMapOfBatchInsert(t *testing.T) {
 
 		// Check return values
 		if len(actual) != numEntries {
-			t.Fatalf("expected actual values slice length %d, got: %d", numEntries, len(actual))
+			t.Fatalf(
+				"expected actual values slice length %d, got: %d",
+				numEntries,
+				len(actual),
+			)
 		}
 		if len(loaded) != numEntries {
-			t.Fatalf("expected loaded slice length %d, got: %d", numEntries, len(loaded))
+			t.Fatalf(
+				"expected loaded slice length %d, got: %d",
+				numEntries,
+				len(loaded),
+			)
 		}
 
 		// All entries should be new
@@ -4092,13 +4834,22 @@ func TestMapOfBatchInsert(t *testing.T) {
 				t.Fatalf("expected loaded[%d] to be false for new entry", i)
 			}
 			if actual[i] != i {
-				t.Fatalf("expected actual[%d] to be %d, got: %d", i, i, actual[i])
+				t.Fatalf(
+					"expected actual[%d] to be %d, got: %d",
+					i,
+					i,
+					actual[i],
+				)
 			}
 		}
 
 		// Verify map size
 		if m.Size() != numEntries {
-			t.Fatalf("expected map size to be %d, got: %d", numEntries, m.Size())
+			t.Fatalf(
+				"expected map size to be %d, got: %d",
+				numEntries,
+				m.Size(),
+			)
 		}
 
 		// Check random samples
@@ -4119,7 +4870,10 @@ func TestMapOfBatchDelete(t *testing.T) {
 		previous, loaded := m.BatchDelete(keys)
 
 		if len(previous) != 0 {
-			t.Fatalf("expected empty previous values slice, got length: %d", len(previous))
+			t.Fatalf(
+				"expected empty previous values slice, got length: %d",
+				len(previous),
+			)
 		}
 		if len(loaded) != 0 {
 			t.Fatalf("expected empty loaded slice, got length: %d", len(loaded))
@@ -4135,7 +4889,10 @@ func TestMapOfBatchDelete(t *testing.T) {
 
 		// Check return values
 		if len(previous) != 3 {
-			t.Fatalf("expected previous values slice length 3, got: %d", len(previous))
+			t.Fatalf(
+				"expected previous values slice length 3, got: %d",
+				len(previous),
+			)
 		}
 		if len(loaded) != 3 {
 			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
@@ -4144,10 +4901,17 @@ func TestMapOfBatchDelete(t *testing.T) {
 		// All entries should have zero values and loaded=false
 		for i := range keys {
 			if previous[i] != 0 {
-				t.Fatalf("expected previous[%d] to be 0 for non-existent key, got: %d", i, previous[i])
+				t.Fatalf(
+					"expected previous[%d] to be 0 for non-existent key, got: %d",
+					i,
+					previous[i],
+				)
 			}
 			if loaded[i] {
-				t.Fatalf("expected loaded[%d] to be false for non-existent key", i)
+				t.Fatalf(
+					"expected loaded[%d] to be false for non-existent key",
+					i,
+				)
 			}
 		}
 
@@ -4172,7 +4936,10 @@ func TestMapOfBatchDelete(t *testing.T) {
 
 		// Check return values
 		if len(previous) != 3 {
-			t.Fatalf("expected previous values slice length 3, got: %d", len(previous))
+			t.Fatalf(
+				"expected previous values slice length 3, got: %d",
+				len(previous),
+			)
 		}
 		if len(loaded) != 3 {
 			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
@@ -4184,10 +4951,20 @@ func TestMapOfBatchDelete(t *testing.T) {
 
 		for i := range keys {
 			if previous[i] != expectedPrevious[i] {
-				t.Fatalf("expected previous[%d] to be %d, got: %d", i, expectedPrevious[i], previous[i])
+				t.Fatalf(
+					"expected previous[%d] to be %d, got: %d",
+					i,
+					expectedPrevious[i],
+					previous[i],
+				)
 			}
 			if loaded[i] != expectedLoaded[i] {
-				t.Fatalf("expected loaded[%d] to be %v, got: %v", i, expectedLoaded[i], loaded[i])
+				t.Fatalf(
+					"expected loaded[%d] to be %v, got: %v",
+					i,
+					expectedLoaded[i],
+					loaded[i],
+				)
 			}
 		}
 
@@ -4222,17 +4999,30 @@ func TestMapOfBatchDelete(t *testing.T) {
 
 		// Check return values
 		if len(previous) != numEntries/2 {
-			t.Fatalf("expected previous values slice length %d, got: %d", numEntries/2, len(previous))
+			t.Fatalf(
+				"expected previous values slice length %d, got: %d",
+				numEntries/2,
+				len(previous),
+			)
 		}
 		if len(loaded) != numEntries/2 {
-			t.Fatalf("expected loaded slice length %d, got: %d", numEntries/2, len(loaded))
+			t.Fatalf(
+				"expected loaded slice length %d, got: %d",
+				numEntries/2,
+				len(loaded),
+			)
 		}
 
 		// All deleted entries should have correct values and loaded=true
 		for i := 0; i < numEntries/2; i++ {
 			expectedValue := i * 2 // Even numbers
 			if previous[i] != expectedValue {
-				t.Fatalf("expected previous[%d] to be %d, got: %d", i, expectedValue, previous[i])
+				t.Fatalf(
+					"expected previous[%d] to be %d, got: %d",
+					i,
+					expectedValue,
+					previous[i],
+				)
 			}
 			if !loaded[i] {
 				t.Fatalf("expected loaded[%d] to be true for existing key", i)
@@ -4241,14 +5031,25 @@ func TestMapOfBatchDelete(t *testing.T) {
 
 		// Verify map size
 		if m.Size() != numEntries/2 {
-			t.Fatalf("expected map size to be %d, got: %d", numEntries/2, m.Size())
+			t.Fatalf(
+				"expected map size to be %d, got: %d",
+				numEntries/2,
+				m.Size(),
+			)
 		}
 
-		// Check random samples - even numbers should be gone, odd numbers present
+		// Check random samples - even numbers should be gone, odd numbers
+		// present
 		for i := 0; i < 20; i++ {
 			key := strconv.Itoa(i)
 			if i%2 == 0 {
-				expectMissingMapOf(t, key, 0)(m.Load(key)) // Even numbers deleted
+				expectMissingMapOf(
+					t,
+					key,
+					0,
+				)(
+					m.Load(key),
+				) // Even numbers deleted
 			} else {
 				expectPresentMapOf(t, key, i)(m.Load(key)) // Odd numbers present
 			}
@@ -4266,7 +5067,10 @@ func TestMapOfBatchUpdate(t *testing.T) {
 		previous, loaded := m.BatchUpdate(entries)
 
 		if len(previous) != 0 {
-			t.Fatalf("expected empty previous values slice, got length: %d", len(previous))
+			t.Fatalf(
+				"expected empty previous values slice, got length: %d",
+				len(previous),
+			)
 		}
 		if len(loaded) != 0 {
 			t.Fatalf("expected empty loaded slice, got length: %d", len(loaded))
@@ -4286,7 +5090,10 @@ func TestMapOfBatchUpdate(t *testing.T) {
 
 		// Check return values
 		if len(previous) != 3 {
-			t.Fatalf("expected previous values slice length 3, got: %d", len(previous))
+			t.Fatalf(
+				"expected previous values slice length 3, got: %d",
+				len(previous),
+			)
 		}
 		if len(loaded) != 3 {
 			t.Fatalf("expected loaded slice length 3, got: %d", len(loaded))
@@ -4295,10 +5102,17 @@ func TestMapOfBatchUpdate(t *testing.T) {
 		// All entries should have zero values and loaded=false
 		for i := range entries {
 			if previous[i] != 0 {
-				t.Fatalf("expected previous[%d] to be 0 for non-existent key, got: %d", i, previous[i])
+				t.Fatalf(
+					"expected previous[%d] to be 0 for non-existent key, got: %d",
+					i,
+					previous[i],
+				)
 			}
 			if loaded[i] {
-				t.Fatalf("expected loaded[%d] to be false for non-existent key", i)
+				t.Fatalf(
+					"expected loaded[%d] to be false for non-existent key",
+					i,
+				)
 			}
 		}
 
@@ -4327,7 +5141,10 @@ func TestMapOfBatchUpdate(t *testing.T) {
 
 		// Check return values
 		if len(previous) != 4 {
-			t.Fatalf("expected previous values slice length 4, got: %d", len(previous))
+			t.Fatalf(
+				"expected previous values slice length 4, got: %d",
+				len(previous),
+			)
 		}
 		if len(loaded) != 4 {
 			t.Fatalf("expected loaded slice length 4, got: %d", len(loaded))
@@ -4339,10 +5156,20 @@ func TestMapOfBatchUpdate(t *testing.T) {
 
 		for i := range entries {
 			if previous[i] != expectedPrevious[i] {
-				t.Fatalf("expected previous[%d] to be %d, got: %d", i, expectedPrevious[i], previous[i])
+				t.Fatalf(
+					"expected previous[%d] to be %d, got: %d",
+					i,
+					expectedPrevious[i],
+					previous[i],
+				)
 			}
 			if loaded[i] != expectedLoaded[i] {
-				t.Fatalf("expected loaded[%d] to be %v, got: %v", i, expectedLoaded[i], loaded[i])
+				t.Fatalf(
+					"expected loaded[%d] to be %v, got: %v",
+					i,
+					expectedLoaded[i],
+					loaded[i],
+				)
 			}
 		}
 
@@ -4363,7 +5190,10 @@ func TestMapOfBatchUpdate(t *testing.T) {
 
 		// Pre-populate the map with odd-numbered keys
 		for i := 1; i < numEntries; i += 2 {
-			m.Store(strconv.Itoa(i), i*10) // Store with a different value to check updates
+			m.Store(
+				strconv.Itoa(i),
+				i*10,
+			) // Store with a different value to check updates
 		}
 
 		// Create entries for all keys (both odd and even)
@@ -4377,20 +5207,37 @@ func TestMapOfBatchUpdate(t *testing.T) {
 
 		// Check return values
 		if len(previous) != numEntries {
-			t.Fatalf("expected previous values slice length %d, got: %d", numEntries, len(previous))
+			t.Fatalf(
+				"expected previous values slice length %d, got: %d",
+				numEntries,
+				len(previous),
+			)
 		}
 		if len(loaded) != numEntries {
-			t.Fatalf("expected loaded slice length %d, got: %d", numEntries, len(loaded))
+			t.Fatalf(
+				"expected loaded slice length %d, got: %d",
+				numEntries,
+				len(loaded),
+			)
 		}
 
-		// Verify results - odd numbers should be updated, even numbers should not be affected
+		// Verify results - odd numbers should be updated, even numbers should
+		// not be affected
 		for i := 0; i < numEntries; i++ {
 			if i%2 == 1 { // Odd numbers - should be updated
 				if !loaded[i] {
-					t.Fatalf("expected loaded[%d] to be true for existing key", i)
+					t.Fatalf(
+						"expected loaded[%d] to be true for existing key",
+						i,
+					)
 				}
 				if previous[i] != i*10 {
-					t.Fatalf("expected previous[%d] to be %d, got: %d", i, i*10, previous[i])
+					t.Fatalf(
+						"expected previous[%d] to be %d, got: %d",
+						i,
+						i*10,
+						previous[i],
+					)
 				}
 			} else { // Even numbers - should not be affected
 				if loaded[i] {
@@ -4405,7 +5252,11 @@ func TestMapOfBatchUpdate(t *testing.T) {
 		// Verify map size - should only contain odd numbers
 		expectedSize := numEntries / 2
 		if m.Size() != expectedSize {
-			t.Fatalf("expected map size to be %d, got: %d", expectedSize, m.Size())
+			t.Fatalf(
+				"expected map size to be %d, got: %d",
+				expectedSize,
+				m.Size(),
+			)
 		}
 
 		// Check random samples
@@ -4427,13 +5278,18 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 		m := NewMapOf[string, int]()
 		processCount := 0
 
-		m.RangeProcessEntry(func(loaded *EntryOf[string, int]) *EntryOf[string, int] {
-			processCount++
-			return loaded // No modification
-		})
+		m.RangeProcessEntry(
+			func(loaded *EntryOf[string, int]) *EntryOf[string, int] {
+				processCount++
+				return loaded // No modification
+			},
+		)
 
 		if processCount != 0 {
-			t.Fatalf("expected process count to be 0 for empty map, got: %d", processCount)
+			t.Fatalf(
+				"expected process count to be 0 for empty map, got: %d",
+				processCount,
+			)
 		}
 	})
 
@@ -4446,11 +5302,16 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 		}
 
 		processCount := 0
-		m.RangeProcessEntry(func(loaded *EntryOf[string, int]) *EntryOf[string, int] {
-			processCount++
-			// Double all values
-			return &EntryOf[string, int]{Key: loaded.Key, Value: loaded.Value * 2}
-		})
+		m.RangeProcessEntry(
+			func(loaded *EntryOf[string, int]) *EntryOf[string, int] {
+				processCount++
+				// Double all values
+				return &EntryOf[string, int]{
+					Key:   loaded.Key,
+					Value: loaded.Value * 2,
+				}
+			},
+		)
 
 		if processCount != 10 {
 			t.Fatalf("expected process count to be 10, got: %d", processCount)
@@ -4477,17 +5338,23 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 		}
 
 		// Delete even-numbered entries
-		m.RangeProcessEntry(func(loaded *EntryOf[string, int]) *EntryOf[string, int] {
-			if loaded.Value%2 == 0 {
-				return nil // Delete entry
-			}
-			return loaded // Keep entry
-		})
+		m.RangeProcessEntry(
+			func(loaded *EntryOf[string, int]) *EntryOf[string, int] {
+				if loaded.Value%2 == 0 {
+					return nil // Delete entry
+				}
+				return loaded // Keep entry
+			},
+		)
 
 		// Verify only odd-numbered entries remain
 		expectedSize := 5
 		if m.Size() != expectedSize {
-			t.Fatalf("expected size to be %d after deletion, got: %d", expectedSize, m.Size())
+			t.Fatalf(
+				"expected size to be %d after deletion, got: %d",
+				expectedSize,
+				m.Size(),
+			)
 		}
 
 		for i := 0; i < 10; i++ {
@@ -4510,20 +5377,25 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 			m.Store(strconv.Itoa(i), i)
 		}
 
-		m.RangeProcessEntry(func(loaded *EntryOf[string, int]) *EntryOf[string, int] {
-			value := loaded.Value
-			switch {
-			case value%3 == 0:
-				// Divisible by 3: delete
-				return nil
-			case value%3 == 1:
-				// Remainder 1: multiply by 10
-				return &EntryOf[string, int]{Key: loaded.Key, Value: value * 10}
-			default:
-				// Remainder 2: keep unchanged
-				return loaded
-			}
-		})
+		m.RangeProcessEntry(
+			func(loaded *EntryOf[string, int]) *EntryOf[string, int] {
+				value := loaded.Value
+				switch {
+				case value%3 == 0:
+					// Divisible by 3: delete
+					return nil
+				case value%3 == 1:
+					// Remainder 1: multiply by 10
+					return &EntryOf[string, int]{
+						Key:   loaded.Key,
+						Value: value * 10,
+					}
+				default:
+					// Remainder 2: keep unchanged
+					return loaded
+				}
+			},
+		)
 
 		// Verify results
 		for i := 0; i < 15; i++ {
@@ -4551,10 +5423,12 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 		}
 
 		// This should not panic or cause data races
-		m.RangeProcessEntry(func(loaded *EntryOf[string, int]) *EntryOf[string, int] {
-			// Just return the same entry
-			return loaded
-		})
+		m.RangeProcessEntry(
+			func(loaded *EntryOf[string, int]) *EntryOf[string, int] {
+				// Just return the same entry
+				return loaded
+			},
+		)
 
 		// Verify map is still intact
 		if m.Size() != 100 {
@@ -4575,7 +5449,10 @@ func TestMapOfLoadAndUpdate(t *testing.T) {
 			t.Fatalf("expected loaded to be false for non-existent key")
 		}
 		if previous != 0 {
-			t.Fatalf("expected previous value to be zero for non-existent key, got: %d", previous)
+			t.Fatalf(
+				"expected previous value to be zero for non-existent key, got: %d",
+				previous,
+			)
 		}
 
 		// Key should still not exist in the map
@@ -4632,7 +5509,12 @@ func TestMapOfLoadAndUpdate(t *testing.T) {
 			}
 			expectedPrevious := (i - 1) * 10
 			if previous != expectedPrevious {
-				t.Fatalf("expected previous value to be %d for iteration %d, got: %d", expectedPrevious, i, previous)
+				t.Fatalf(
+					"expected previous value to be %d for iteration %d, got: %d",
+					expectedPrevious,
+					i,
+					previous,
+				)
 			}
 		}
 
@@ -4649,13 +5531,21 @@ func TestMapOfLoadAndUpdate(t *testing.T) {
 		// Update existing key
 		previous, loaded := m.LoadAndUpdate(1, "ONE")
 		if !loaded || previous != "one" {
-			t.Fatalf("expected loaded=true and previous='one', got loaded=%v, previous='%s'", loaded, previous)
+			t.Fatalf(
+				"expected loaded=true and previous='one', got loaded=%v, previous='%s'",
+				loaded,
+				previous,
+			)
 		}
 
 		// Try non-existent key
 		previous, loaded = m.LoadAndUpdate(3, "three")
 		if loaded || previous != "" {
-			t.Fatalf("expected loaded=false and previous='', got loaded=%v, previous='%s'", loaded, previous)
+			t.Fatalf(
+				"expected loaded=false and previous='', got loaded=%v, previous='%s'",
+				loaded,
+				previous,
+			)
 		}
 
 		// Verify final state
@@ -4704,7 +5594,9 @@ func TestMapOfLoadAndUpdate(t *testing.T) {
 		previous, loaded := m.LoadAndUpdate("zero", 42)
 
 		if !loaded {
-			t.Fatalf("expected loaded to be true for existing key with zero value")
+			t.Fatalf(
+				"expected loaded to be true for existing key with zero value",
+			)
 		}
 		if previous != 0 {
 			t.Fatalf("expected previous value to be 0, got: %d", previous)
@@ -4887,7 +5779,10 @@ func TestMapOfGrowShrink_Concurrent(t *testing.T) {
 				key := base*numOperations + j
 				m.Store(key, key)
 				if val, ok := m.Load(key); !ok || val != key {
-					t.Errorf("Data corruption during concurrent resize: key=%d", key)
+					t.Errorf(
+						"Data corruption during concurrent resize: key=%d",
+						key,
+					)
 				}
 				m.Delete(key)
 				runtime.Gosched()
@@ -4923,20 +5818,34 @@ func TestMapOfGrow_Performance(t *testing.T) {
 	duration2 := time.Since(start2)
 
 	if duration2 > duration1*2 {
-		t.Logf("Pre-allocation might be slower than expected: without=%v, with=%v",
-			duration1, duration2)
+		t.Logf(
+			"Pre-allocation might be slower than expected: without=%v, with=%v",
+			duration1,
+			duration2,
+		)
 	}
 
 	stats1 := m1.Stats()
 	stats2 := m2.Stats()
 
 	if stats2.TotalGrowths > stats1.TotalGrowths {
-		t.Fatalf("Pre-allocated map should have fewer growths: pre=%d, normal=%d",
-			stats2.TotalGrowths, stats1.TotalGrowths)
+		t.Fatalf(
+			"Pre-allocated map should have fewer growths: pre=%d, normal=%d",
+			stats2.TotalGrowths,
+			stats1.TotalGrowths,
+		)
 	}
 
-	t.Logf("Without pre-allocation: %v, growths=%d", duration1, stats1.TotalGrowths)
-	t.Logf("With pre-allocation: %v, growths=%d", duration2, stats2.TotalGrowths)
+	t.Logf(
+		"Without pre-allocation: %v, growths=%d",
+		duration1,
+		stats1.TotalGrowths,
+	)
+	t.Logf(
+		"With pre-allocation: %v, growths=%d",
+		duration2,
+		stats2.TotalGrowths,
+	)
 }
 
 func TestMapOfShrink_AutomaticVsManual(t *testing.T) {
@@ -4985,31 +5894,50 @@ func TestMapOfGrowShrink_DataIntegrity(t *testing.T) {
 		m.Grow(numEntries * 2)
 
 		for key, expectedValue := range testData {
-			if actualValue, ok := m.Load(key); !ok || actualValue != expectedValue {
-				t.Fatalf("Data corruption after Grow cycle %d: key=%s, expected=%s, actual=%s, ok=%v",
-					cycle, key, expectedValue, actualValue, ok)
+			if actualValue, ok := m.Load(key); !ok ||
+				actualValue != expectedValue {
+				t.Fatalf(
+					"Data corruption after Grow cycle %d: key=%s, expected=%s, actual=%s, ok=%v",
+					cycle,
+					key,
+					expectedValue,
+					actualValue,
+					ok,
+				)
 			}
 		}
 
 		m.Shrink()
 
 		for key, expectedValue := range testData {
-			if actualValue, ok := m.Load(key); !ok || actualValue != expectedValue {
-				t.Fatalf("Data corruption after Shrink cycle %d: key=%s, expected=%s, actual=%s, ok=%v",
-					cycle, key, expectedValue, actualValue, ok)
+			if actualValue, ok := m.Load(key); !ok ||
+				actualValue != expectedValue {
+				t.Fatalf(
+					"Data corruption after Shrink cycle %d: key=%s, expected=%s, actual=%s, ok=%v",
+					cycle,
+					key,
+					expectedValue,
+					actualValue,
+					ok,
+				)
 			}
 		}
 	}
 
 	stats := m.Stats()
 	if stats.Size != numEntries {
-		t.Fatalf("Final size mismatch: expected=%d, actual=%d", numEntries, stats.Size)
+		t.Fatalf(
+			"Final size mismatch: expected=%d, actual=%d",
+			numEntries,
+			stats.Size,
+		)
 	}
 }
 
 // TestMapOfCompareAndSwap tests the CompareAndSwap function}
 
-// TestMapOfDefaultHasher tests the defaultHasher function with different key types
+// TestMapOfDefaultHasher tests the defaultHasher function with different key
+// types
 func TestMapOfDefaultHasher(t *testing.T) {
 	t.Run("UintKeys", func(t *testing.T) {
 		m := NewMapOf[uint, string]()
@@ -5043,8 +5971,20 @@ func TestMapOfDefaultHasher(t *testing.T) {
 		m.Store(uint64(0x123456789ABCDEF0), "large1")
 		m.Store(uint64(0xFEDCBA9876543210), "large2")
 
-		expectPresentMapOf(t, uint64(0x123456789ABCDEF0), "large1")(m.Load(uint64(0x123456789ABCDEF0)))
-		expectPresentMapOf(t, uint64(0xFEDCBA9876543210), "large2")(m.Load(uint64(0xFEDCBA9876543210)))
+		expectPresentMapOf(
+			t,
+			uint64(0x123456789ABCDEF0),
+			"large1",
+		)(
+			m.Load(uint64(0x123456789ABCDEF0)),
+		)
+		expectPresentMapOf(
+			t,
+			uint64(0xFEDCBA9876543210),
+			"large2",
+		)(
+			m.Load(uint64(0xFEDCBA9876543210)),
+		)
 	})
 
 	t.Run("Int64Keys", func(t *testing.T) {
@@ -5052,8 +5992,20 @@ func TestMapOfDefaultHasher(t *testing.T) {
 		m.Store(int64(-9223372036854775808), "min")
 		m.Store(int64(9223372036854775807), "max")
 
-		expectPresentMapOf(t, int64(-9223372036854775808), "min")(m.Load(int64(-9223372036854775808)))
-		expectPresentMapOf(t, int64(9223372036854775807), "max")(m.Load(int64(9223372036854775807)))
+		expectPresentMapOf(
+			t,
+			int64(-9223372036854775808),
+			"min",
+		)(
+			m.Load(int64(-9223372036854775808)),
+		)
+		expectPresentMapOf(
+			t,
+			int64(9223372036854775807),
+			"max",
+		)(
+			m.Load(int64(9223372036854775807)),
+		)
 	})
 
 	t.Run("Uint32Keys", func(t *testing.T) {
@@ -5061,8 +6013,20 @@ func TestMapOfDefaultHasher(t *testing.T) {
 		m.Store(uint32(0xFFFFFFFF), "max32")
 		m.Store(uint32(0x12345678), "mid32")
 
-		expectPresentMapOf(t, uint32(0xFFFFFFFF), "max32")(m.Load(uint32(0xFFFFFFFF)))
-		expectPresentMapOf(t, uint32(0x12345678), "mid32")(m.Load(uint32(0x12345678)))
+		expectPresentMapOf(
+			t,
+			uint32(0xFFFFFFFF),
+			"max32",
+		)(
+			m.Load(uint32(0xFFFFFFFF)),
+		)
+		expectPresentMapOf(
+			t,
+			uint32(0x12345678),
+			"mid32",
+		)(
+			m.Load(uint32(0x12345678)),
+		)
 	})
 
 	t.Run("Int32Keys", func(t *testing.T) {
@@ -5070,8 +6034,20 @@ func TestMapOfDefaultHasher(t *testing.T) {
 		m.Store(int32(-2147483648), "min32")
 		m.Store(int32(2147483647), "max32")
 
-		expectPresentMapOf(t, int32(-2147483648), "min32")(m.Load(int32(-2147483648)))
-		expectPresentMapOf(t, int32(2147483647), "max32")(m.Load(int32(2147483647)))
+		expectPresentMapOf(
+			t,
+			int32(-2147483648),
+			"min32",
+		)(
+			m.Load(int32(-2147483648)),
+		)
+		expectPresentMapOf(
+			t,
+			int32(2147483647),
+			"max32",
+		)(
+			m.Load(int32(2147483647)),
+		)
 	})
 
 	t.Run("Uint16Keys", func(t *testing.T) {
@@ -5111,7 +6087,8 @@ func TestMapOfDefaultHasher(t *testing.T) {
 	})
 }
 
-// TestMapOfDefaultHasherComprehensive tests all branches of defaultHasher function
+// TestMapOfDefaultHasherComprehensive tests all branches of defaultHasher
+// function
 func TestMapOfDefaultHasherComprehensive(t *testing.T) {
 	t.Run("Float32Keys", func(t *testing.T) {
 		m := &MapOf[float32, string]{}
@@ -5120,8 +6097,15 @@ func TestMapOfDefaultHasherComprehensive(t *testing.T) {
 			m.Store(key, fmt.Sprintf("value%d", i))
 		}
 		for i, key := range keys {
-			if val, found := m.Load(key); !found || val != fmt.Sprintf("value%d", i) {
-				t.Fatalf("Expected to find key %v with value value%d, got found=%v, val=%s", key, i, found, val)
+			if val, found := m.Load(key); !found ||
+				val != fmt.Sprintf("value%d", i) {
+				t.Fatalf(
+					"Expected to find key %v with value value%d, got found=%v, val=%s",
+					key,
+					i,
+					found,
+					val,
+				)
 			}
 		}
 	})
@@ -5133,8 +6117,15 @@ func TestMapOfDefaultHasherComprehensive(t *testing.T) {
 			m.Store(key, fmt.Sprintf("val%d", i))
 		}
 		for i, key := range keys {
-			if val, found := m.Load(key); !found || val != fmt.Sprintf("val%d", i) {
-				t.Fatalf("Expected to find key %v with value val%d, got found=%v, val=%s", key, i, found, val)
+			if val, found := m.Load(key); !found ||
+				val != fmt.Sprintf("val%d", i) {
+				t.Fatalf(
+					"Expected to find key %v with value val%d, got found=%v, val=%s",
+					key,
+					i,
+					found,
+					val,
+				)
 			}
 		}
 	})
@@ -5159,8 +6150,15 @@ func TestMapOfDefaultHasherComprehensive(t *testing.T) {
 			m.Store(key, fmt.Sprintf("complex%d", i))
 		}
 		for i, key := range keys {
-			if val, found := m.Load(key); !found || val != fmt.Sprintf("complex%d", i) {
-				t.Fatalf("Expected to find key %v with value complex%d, got found=%v, val=%s", key, i, found, val)
+			if val, found := m.Load(key); !found ||
+				val != fmt.Sprintf("complex%d", i) {
+				t.Fatalf(
+					"Expected to find key %v with value complex%d, got found=%v, val=%s",
+					key,
+					i,
+					found,
+					val,
+				)
 			}
 		}
 	})
@@ -5172,8 +6170,15 @@ func TestMapOfDefaultHasherComprehensive(t *testing.T) {
 			m.Store(key, fmt.Sprintf("c128_%d", i))
 		}
 		for i, key := range keys {
-			if val, found := m.Load(key); !found || val != fmt.Sprintf("c128_%d", i) {
-				t.Fatalf("Expected to find key %v with value c128_%d, got found=%v, val=%s", key, i, found, val)
+			if val, found := m.Load(key); !found ||
+				val != fmt.Sprintf("c128_%d", i) {
+				t.Fatalf(
+					"Expected to find key %v with value c128_%d, got found=%v, val=%s",
+					key,
+					i,
+					found,
+					val,
+				)
 			}
 		}
 	})
@@ -5185,8 +6190,15 @@ func TestMapOfDefaultHasherComprehensive(t *testing.T) {
 			m.Store(key, fmt.Sprintf("array%d", i))
 		}
 		for i, key := range keys {
-			if val, found := m.Load(key); !found || val != fmt.Sprintf("array%d", i) {
-				t.Fatalf("Expected to find key %v with value array%d, got found=%v, val=%s", key, i, found, val)
+			if val, found := m.Load(key); !found ||
+				val != fmt.Sprintf("array%d", i) {
+				t.Fatalf(
+					"Expected to find key %v with value array%d, got found=%v, val=%s",
+					key,
+					i,
+					found,
+					val,
+				)
 			}
 		}
 	})
@@ -5203,7 +6215,13 @@ func TestMapOfDefaultHasherComprehensive(t *testing.T) {
 		}
 		for i, key := range keys {
 			if val, found := m.Load(key); !found || val != i*100 {
-				t.Fatalf("Expected to find key %v with value %d, got found=%v, val=%d", key, i*100, found, val)
+				t.Fatalf(
+					"Expected to find key %v with value %d, got found=%v, val=%d",
+					key,
+					i*100,
+					found,
+					val,
+				)
 			}
 		}
 	})
@@ -5403,7 +6421,9 @@ func TestMapOfCompareAndDelete(t *testing.T) {
 
 		defer func() {
 			if r := recover(); r == nil {
-				t.Fatal("CompareAndDelete should panic for non-comparable values")
+				t.Fatal(
+					"CompareAndDelete should panic for non-comparable values",
+				)
 			} else if !strings.Contains(fmt.Sprint(r), "not of comparable type") {
 				t.Fatalf("Unexpected panic message: %v", r)
 			}
@@ -5433,7 +6453,10 @@ func TestMapOf_LoadEntry(t *testing.T) {
 	// Verify Load also returns false for empty map
 	value, ok := m.Load("key1")
 	if ok {
-		t.Errorf("Expected Load to return false for non-existent key, got true with value %v", value)
+		t.Errorf(
+			"Expected Load to return false for non-existent key, got true with value %v",
+			value,
+		)
 	}
 
 	// Store a value
@@ -5460,17 +6483,27 @@ func TestMapOf_LoadEntry(t *testing.T) {
 		t.Errorf("Expected Load value 100, got %v", value)
 	}
 	if entry.Value != value {
-		t.Errorf("LoadEntry and Load returned different values: %v vs %v", entry.Value, value)
+		t.Errorf(
+			"LoadEntry and Load returned different values: %v vs %v",
+			entry.Value,
+			value,
+		)
 	}
 
 	// Test non-existent key with both functions
 	entry = m.LoadEntry("key2")
 	value, ok = m.Load("key2")
 	if entry != nil {
-		t.Errorf("Expected LoadEntry to return nil for non-existent key, got %v", entry)
+		t.Errorf(
+			"Expected LoadEntry to return nil for non-existent key, got %v",
+			entry,
+		)
 	}
 	if ok {
-		t.Errorf("Expected Load to return false for non-existent key, got true with value %v", value)
+		t.Errorf(
+			"Expected Load to return false for non-existent key, got true with value %v",
+			value,
+		)
 	}
 
 	// Store multiple values and test consistency
@@ -5484,7 +6517,11 @@ func TestMapOf_LoadEntry(t *testing.T) {
 		t.Error("Both LoadEntry and Load should find key2")
 	}
 	if entry != nil && entry.Value != value {
-		t.Errorf("LoadEntry and Load returned different values for key2: %v vs %v", entry.Value, value)
+		t.Errorf(
+			"LoadEntry and Load returned different values for key2: %v vs %v",
+			entry.Value,
+			value,
+		)
 	}
 
 	// Test key3
@@ -5494,7 +6531,11 @@ func TestMapOf_LoadEntry(t *testing.T) {
 		t.Error("Both LoadEntry and Load should find key3")
 	}
 	if entry != nil && entry.Value != value {
-		t.Errorf("LoadEntry and Load returned different values for key3: %v vs %v", entry.Value, value)
+		t.Errorf(
+			"LoadEntry and Load returned different values for key3: %v vs %v",
+			entry.Value,
+			value,
+		)
 	}
 }
 
@@ -5515,7 +6556,10 @@ func TestMapOfBatchProcess(t *testing.T) {
 		)
 
 		if processCount != 0 {
-			t.Fatalf("expected process count to be 0 for empty iterator, got: %d", processCount)
+			t.Fatalf(
+				"expected process count to be 0 for empty iterator, got: %d",
+				processCount,
+			)
 		}
 		if m.Size() != 0 {
 			t.Fatalf("expected map size to be 0, got: %d", m.Size())
@@ -5534,7 +6578,10 @@ func TestMapOfBatchProcess(t *testing.T) {
 			func(key string, value int, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
 				processCount++
 				if loaded != nil {
-					t.Fatalf("expected loaded to be nil for new key, got: %v", loaded)
+					t.Fatalf(
+						"expected loaded to be nil for new key, got: %v",
+						loaded,
+					)
 				}
 				return &EntryOf[string, int]{Value: value}, value, false
 			},
@@ -5567,14 +6614,22 @@ func TestMapOfBatchProcess(t *testing.T) {
 			func(key string, value int, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
 				processCount++
 				if loaded != nil {
-					t.Fatalf("expected loaded to be nil for new key %s, got: %v", key, loaded)
+					t.Fatalf(
+						"expected loaded to be nil for new key %s, got: %v",
+						key,
+						loaded,
+					)
 				}
 				return &EntryOf[string, int]{Value: value}, value, false
 			},
 		)
 
 		if processCount != len(expectedItems) {
-			t.Fatalf("expected process count to be %d, got: %d", len(expectedItems), processCount)
+			t.Fatalf(
+				"expected process count to be %d, got: %d",
+				len(expectedItems),
+				processCount,
+			)
 		}
 		for key, expectedValue := range expectedItems {
 			expectPresentMapOf(t, key, expectedValue)(m.Load(key))
@@ -5599,7 +6654,11 @@ func TestMapOfBatchProcess(t *testing.T) {
 				processCount++
 				if key == "key3" {
 					if loaded != nil {
-						t.Fatalf("expected loaded to be nil for new key %s, got: %v", key, loaded)
+						t.Fatalf(
+							"expected loaded to be nil for new key %s, got: %v",
+							key,
+							loaded,
+						)
 					}
 				} else {
 					if loaded == nil {
@@ -5635,7 +6694,10 @@ func TestMapOfBatchProcess(t *testing.T) {
 			func(key string, value int, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
 				processCount++
 				if loaded == nil {
-					t.Fatalf("expected loaded to be non-nil for existing key %s", key)
+					t.Fatalf(
+						"expected loaded to be non-nil for existing key %s",
+						key,
+					)
 				}
 				// Return nil to delete the entry
 				return nil, loaded.Value, true
@@ -5706,6 +6768,274 @@ func TestMapOfBatchProcess(t *testing.T) {
 
 		if processCount != 6 { // 0,1,2,3,4,5
 			t.Fatalf("expected process count to be 6, got: %d", processCount)
+		}
+	})
+}
+
+// TestMapOf_InitWithOptions tests the InitWithOptions function
+func TestMapOf_InitWithOptions(t *testing.T) {
+	t.Run("BasicInitialization", func(t *testing.T) {
+		var m MapOf[string, int]
+		m.InitWithOptions()
+
+		// Test basic operations
+		m.Store("key1", 100)
+		if val, ok := m.Load("key1"); !ok || val != 100 {
+			t.Errorf("Expected key1=100, got %d, exists=%v", val, ok)
+		}
+	})
+
+	t.Run("WithPresize", func(t *testing.T) {
+		var m MapOf[string, int]
+		m.InitWithOptions(WithPresize(1000))
+
+		// Verify the map works correctly
+		for i := 0; i < 100; i++ {
+			key := fmt.Sprintf("key%d", i)
+			m.Store(key, i)
+		}
+
+		if m.Size() != 100 {
+			t.Errorf("Expected size 100, got %d", m.Size())
+		}
+	})
+
+	t.Run("WithShrinkEnabled", func(t *testing.T) {
+		var m MapOf[string, int]
+		m.InitWithOptions(WithShrinkEnabled())
+
+		// Add and remove items to test shrinking
+		for i := 0; i < 100; i++ {
+			key := fmt.Sprintf("key%d", i)
+			m.Store(key, i)
+		}
+
+		// Remove most items
+		for i := 0; i < 90; i++ {
+			key := fmt.Sprintf("key%d", i)
+			m.Delete(key)
+		}
+
+		if m.Size() != 10 {
+			t.Errorf("Expected size 10, got %d", m.Size())
+		}
+	})
+
+	t.Run("WithKeyHasher", func(t *testing.T) {
+		var m MapOf[string, int]
+
+		// Custom hash function only
+		customHash := func(key string, seed uintptr) uintptr {
+			return uintptr(len(key))
+		}
+
+		m.InitWithOptions(WithKeyHasher(customHash))
+
+		// Test operations
+		m.Store("hello", 123)
+		if val, ok := m.Load("hello"); !ok || val != 123 {
+			t.Errorf("Expected hello=123, got %d, exists=%v", val, ok)
+		}
+	})
+
+	t.Run("WithValueEqual", func(t *testing.T) {
+		var m MapOf[string, int]
+
+		// Custom equality function only
+		customEqual := func(val1, val2 int) bool {
+			return val1 == val2
+		}
+
+		m.InitWithOptions(WithValueEqual(customEqual))
+
+		// Test CompareAndSwap with custom equality
+		m.Store("key", 100)
+		if !m.CompareAndSwap("key", 100, 200) {
+			t.Error("CompareAndSwap should have succeeded")
+		}
+
+		if val, ok := m.Load("key"); !ok || val != 200 {
+			t.Errorf("Expected key=200, got %d, exists=%v", val, ok)
+		}
+	})
+	t.Run("MultipleOptions", func(t *testing.T) {
+		var m MapOf[string, int]
+
+		customHash := func(key string, seed uintptr) uintptr {
+			return uintptr(len(key))
+		}
+
+		m.InitWithOptions(
+			WithPresize(500),
+			WithShrinkEnabled(),
+			WithKeyHasher(customHash),
+		)
+
+		// Test that all options work together
+		for i := 0; i < 50; i++ {
+			key := fmt.Sprintf("key%d", i)
+			m.Store(key, i)
+		}
+
+		if m.Size() != 50 {
+			t.Errorf("Expected size 50, got %d", m.Size())
+		}
+	})
+}
+
+// TestMapOf_InitWithConfig tests the InitWithConfig function
+func TestMapOf_InitWithConfig(t *testing.T) {
+	t.Run("BasicConfig", func(t *testing.T) {
+		var m MapOf[string, int]
+		config := &MapConfig{
+			SizeHint:      100,
+			ShrinkEnabled: false,
+		}
+
+		m.InitWithConfig(config)
+
+		// Test basic operations
+		m.Store("key1", 100)
+		if val, ok := m.Load("key1"); !ok || val != 100 {
+			t.Errorf("Expected key1=100, got %d, exists=%v", val, ok)
+		}
+	})
+
+	t.Run("ConfigWithCustomHasher", func(t *testing.T) {
+		var m MapOf[string, int]
+
+		// Create custom hash and equal functions
+		customHash := func(ptr unsafe.Pointer, seed uintptr) uintptr {
+			key := *(*string)(ptr)
+			return uintptr(len(key))
+		}
+
+		customEqual := func(ptr1, ptr2 unsafe.Pointer) bool {
+			val1 := *(*int)(ptr1)
+			val2 := *(*int)(ptr2)
+			return val1 == val2
+		}
+
+		config := &MapConfig{
+			KeyHash:       customHash,
+			ValEqual:      customEqual,
+			SizeHint:      200,
+			ShrinkEnabled: true,
+		}
+
+		m.InitWithConfig(config)
+
+		// Test operations
+		m.Store("test", 42)
+		if val, ok := m.Load("test"); !ok || val != 42 {
+			t.Errorf("Expected test=42, got %d, exists=%v", val, ok)
+		}
+
+		// Test CompareAndSwap with custom equality
+		if !m.CompareAndSwap("test", 42, 84) {
+			t.Error("CompareAndSwap should have succeeded")
+		}
+
+		if val, ok := m.Load("test"); !ok || val != 84 {
+			t.Errorf("Expected test=84, got %d, exists=%v", val, ok)
+		}
+	})
+
+	t.Run("ConfigReuse", func(t *testing.T) {
+		// Test that the same config can be used for multiple maps
+		config := &MapConfig{
+			SizeHint:      50,
+			ShrinkEnabled: true,
+		}
+
+		var m1, m2 MapOf[string, int]
+		m1.InitWithConfig(config)
+		m2.InitWithConfig(config)
+
+		// Test that both maps work independently
+		m1.Store("key1", 100)
+		m2.Store("key2", 200)
+
+		if val, ok := m1.Load("key1"); !ok || val != 100 {
+			t.Errorf("m1: Expected key1=100, got %d, exists=%v", val, ok)
+		}
+
+		if val, ok := m2.Load("key2"); !ok || val != 200 {
+			t.Errorf("m2: Expected key2=200, got %d, exists=%v", val, ok)
+		}
+
+		// Verify they don't interfere with each other
+		if _, ok := m1.Load("key2"); ok {
+			t.Error("m1 should not contain key2")
+		}
+
+		if _, ok := m2.Load("key1"); ok {
+			t.Error("m2 should not contain key1")
+		}
+	})
+
+	t.Run("EmptyConfig", func(t *testing.T) {
+		var m MapOf[string, int]
+		config := &MapConfig{} // Empty config, should use defaults
+
+		m.InitWithConfig(config)
+
+		// Test basic operations with default settings
+		m.Store("default", 999)
+		if val, ok := m.Load("default"); !ok || val != 999 {
+			t.Errorf("Expected default=999, got %d, exists=%v", val, ok)
+		}
+	})
+
+	t.Run("ConfigWithOnlyKeyHash", func(t *testing.T) {
+		var m MapOf[string, int]
+
+		customHash := func(ptr unsafe.Pointer, seed uintptr) uintptr {
+			key := *(*string)(ptr)
+			return uintptr(len(key)) * 31 // Simple hash
+		}
+
+		config := &MapConfig{
+			KeyHash: customHash,
+			// ValEqual is nil, should use default
+			SizeHint: 100,
+		}
+
+		m.InitWithConfig(config)
+
+		// Test operations
+		m.Store("hash", 123)
+		if val, ok := m.Load("hash"); !ok || val != 123 {
+			t.Errorf("Expected hash=123, got %d, exists=%v", val, ok)
+		}
+	})
+
+	t.Run("ConfigWithOnlyValEqual", func(t *testing.T) {
+		var m MapOf[string, int]
+
+		customEqual := func(ptr1, ptr2 unsafe.Pointer) bool {
+			val1 := *(*int)(ptr1)
+			val2 := *(*int)(ptr2)
+			return val1 == val2
+		}
+
+		config := &MapConfig{
+			// KeyHash is nil, should use default
+			ValEqual: customEqual,
+			SizeHint: 100,
+		}
+
+		m.InitWithConfig(config)
+
+		// Test operations
+		m.Store("equal", 456)
+		if val, ok := m.Load("equal"); !ok || val != 456 {
+			t.Errorf("Expected equal=456, got %d, exists=%v", val, ok)
+		}
+
+		// Test CompareAndSwap with custom equality
+		if !m.CompareAndSwap("equal", 456, 789) {
+			t.Error("CompareAndSwap should have succeeded")
 		}
 	})
 }
