@@ -77,7 +77,7 @@ cpu: AMD Ryzen Threadripper 3970X 32-Core Processor
 
 
 <details>
-<summary> Benchmark test (19/06/2025) </summary>
+<summary> Benchmark Test (06/19/2025) </summary>
 
 ```go
 const countStore = 1_000_000
@@ -237,7 +237,7 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 
 
 <details>
-<summary> Store throughput test (19/06/2025) </summary>
+<summary> Store Throughput Test (06/19/2025) </summary>
 
 ```go
 
@@ -340,6 +340,39 @@ func TestInsert_pb_MapOf(t *testing.T) {
 - (1/pre): 1 goroutine with pre-allocation
 - (64): 64 goroutines without pre-allocation
 - (64/pre): 64 goroutines with pre-allocation
+
+<details>
+<summary> Memory Usage Test (08/04/2025) </summary>
+
+```go
+func Test_MemoryPeakReduction(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping memory test in short mode")
+	}
+	
+	const numItems = 100000
+	
+	var m1, m2 runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&m1)
+	
+	m := NewMapOf[int, int]()
+	
+	for i := 0; i < numItems; i++ {
+		m.Store(i, i)
+	}
+	runtime.GC()
+	runtime.ReadMemStats(&m2)
+	
+	peak := m2.Alloc - m1.Alloc
+	t.Logf("pb_MapOf memory usage: %d bytes, items: %d", peak, m.Size())
+}
+```
+</details>
+
+Benchmark results indicate that pb.MapOf matches the native Go map in memory efficiency, and even outperforms it in most scenarios.
+![Memory Usage Comparison (log scale)](./res/memory_usage_comparison_log_scale.png)
+![Memory Usage Comparison (Linear scale)](./res/memory_usage_comparison_linear_scale.png)
 
 ## 🚀 Quick Start
 
