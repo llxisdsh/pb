@@ -407,6 +407,11 @@ func main() {
 	// Zero-value initialization - ready to use with lazy initialization
 	var cache pb.MapOf[string, int]
 
+	// After zero initialization, InitWithOptions can be used to configure initialization (optional).
+	// MapOf does not support multiple initializations.
+	// NewMapOf neither requires nor allows the use of InitWithOptions.
+	cache.InitWithOptions(pb.WithPresize(100), pb.WithShrinkEnabled())
+
 	// Pre-sized initialization - optimal for known capacity scenarios
 	cache2 := pb.NewMapOf[string, int](pb.WithPresize(1000000))
 
@@ -427,6 +432,9 @@ func main() {
 		return a == b 
 	}))
 
+	// Using multiple initialization configurations
+	cache4 := pb.NewMapOf[string, int](pb.WithPresize(1000000), pb.WithShrinkEnabled())
+	
 	// === Basic Read/Write Operations ===
 	// Store: Insert or update a key-value pair
 	cache.Store("user:123", 42)
@@ -450,10 +458,6 @@ func main() {
 		return 43
 	})
 	fmt.Printf("Result: %d\n", result)
-
-	// LoadAndStore: Atomic store with old value return
-	oldValue, wasLoaded := cache.LoadAndStore("user:456", 200)
-	fmt.Printf("Old value: %d, Was loaded: %t\n", oldValue, wasLoaded)
 
 	// LoadAndDelete: Atomic read-and-delete operation
 	deletedValue, wasPresent := cache.LoadAndDelete("user:456")
