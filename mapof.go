@@ -657,6 +657,8 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 }
 
 // Load retrieves a value for the given key, compatible with `sync.Map`.
+//
+//go:nosplit
 func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := m.table.Load()
 	if table == nil {
@@ -703,6 +705,7 @@ func (m *MapOf[K, V]) LoadEntry(key K) *EntryOf[K, V] {
 	return m.findEntry(table, hash, &key)
 }
 
+//go:nosplit
 func (m *MapOf[K, V]) findEntry(
 	table *mapOfTable,
 	hash uintptr,
@@ -3001,6 +3004,7 @@ func noescape(p unsafe.Pointer) unsafe.Pointer {
 //	return (*T)(unsafe.Pointer(x ^ 0))
 //}
 
+//go:nosplit
 func delay(spins *int) {
 	if //goland:noinspection ALL
 	enableSpin && runtime_canSpin(*spins) {
