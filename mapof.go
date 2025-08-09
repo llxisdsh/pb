@@ -672,6 +672,9 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	bidx := uintptr(len(table.buckets)-1) & h1(hash, m.intKey)
 	for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
+		if metaw == emptyMeta {
+			continue
+		}
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
 			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
@@ -716,6 +719,9 @@ func (m *MapOf[K, V]) findEntry(
 	bidx := uintptr(len(table.buckets)-1) & h1(hash, m.intKey)
 	for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
+		if metaw == emptyMeta {
+			continue
+		}
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
 			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
@@ -784,24 +790,26 @@ func (m *MapOf[K, V]) processEntry(
 	findLoop:
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
-			for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
-				idx := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
-					if embeddedHash {
-						if e.getHash() == hash && e.Key == *key {
-							oldEntry = e
-							oldBucket = b
-							oldIdx = idx
-							oldMeta = metaw
-							break findLoop
-						}
-					} else {
-						if e.Key == *key {
-							oldEntry = e
-							oldBucket = b
-							oldIdx = idx
-							oldMeta = metaw
-							break findLoop
+			if metaw != emptyMeta {
+				for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
+					idx := firstMarkedByteIndex(markedw)
+					if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
+						if embeddedHash {
+							if e.getHash() == hash && e.Key == *key {
+								oldEntry = e
+								oldBucket = b
+								oldIdx = idx
+								oldMeta = metaw
+								break findLoop
+							}
+						} else {
+							if e.Key == *key {
+								oldEntry = e
+								oldBucket = b
+								oldIdx = idx
+								oldMeta = metaw
+								break findLoop
+							}
 						}
 					}
 				}
@@ -1094,6 +1102,9 @@ func copyBucketOfLock[K comparable, V any](
 		srcBucket.lock()
 		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
+			if metaw == emptyMeta {
+				continue
+			}
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				if e := (*EntryOf[K, V])(b.entries[firstMarkedByteIndex(markedw)]); e != nil {
 					var hash uintptr
@@ -1155,6 +1166,9 @@ func copyBucketOf[K comparable, V any](
 		srcBucket.lock()
 		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
+			if metaw == emptyMeta {
+				continue
+			}
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				if e := (*EntryOf[K, V])(b.entries[firstMarkedByteIndex(markedw)]); e != nil {
 					var hash uintptr
@@ -1239,6 +1253,9 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 		rootb.lock()
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
+			if metaw == emptyMeta {
+				continue
+			}
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				i := firstMarkedByteIndex(markedw)
 				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
@@ -1928,6 +1945,9 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	for i := range table.buckets {
 		for b := &table.buckets[i]; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 			metaw := loadUint64(&b.meta)
+			if metaw == emptyMeta {
+				continue
+			}
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				if e := (*EntryOf[K, V])(loadPointer(&b.entries[firstMarkedByteIndex(markedw)])); e != nil {
 					if !yield(e) {
@@ -2563,11 +2583,13 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 			stats.Capacity += entriesPerMapOfBucket
 
 			metaw := loadUint64(&b.meta)
-			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				i := firstMarkedByteIndex(markedw)
-				if loadPointer(&b.entries[i]) != nil {
-					stats.Size++
-					nentriesLocal++
+			if metaw != emptyMeta {
+				for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
+					i := firstMarkedByteIndex(markedw)
+					if loadPointer(&b.entries[i]) != nil {
+						stats.Size++
+						nentriesLocal++
+					}
 				}
 			}
 			nentries += nentriesLocal
