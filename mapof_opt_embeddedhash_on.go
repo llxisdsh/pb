@@ -11,10 +11,12 @@ type EntryOf[K comparable, V any] struct {
 	Value V
 }
 
+//go:nosplit
 func (e *EntryOf[K, V]) getHash() uintptr {
 	return e.hash
 }
 
+//go:nosplit
 func (e *EntryOf[K, V]) setHash(h uintptr) {
 	e.hash = h
 }
