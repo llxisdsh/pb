@@ -19,7 +19,7 @@ Quick Benchmark Comparison:
 
 | Implementation  | Load (ns/op) | Store (ns/op) | Throughput (M ops/s) |
 |-----------------|-------------:|--------------:|---------------------:|
-| **pb.MapOf** 🏆 |     **0.20** |      **0.59** |            **83.40** |
+| **pb.MapOf** 🏆 |     **0.20** |      **0.59** |            **85.71** |
 | sync.Map        |         3.66 |         24.27 |                21.84 |
 
 
