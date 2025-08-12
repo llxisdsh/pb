@@ -237,7 +237,7 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 
 
 <details>
-<summary> Store Throughput Test (06/19/2025) </summary>
+<summary> Store Throughput Test (07/12/2025) </summary>
 
 ```go
 
@@ -313,28 +313,28 @@ func TestInsert_pb_MapOf(t *testing.T) {
 ```
 </details>
 
-| Implementation & Case       | Throughput<br>(M ops/s) | Performance Scale      |
-|-----------------------------|------------------------:|------------------------|
-| pb_MapOf (64/pre)           |                  147.93 | ━━━━━━━━━━━━━━━━━━━━━━ |
-| xsync_MapV4 (64/pre)        |                   92.51 | ━━━━━━━━━━━━━          |
-| pb_MapOf (64)               |                   83.40 | ━━━━━━━━━━━━           |
-| RWLockShardedMap_256 (64)   |                   40.77 | ━━━━━━━━               |
-| pb_HashTrieMap (64)         |                   25.54 | ━━━━━                  |
-| zhangyunhao116_skipmap (64) |                   25.37 | ━━━━━                  |
-| xsync_MapV4 (64)            |                   23.40 | ━━━━━                  |
-| original_syncMap (64)       |                   21.84 | ━━━━                   |
-| pb_MapOf (1/pre)            |                   20.87 | ━━━━                   |
-| pb_MapOf (1)                |                   17.79 | ━━━━                   |
-| xsync_MapV4 (1/pre)         |                    6.06 | ━                      |
-| xsync_MapV4 (1)             |                    4.89 | ━                      |
-| RWLockShardedMap_256 (1)    |                    3.47 | ━                      |
-| zhangyunhao116_skipmap (1)  |                    3.38 | ━                      |
-| alphadose_haxmap (64/pre)   |                    2.88 | ━                      |
-| pb_HashTrieMap (1)          |                    1.73 | ━                      |
-| alphadose_haxmap (1/pre)    |                    1.00 | ━                      |
-| original_syncMap (1)        |                    1.42 | ━                      |
-| alphadose_haxmap (1)        |                    0.92 | ━                      |
-| alphadose_haxmap (64)       |                    0.57 | ━                      |
+| Implementation & Case       | Throughput<br>(M ops/s) | Performance Scale       |
+|-----------------------------|------------------------:|-------------------------|
+| pb_MapOf (64/pre)           |                  160.72 | ━━━━━━━━━━━━━━━━━━━━━━━ |
+| xsync_MapV4 (64/pre)        |                   92.51 | ━━━━━━━━━━━━━           |
+| pb_MapOf (64)               |                   85.71 | ━━━━━━━━━━━━            |
+| RWLockShardedMap_256 (64)   |                   40.77 | ━━━━━━━━                |
+| pb_HashTrieMap (64)         |                   25.54 | ━━━━━                   |
+| zhangyunhao116_skipmap (64) |                   25.37 | ━━━━━                   |
+| pb_MapOf (1/pre)            |                   23.72 | ━━━━━                   |
+| xsync_MapV4 (64)            |                   23.40 | ━━━━━                   |
+| original_syncMap (64)       |                   21.84 | ━━━━                    |
+| pb_MapOf (1)                |                   19.35 | ━━━━                    |
+| xsync_MapV4 (1/pre)         |                    6.06 | ━                       |
+| xsync_MapV4 (1)             |                    4.89 | ━                       |
+| RWLockShardedMap_256 (1)    |                    3.47 | ━                       |
+| zhangyunhao116_skipmap (1)  |                    3.38 | ━                       |
+| alphadose_haxmap (64/pre)   |                    2.88 | ━                       |
+| pb_HashTrieMap (1)          |                    1.73 | ━                       |
+| alphadose_haxmap (1/pre)    |                    1.00 | ━                       |
+| original_syncMap (1)        |                    1.42 | ━                       |
+| alphadose_haxmap (1)        |                    0.92 | ━                       |
+| alphadose_haxmap (64)       |                    0.57 | ━                       |
 
 - (1): 1 goroutine without pre-allocation
 - (1/pre): 1 goroutine with pre-allocation
