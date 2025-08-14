@@ -70,14 +70,14 @@ func (m *MapOf[K, V]) ProcessEntryOptimistic(
 	// --- Two-phase Fast Path ------------------------------------------------
 
 	bidx := uintptr(len(table.buckets)-1) & h1v
-	rootb := &table.buckets[bidx]
+	rootb := at(table.buckets, bidx)
 	var loadedPre *EntryOf[K, V]
 findEntry:
 	for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
+			if e := loadEntryOf[K, V](b, idx); e != nil {
 				if embeddedHash {
 					if e.getHash() == hash && e.Key == key {
 						loadedPre = e
@@ -116,7 +116,7 @@ findEntry:
 			m.helpCopyAndWait(rs)
 			table = m.table.Load()
 			bidx = uintptr(len(table.buckets)-1) & h1v
-			rootb = &table.buckets[bidx]
+			rootb = at(table.buckets, bidx)
 			continue
 		}
 
@@ -127,7 +127,7 @@ findEntry:
 			rootb.unlock()
 			table = newTable
 			bidx = uintptr(len(table.buckets)-1) & h1v
-			rootb = &table.buckets[bidx]
+			rootb = at(table.buckets, bidx)
 			continue
 		}
 
@@ -146,7 +146,7 @@ findEntry:
 			metaw := b.meta
 			for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 				idx := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
+				if e := getEntryOf[K, V](b, idx); e != nil {
 					if embeddedHash {
 						if e.getHash() == hash && e.Key == key {
 							oldEntry = e
@@ -192,17 +192,14 @@ findEntry:
 					newEntry.setHash(hash)
 				}
 				newEntry.Key = key
-				storePointer(
-					&oldBucket.entries[oldIdx],
-					unsafe.Pointer(newEntry),
-				)
+				storeEntryOf[K, V](oldBucket, oldIdx, newEntry)
 				rootb.unlock()
 				return value, status
 			}
 			// Delete
 			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
 			storeUint64(&oldBucket.meta, newmetaw)
-			storePointer(&oldBucket.entries[oldIdx], nil)
+			storeEntryOf[K, V](oldBucket, oldIdx, nil)
 			rootb.unlock()
 			table.addSize(bidx, -1)
 
@@ -236,10 +233,7 @@ findEntry:
 				&emptyBucket.meta,
 				setByte(emptyBucket.meta, h2v, emptyIdx),
 			)
-			storePointer(
-				&emptyBucket.entries[emptyIdx],
-				unsafe.Pointer(newEntry),
-			)
+			storeEntryOf[K, V](emptyBucket, emptyIdx, newEntry)
 			rootb.unlock()
 			table.addSize(bidx, 1)
 			return value, status

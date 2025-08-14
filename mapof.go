@@ -20,6 +20,8 @@ const (
 	opByteMask uint64 = 0xff00000000000000
 	opLockMask uint64 = 1 << (opByteIdx*8 + 7)
 
+	sizeofPointer = unsafe.Sizeof(unsafe.Pointer(nil))
+
 	// entriesPerMapOfBucket defines the number of entries per bucket.
 	// Calculated to fit within a cache line, with a maximum of 8 entries
 	// (upper limit supported by the meta-field).
@@ -29,7 +31,7 @@ const (
 			meta uint64
 			// entries [entriesPerMapOfBucket]unsafe.Pointer
 			next unsafe.Pointer
-		}{})))/int(unsafe.Sizeof(unsafe.Pointer(nil))),
+		}{})))/int(sizeofPointer),
 	)
 
 	// Metadata constants for bucket entry management
@@ -576,11 +578,11 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash, m.intKey)
-	for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
+	for b := at(table.buckets, bidx); b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
+			if e := loadEntryOf[K, V](b, idx); e != nil {
 				if embeddedHash {
 					if e.getHash() == hash && e.Key == key {
 						return e.Value, true
@@ -622,11 +624,11 @@ func (m *MapOf[K, V]) findEntry(
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 	bidx := uintptr(len(table.buckets)-1) & h1(hash, m.intKey)
-	for b := &table.buckets[bidx]; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
+	for b := at(table.buckets, bidx); b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(loadPointer(&b.entries[idx])); e != nil {
+			if e := loadEntryOf[K, V](b, idx); e != nil {
 				if embeddedHash {
 					if e.getHash() == hash && e.Key == *key {
 						return e
@@ -654,7 +656,7 @@ func (m *MapOf[K, V]) processEntry(
 
 	for {
 		bidx := uintptr(len(table.buckets)-1) & h1v
-		rootb := &table.buckets[bidx]
+		rootb := at(table.buckets, bidx)
 
 		rootb.lock()
 
@@ -694,7 +696,7 @@ func (m *MapOf[K, V]) processEntry(
 			metaw := b.meta
 			for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 				idx := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(b.entries[idx]); e != nil {
+				if e := getEntryOf[K, V](b, idx); e != nil {
 					if embeddedHash {
 						if e.getHash() == hash && e.Key == *key {
 							oldEntry = e
@@ -738,17 +740,14 @@ func (m *MapOf[K, V]) processEntry(
 					newEntry.setHash(hash)
 				}
 				newEntry.Key = *key
-				storePointer(
-					&oldBucket.entries[oldIdx],
-					unsafe.Pointer(newEntry),
-				)
+				storeEntryOf[K, V](oldBucket, oldIdx, newEntry)
 				rootb.unlock()
 				return value, status
 			}
 			// Delete
 			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
 			storeUint64(&oldBucket.meta, newmetaw)
-			storePointer(&oldBucket.entries[oldIdx], nil)
+			storeEntryOf[K, V](oldBucket, oldIdx, nil)
 			rootb.unlock()
 			table.addSize(bidx, -1)
 
@@ -782,10 +781,7 @@ func (m *MapOf[K, V]) processEntry(
 				&emptyBucket.meta,
 				setByte(emptyBucket.meta, h2v, emptyIdx),
 			)
-			storePointer(
-				&emptyBucket.entries[emptyIdx],
-				unsafe.Pointer(newEntry),
-			)
+			storeEntryOf[K, V](emptyBucket, emptyIdx, newEntry)
 			rootb.unlock()
 			table.addSize(bidx, 1)
 			return value, status
@@ -998,12 +994,12 @@ func copyBucketOfLock[K comparable, V any](
 ) {
 	copied := 0
 	for i := start; i < end; i++ {
-		srcBucket := &table.buckets[i]
+		srcBucket := at(table.buckets, i)
 		srcBucket.lock()
 		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				if e := (*EntryOf[K, V])(b.entries[firstMarkedByteIndex(markedw)]); e != nil {
+				if e := getEntryOf[K, V](b, firstMarkedByteIndex(markedw)); e != nil {
 					var hash uintptr
 					if embeddedHash {
 						hash = e.getHash()
@@ -1011,7 +1007,7 @@ func copyBucketOfLock[K comparable, V any](
 						hash = hasher(noescape(unsafe.Pointer(&e.Key)), seed)
 					}
 					bidx := uintptr(len(destTable.buckets)-1) & h1(hash, intKey)
-					destb := &destTable.buckets[bidx]
+					destb := at(destTable.buckets, bidx)
 					h2v := h2(hash)
 
 					destb.lock()
@@ -1023,7 +1019,7 @@ func copyBucketOfLock[K comparable, V any](
 						if emptyw != 0 {
 							emptyIdx := firstMarkedByteIndex(emptyw)
 							b.meta = setByte(metaw, h2v, emptyIdx)
-							b.entries[emptyIdx] = unsafe.Pointer(e)
+							setEntryOf(b, emptyIdx, e)
 							break appendToBucket
 						}
 						next := (*bucketOf)(b.next)
@@ -1059,12 +1055,12 @@ func copyBucketOf[K comparable, V any](
 ) {
 	copied := 0
 	for i := start; i < end; i++ {
-		srcBucket := &table.buckets[i]
+		srcBucket := at(table.buckets, i)
 		srcBucket.lock()
 		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				if e := (*EntryOf[K, V])(b.entries[firstMarkedByteIndex(markedw)]); e != nil {
+				if e := getEntryOf[K, V](b, firstMarkedByteIndex(markedw)); e != nil {
 					var hash uintptr
 					if embeddedHash {
 						hash = e.getHash()
@@ -1072,7 +1068,7 @@ func copyBucketOf[K comparable, V any](
 						hash = hasher(noescape(unsafe.Pointer(&e.Key)), seed)
 					}
 					bidx := uintptr(len(destTable.buckets)-1) & h1(hash, intKey)
-					destb := &destTable.buckets[bidx]
+					destb := at(destTable.buckets, bidx)
 					h2v := h2(hash)
 
 					b := destb
@@ -1083,7 +1079,7 @@ func copyBucketOf[K comparable, V any](
 						if emptyw != 0 {
 							emptyIdx := firstMarkedByteIndex(emptyw)
 							b.meta = setByte(metaw, h2v, emptyIdx)
-							b.entries[emptyIdx] = unsafe.Pointer(e)
+							setEntryOf(b, emptyIdx, e)
 							break appendToBucket
 						}
 						next := (*bucketOf)(b.next)
@@ -1143,13 +1139,13 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 	}
 
 	for bidx := range table.buckets {
-		rootb := &table.buckets[bidx]
+		rootb := at(table.buckets, bidx)
 		rootb.lock()
 		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
 			metaw := b.meta
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				i := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(b.entries[i]); e != nil {
+				if e := getEntryOf[K, V](b, i); e != nil {
 
 					newEntry := fn(e)
 
@@ -1813,10 +1809,11 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	}
 
 	for i := range table.buckets {
-		for b := &table.buckets[i]; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
+		for b := at(table.buckets, i); b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 			metaw := loadUint64(&b.meta)
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				if e := (*EntryOf[K, V])(loadPointer(&b.entries[firstMarkedByteIndex(markedw)])); e != nil {
+				idx := firstMarkedByteIndex(markedw)
+				if e := loadEntryOf[K, V](b, idx); e != nil {
 					if !yield(e) {
 						return
 					}
@@ -2460,7 +2457,7 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 	stats.CounterLen = len(table.size)
 	for i := range table.buckets {
 		nentries := 0
-		for b := &table.buckets[i]; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
+		for b := at(table.buckets, i); b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 			stats.TotalBuckets++
 			nentriesLocal := 0
 			stats.Capacity += entriesPerMapOfBucket
@@ -2468,7 +2465,7 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 			metaw := loadUint64(&b.meta)
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				i := firstMarkedByteIndex(markedw)
-				if loadPointer(&b.entries[i]) != nil {
+				if e := loadEntryOf[K, V](b, i); e != nil {
 					stats.Size++
 					nentriesLocal++
 				}
@@ -2791,6 +2788,63 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 //		}
 //	}
 //}
+
+//go:nosplit
+func getEntryOf[K comparable, V any, IDX uintptr | int](
+	b *bucketOf,
+	i IDX,
+) *EntryOf[K, V] {
+	return (*EntryOf[K, V])(*(*unsafe.Pointer)(unsafe.Add(
+		unsafe.Pointer(&b.entries),
+		uintptr(i)*sizeofPointer,
+	)))
+}
+
+//go:nosplit
+func setEntryOf[K comparable, V any, IDX uintptr | int](
+	b *bucketOf,
+	i IDX,
+	e *EntryOf[K, V],
+) {
+	*(*unsafe.Pointer)(unsafe.Add(
+		unsafe.Pointer(&b.entries),
+		uintptr(i)*sizeofPointer,
+	)) = unsafe.Pointer(e)
+}
+
+//go:nosplit
+func loadEntryOf[K comparable, V any, IDX uintptr | int](
+	b *bucketOf,
+	i IDX,
+) *EntryOf[K, V] {
+	return (*EntryOf[K, V])(loadPointer((*unsafe.Pointer)(unsafe.Add(
+		unsafe.Pointer(&b.entries),
+		uintptr(i)*sizeofPointer,
+	))))
+}
+
+//go:nosplit
+func storeEntryOf[K comparable, V any, IDX uintptr | int](
+	b *bucketOf,
+	i IDX,
+	e *EntryOf[K, V],
+) {
+	storePointer(
+		(*unsafe.Pointer)(unsafe.Add(
+			unsafe.Pointer(&b.entries),
+			uintptr(i)*sizeofPointer,
+		)),
+		unsafe.Pointer(e),
+	)
+}
+
+//go:nosplit
+func at[T any, IDX uintptr | int](s []T, i IDX) *T {
+	return (*T)(unsafe.Add(
+		unsafe.Pointer(unsafe.SliceData(s)),
+		uintptr(i)*unsafe.Sizeof(*new(T)),
+	))
+}
 
 //go:nosplit
 func loadPointer(addr *unsafe.Pointer) unsafe.Pointer {

@@ -19,7 +19,7 @@ Quick Benchmark Comparison:
 
 | Implementation  | Load (ns/op) | Store (ns/op) | Throughput (M ops/s) |
 |-----------------|-------------:|--------------:|---------------------:|
-| **pb.MapOf** 🏆 |     **0.20** |      **0.59** |            **85.71** |
+| **pb.MapOf** 🏆 |     **0.20** |      **0.59** |            **91.51** |
 | sync.Map        |         3.66 |         24.27 |                21.84 |
 
 
@@ -237,7 +237,7 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 
 
 <details>
-<summary> Store Throughput Test (07/12/2025) </summary>
+<summary> Store Throughput Test (07/14/2025) </summary>
 
 ```go
 
@@ -315,16 +315,16 @@ func TestInsert_pb_MapOf(t *testing.T) {
 
 | Implementation & Case       | Throughput<br>(M ops/s) | Performance Scale       |
 |-----------------------------|------------------------:|-------------------------|
-| pb_MapOf (64/pre)           |                  160.72 | ━━━━━━━━━━━━━━━━━━━━━━━ |
+| pb_MapOf (64/pre)           |                  163.83 | ━━━━━━━━━━━━━━━━━━━━━━━ |
 | xsync_MapV4 (64/pre)        |                   92.51 | ━━━━━━━━━━━━━           |
-| pb_MapOf (64)               |                   85.71 | ━━━━━━━━━━━━            |
+| pb_MapOf (64)               |                   91.51 | ━━━━━━━━━━━━━           |
 | RWLockShardedMap_256 (64)   |                   40.77 | ━━━━━━━━                |
 | pb_HashTrieMap (64)         |                   25.54 | ━━━━━                   |
 | zhangyunhao116_skipmap (64) |                   25.37 | ━━━━━                   |
-| pb_MapOf (1/pre)            |                   23.72 | ━━━━━                   |
+| pb_MapOf (1/pre)            |                   24.88 | ━━━━━                   |
 | xsync_MapV4 (64)            |                   23.40 | ━━━━━                   |
 | original_syncMap (64)       |                   21.84 | ━━━━                    |
-| pb_MapOf (1)                |                   19.35 | ━━━━                    |
+| pb_MapOf (1)                |                   20.07 | ━━━━                    |
 | xsync_MapV4 (1/pre)         |                    6.06 | ━                       |
 | xsync_MapV4 (1)             |                    4.89 | ━                       |
 | RWLockShardedMap_256 (1)    |                    3.47 | ━                       |
