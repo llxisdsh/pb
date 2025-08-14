@@ -416,11 +416,11 @@ func (table *mapOfTable) addSize(bucketIdx uintptr, delta int) {
 //
 //go:nosplit
 func (table *mapOfTable) sumSize() int {
-	var sum int
+	var sum uintptr
 	for i := range table.size {
-		sum += int(at(table.size, i).c.Load())
+		sum += at(table.size, i).c.Load()
 	}
-	return sum
+	return int(sum)
 }
 
 // isZero checks if the table is empty by verifying all counter-stripes are
