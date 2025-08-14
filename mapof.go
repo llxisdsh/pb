@@ -581,8 +581,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	for b := at(table.buckets, bidx); b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
-			idx := firstMarkedByteIndex(markedw)
-			if e := loadEntryOf[K, V](b, idx); e != nil {
+			if e := loadEntryOf[K, V](b, firstMarkedByteIndex(markedw)); e != nil {
 				if embeddedHash {
 					if e.getHash() == hash && e.Key == key {
 						return e.Value, true
@@ -627,8 +626,7 @@ func (m *MapOf[K, V]) findEntry(
 	for b := at(table.buckets, bidx); b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
-			idx := firstMarkedByteIndex(markedw)
-			if e := loadEntryOf[K, V](b, idx); e != nil {
+			if e := loadEntryOf[K, V](b, firstMarkedByteIndex(markedw)); e != nil {
 				if embeddedHash {
 					if e.getHash() == hash && e.Key == *key {
 						return e
@@ -1812,8 +1810,7 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 		for b := at(table.buckets, i); b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 			metaw := loadUint64(&b.meta)
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				idx := firstMarkedByteIndex(markedw)
-				if e := loadEntryOf[K, V](b, idx); e != nil {
+				if e := loadEntryOf[K, V](b, firstMarkedByteIndex(markedw)); e != nil {
 					if !yield(e) {
 						return
 					}
