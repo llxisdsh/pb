@@ -57,7 +57,7 @@ build_target() {
     echo "Building test binary..."
     
     # Compile Go test files into executable
-    if ! go test mapof_test.go mapof.go mapof_opt_cachelinesize.go mapof_opt_atomiclevel.go mapof_opt_*_off.go -c -o pb.test; then
+    if ! go test mapof_test.go mapof.go mapof_deprecated.go mapof_experimental.go mapof_opt_cachelinesize.go mapof_opt_atomiclevel.go mapof_opt_*_off.go -c -o pb.test; then
         echo "Build failed!" | tee -a "$ERROR_LOG"
         exit 1
     fi

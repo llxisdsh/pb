@@ -408,17 +408,8 @@ func newMapOfTable(tableLen, cpus int) *mapOfTable {
 //
 //go:nosplit
 func (table *mapOfTable) addSize(bucketIdx uintptr, delta int) {
-	cidx := uintptr(len(table.size)-1) & bucketIdx
-	table.size[cidx].c.Add(uintptr(delta))
+	at(table.size, uintptr(len(table.size)-1)&bucketIdx).c.Add(uintptr(delta))
 }
-
-// // addSizePlain adds delta to the size counter without atomic operations.
-// // This method should only be used when thread safety is guaranteed by the
-// // caller.
-//func (table *mapOfTable) addSizePlain(bucketIdx uintptr, delta int) {
-//	cidx := uintptr(len(table.size)-1) & bucketIdx
-//	table.size[cidx].c += uintptr(delta)
-//}
 
 // sumSize calculates the total number of entries in the table
 // by summing all counter-stripes.
@@ -427,7 +418,7 @@ func (table *mapOfTable) addSize(bucketIdx uintptr, delta int) {
 func (table *mapOfTable) sumSize() int {
 	var sum int
 	for i := range table.size {
-		sum += int(table.size[i].c.Load())
+		sum += int(at(table.size, i).c.Load())
 	}
 	return sum
 }
@@ -438,7 +429,7 @@ func (table *mapOfTable) sumSize() int {
 //go:nosplit
 func (table *mapOfTable) isZero() bool {
 	for i := range table.size {
-		if table.size[i].c.Load() != 0 {
+		if at(table.size, i).c.Load() != 0 {
 			return false
 		}
 	}
