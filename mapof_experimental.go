@@ -69,15 +69,15 @@ func (m *MapOf[K, V]) ProcessEntryOptimistic(
 
 	// --- Two-phase Fast Path ------------------------------------------------
 
-	bidx := uintptr(len(table.buckets)-1) & h1v
-	rootb := at(table.buckets, bidx)
+	bidx := table.bucketsMask & h1v
+	rootb := table.buckets.at(bidx)
 	var loadedPre *EntryOf[K, V]
 findEntry:
 	for b := rootb; b != nil; b = (*bucketOf)(loadPointer(&b.next)) {
 		metaw := loadUint64(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := loadEntryOf[K, V](b, idx); e != nil {
+			if e := (*EntryOf[K, V])(loadPointer(b.at(idx))); e != nil {
 				if embeddedHash {
 					if e.getHash() == hash && e.Key == key {
 						loadedPre = e
@@ -115,8 +115,8 @@ findEntry:
 			// Wait for the current resize operation to complete
 			m.helpCopyAndWait(rs)
 			table = m.table.Load()
-			bidx = uintptr(len(table.buckets)-1) & h1v
-			rootb = at(table.buckets, bidx)
+			bidx = table.bucketsMask & h1v
+			rootb = table.buckets.at(bidx)
 			continue
 		}
 
@@ -126,8 +126,8 @@ findEntry:
 		if newTable := m.table.Load(); table != newTable {
 			rootb.unlock()
 			table = newTable
-			bidx = uintptr(len(table.buckets)-1) & h1v
-			rootb = at(table.buckets, bidx)
+			bidx = table.bucketsMask & h1v
+			rootb = table.buckets.at(bidx)
 			continue
 		}
 
@@ -146,7 +146,7 @@ findEntry:
 			metaw := b.meta
 			for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 				idx := firstMarkedByteIndex(markedw)
-				if e := getEntryOf[K, V](b, idx); e != nil {
+				if e := (*EntryOf[K, V])(*b.at(idx)); e != nil {
 					if embeddedHash {
 						if e.getHash() == hash && e.Key == key {
 							oldEntry = e
@@ -192,21 +192,27 @@ findEntry:
 					newEntry.setHash(hash)
 				}
 				newEntry.Key = key
-				storeEntryOf[K, V](oldBucket, oldIdx, newEntry)
+				storePointer(
+					oldBucket.at(oldIdx),
+					unsafe.Pointer(newEntry),
+				)
 				rootb.unlock()
 				return value, status
 			}
 			// Delete
 			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
 			storeUint64(&oldBucket.meta, newmetaw)
-			storeEntryOf[K, V](oldBucket, oldIdx, nil)
+			storePointer(
+				oldBucket.at(oldIdx),
+				nil,
+			)
 			rootb.unlock()
 			table.addSize(bidx, -1)
 
 			// Check if table shrinking is needed
 			if m.shrinkEnabled && clearOp(newmetaw) == emptyMeta &&
 				m.resizeState.Load() == nil {
-				tableLen := len(table.buckets)
+				tableLen := table.bucketsMask + 1
 				if m.minTableLen < tableLen {
 					size := table.sumSize()
 					if size < tableLen*entriesPerMapOfBucket/mapShrinkFraction {
@@ -233,7 +239,10 @@ findEntry:
 				&emptyBucket.meta,
 				setByte(emptyBucket.meta, h2v, emptyIdx),
 			)
-			storeEntryOf[K, V](emptyBucket, emptyIdx, newEntry)
+			storePointer(
+				emptyBucket.at(emptyIdx),
+				unsafe.Pointer(newEntry),
+			)
 			rootb.unlock()
 			table.addSize(bidx, 1)
 			return value, status
@@ -251,7 +260,7 @@ findEntry:
 
 		// Check if the table needs to grow
 		if m.resizeState.Load() == nil {
-			tableLen := len(table.buckets)
+			tableLen := table.bucketsMask + 1
 			size := table.sumSize()
 			const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
 			if size >= int(float64(tableLen)*sizeHintFactor) {
