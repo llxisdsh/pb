@@ -418,6 +418,13 @@ func main() {
 	// Shrink-enabled initialization - suitable for fluctuating data volumes
 	cache3 := pb.NewMapOf[string, int](pb.WithShrinkEnabled())
 
+	// Fast String Hasher - optimized for short string/[]byte keys
+	// Provides 2-3x write throughput improvement for keys ≤12 bytes
+	// Approaches native Go map performance for short strings
+	// Ideal for identifiers, tags, short descriptive text
+	fastStringCache := pb.NewMapOf[string, int](pb.WithFastStringHasher())
+	fastByteCache := pb.NewMapOf[[]byte, int](pb.WithFastStringHasher())
+
 	// Custom Hash Function initialization - default is Go's built-in hash function
 	type UserID struct {
 		UserID   int64

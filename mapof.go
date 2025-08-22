@@ -141,6 +141,13 @@ type MapConfig struct {
 	// or provide better hash distribution.
 	KeyHash hashFunc
 
+	// HashOpts specifies the hash distribution optimization strategies to use.
+	// These options control how hash values are converted to bucket indices
+	// in the h1 function. Different strategies work better for different
+	// key patterns and distributions.
+	// If empty, AutoDistribution will be used (recommended for most cases).
+	HashOpts []HashOptimization
+
 	// ValEqual specifies a custom equality function for values.
 	// If nil, the built-in equality comparison will be used.
 	// This is primarily used for compare-and-swap operations.
@@ -183,31 +190,74 @@ func WithShrinkEnabled() func(*MapConfig) {
 	}
 }
 
+// HashOptimization defines hash distribution optimization strategies.
+// These strategies control how hash values are converted to bucket indices
+// in the h1 function, affecting performance for different key patterns.
+type HashOptimization int
+
+const (
+	// AutoDistribution automatically selects the most suitable distribution
+	// strategy (default).
+	// Based on key type analysis: integer types use linear distribution,
+	// other types use shift distribution. This provides optimal performance
+	// for most use cases without manual tuning.
+	AutoDistribution HashOptimization = iota
+
+	// LinearDistribution uses division-based bucket index calculation.
+	// Formula: h / entriesPerMapOfBucket
+	// Optimal for: sequential integer keys (1,2,3,4...), ordered data,
+	// auto-incrementing IDs, or any pattern with continuous key values.
+	// Provides better cache locality and reduces hash collisions for such
+	// patterns.
+	LinearDistribution
+
+	// ShiftDistribution uses bit-shifting for bucket index calculation.
+	// Formula: h >> 7
+	// Optimal for: randomly distributed keys, string keys, complex types,
+	// or any pattern with pseudo-random hash distribution.
+	// Faster computation but may have suboptimal distribution for sequential
+	// keys.
+	ShiftDistribution
+)
+
 // WithKeyHasher sets a custom key hashing function for the map.
 // This allows you to optimize hash distribution for specific key types
 // or implement custom hashing strategies.
 //
 // Parameters:
 //   - keyHash: custom hash function that takes a key and seed,
-//     returns hash value Pass nil to use the default built-in hasher
+//     returns hash value. Pass nil to use the default built-in hasher
+//   - opts: optional hash distribution optimization strategies.
+//     Controls how hash values are converted to bucket indices.
+//     If not specified, AutoDistribution will be used.
 //
 // Usage:
 //
+//	// Basic custom hasher
 //	m := NewMapOf[string, int](WithKeyHasher(myCustomHashFunc))
+//
+//	// Custom hasher with linear distribution for sequential keys
+//	m := NewMapOf[int, string](WithKeyHasher(myIntHasher, LinearDistribution))
+//
+//	// Custom hasher with shift distribution for random keys
+//	m := NewMapOf[string, int](WithKeyHasher(myStringHasher, ShiftDistribution))
 //
 // Use cases:
 //   - Optimize hash distribution for specific data patterns
 //   - Implement case-insensitive string hashing
 //   - Custom hashing for complex key types
 //   - Performance tuning for known key distributions
+//   - Combine with distribution strategies for optimal performance
 func WithKeyHasher[K comparable](
 	keyHash func(key K, seed uintptr) uintptr,
+	opts ...HashOptimization,
 ) func(*MapConfig) {
 	return func(c *MapConfig) {
 		if keyHash != nil {
 			c.KeyHash = func(pointer unsafe.Pointer, u uintptr) uintptr {
 				return keyHash(*(*K)(pointer), u)
 			}
+			c.HashOpts = opts
 		}
 	}
 }
@@ -218,12 +268,16 @@ func WithKeyHasher[K comparable](
 // unsafe operations.
 //
 // Parameters:
-//   - hs: unsafe hash function that operates on raw unsafe.Pointer
-//     The pointer points to the key data in memory
+//   - hs: unsafe hash function that operates on raw unsafe.Pointer.
+//     The pointer points to the key data in memory.
 //     Pass nil to use the default built-in hasher
+//   - opts: optional hash distribution optimization strategies.
+//     Controls how hash values are converted to bucket indices.
+//     If not specified, AutoDistribution will be used.
 //
 // Usage:
 //
+//	// Basic unsafe hasher
 //	unsafeHasher := func(ptr unsafe.Pointer, seed uintptr) uintptr {
 //		// Cast ptr to your key type and implement hashing
 //		key := *(*string)(ptr)
@@ -231,13 +285,23 @@ func WithKeyHasher[K comparable](
 //	}
 //	m := NewMapOf[string, int](WithKeyHasherUnsafe(unsafeHasher))
 //
+//	// Unsafe hasher with specific distribution strategy
+//	m := NewMapOf[int, string](WithKeyHasherUnsafe(fastIntHasher,
+//
+// LinearDistribution))
+//
 // ⚠️  SAFETY WARNING:
 //   - You must correctly cast unsafe.Pointer to the actual key type
 //   - Incorrect pointer operations will cause crashes or memory corruption
 //   - Only use if you understand Go's unsafe package
-func WithKeyHasherUnsafe(hs hashFunc) func(*MapConfig) {
+//   - Distribution strategies still apply to the hash output
+func WithKeyHasherUnsafe(
+	hs hashFunc,
+	opts ...HashOptimization,
+) func(*MapConfig) {
 	return func(c *MapConfig) {
 		c.KeyHash = hs
+		c.HashOpts = opts
 	}
 }
 
@@ -513,10 +577,19 @@ func (m *MapOf[K, V]) init(
 	if c.KeyHash != nil {
 		m.keyHash = c.KeyHash
 	}
+	for _, o := range c.HashOpts {
+		switch o {
+		case LinearDistribution:
+			m.intKey = true
+		case ShiftDistribution:
+			m.intKey = false
+		case AutoDistribution:
+			// default distribution
+		}
+	}
 	if c.ValEqual != nil {
 		m.valEqual = c.ValEqual
 	}
-
 	m.minTableLen = calcTableLen(c.SizeHint)
 	m.shrinkEnabled = c.ShrinkEnabled
 
@@ -975,17 +1048,9 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 		start := int(process) * chunkSize
 		end := min(start+chunkSize, tableLen)
 		if isGrowth {
-			copyBucketOf[K, V](
-				table,
-				start,
-				end,
-				newTable,
-				m.keyHash,
-				m.seed,
-				m.intKey,
-			)
+			m.copyBucketOf(table, start, end, newTable)
 		} else {
-			copyBucketOfLock[K, V](table, start, end, newTable, m.keyHash, m.seed, m.intKey)
+			m.copyBucketOfLock(table, start, end, newTable)
 		}
 		if rs.completed.Add(1) == chunks {
 			// Copying completed
@@ -999,14 +1064,14 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 
 // copyBucketOfLock, unlike copyBucketOf, it locks the destination bucket to
 // ensure concurrency safety.
-func copyBucketOfLock[K comparable, V any](
+func (m *MapOf[K, V]) copyBucketOfLock(
 	table *mapOfTable,
 	start, end int,
 	destTable *mapOfTable,
-	hasher hashFunc,
-	seed uintptr,
-	intKey bool,
 ) {
+	seed := m.seed
+	keyHash := m.keyHash
+	intKey := m.intKey
 	copied := 0
 	for i := start; i < end; i++ {
 		srcBucket := table.buckets.at(i)
@@ -1020,7 +1085,7 @@ func copyBucketOfLock[K comparable, V any](
 					if embeddedHash {
 						hash = e.getHash()
 					} else {
-						hash = hasher(noescape(unsafe.Pointer(&e.Key)), seed)
+						hash = keyHash(noescape(unsafe.Pointer(&e.Key)), seed)
 					}
 					bidx := destTable.bucketsMask & h1(hash, intKey)
 					destb := destTable.buckets.at(bidx)
@@ -1061,14 +1126,14 @@ func copyBucketOfLock[K comparable, V any](
 	}
 }
 
-func copyBucketOf[K comparable, V any](
+func (m *MapOf[K, V]) copyBucketOf(
 	table *mapOfTable,
 	start, end int,
 	destTable *mapOfTable,
-	hasher hashFunc,
-	seed uintptr,
-	intKey bool,
 ) {
+	seed := m.seed
+	keyHash := m.keyHash
+	intKey := m.intKey
 	copied := 0
 	for i := start; i < end; i++ {
 		srcBucket := table.buckets.at(i)
@@ -1082,7 +1147,7 @@ func copyBucketOf[K comparable, V any](
 					if embeddedHash {
 						hash = e.getHash()
 					} else {
-						hash = hasher(noescape(unsafe.Pointer(&e.Key)), seed)
+						hash = keyHash(noescape(unsafe.Pointer(&e.Key)), seed)
 					}
 					bidx := destTable.bucketsMask & h1(hash, intKey)
 					destb := destTable.buckets.at(bidx)
@@ -2693,12 +2758,11 @@ func h1(h uintptr, intKey bool) int {
 	if intKey {
 		// Possible values: [1,2,3,4,...entriesPerMapOfBucket].
 		return int(h) / entriesPerMapOfBucket
-	} else {
-		if enableHashSpread {
-			return int(spread(h)) >> 7
-		}
-		return int(h) >> 7
 	}
+	if enableHashSpread {
+		return int(spread(h)) >> 7
+	}
+	return int(h) >> 7
 }
 
 // h2 extracts the byte-level hash for in-bucket lookups.
