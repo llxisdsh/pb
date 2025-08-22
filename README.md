@@ -374,6 +374,15 @@ Benchmark results indicate that pb.MapOf matches the native Go map in memory eff
 ![Memory Usage Comparison (log scale)](./res/memory_usage_comparison_log_scale.png)
 ![Memory Usage Comparison (Linear scale)](./res/memory_usage_comparison_linear_scale.png)
 
+## ⚡ Performance Tips
+
+While MapOf primarily leverages Go's built-in hash function (which is highly optimized with assembly instructions), it includes specialized optimizations to achieve extreme performance:
+
+- **Integer Key Optimization**: Uses the raw key value as hash for integer types (`int`, `uint`, `uintptr`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`), similar to Java's `Integer.hashCode()` approach, delivering **4-6x performance improvement**
+- **String/[]byte Key Optimization**: By default uses Go's built-in hash function, but additionally provides `WithFastStringHasher` for short string keys, implementing an algorithm similar to Java's `String.hashCode()`, achieving **2-3x performance improvement**
+
+**Important Note**: These optimizations may not always be effective due to potential hash collisions from the customized hashing approach. However, they are generally beneficial in typical use cases. You can override these defaults using `WithKeyHasher` or `WithKeyHasherUnsafe` if needed.
+
 ## 🚀 Quick Start
 
 ### Installation
