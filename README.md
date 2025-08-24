@@ -534,11 +534,11 @@ func atomicOperations() {
 	}
 
 	// Lazy value generation
-	result := cache.LoadOrStoreFn("computed:key", func() int {
+	result, loaded := cache.LoadOrStoreFn("computed:key", func() int {
 		fmt.Println("Computing expensive value...")
 		return 43
 	})
-	fmt.Printf("Result: %d\n", result)
+	fmt.Printf("Result: %d, Loaded: %t\n", result, loaded)
 }
 ```
 
@@ -587,12 +587,12 @@ func interfaceBasedInitialization() {
 	}
 
 	// Implement IHashCode for custom hashing
-	func (c CustomKey) HashCode(seed uintptr) uintptr {
+	func (c *CustomKey) HashCode(seed uintptr) uintptr {
 		return uintptr(c.ID) ^ seed
 	}
 
 	// Implement IHashOpts for hash distribution optimization
-	func (CustomKey) HashOpts() []pb.HashOptimization {
+	func (*CustomKey) HashOpts() []pb.HashOptimization {
 		return []pb.HashOptimization{pb.LinearDistribution}
 	}
 
@@ -603,7 +603,7 @@ func interfaceBasedInitialization() {
 	}
 
 	// Implement IEqual for custom equality comparison
-	func (u UserProfile) Equal(other UserProfile) bool {
+	func (u *UserProfile) Equal(other UserProfile) bool {
 		return u.Name == other.Name && slices.Equal(u.Tags, other.Tags)
 	}
 
@@ -627,17 +627,36 @@ func interfaceBasedInitialization() {
 ```go
 import (
 	"fmt"
+	"slices"
 	"github.com/llxisdsh/pb"
 )
 
 func interfaceUsageExamples() {
+	// Define custom types with interface implementations
+	type CustomKey struct {
+		ID   int64
+		Name string
+	}
+
+	func (c CustomKey) HashCode(seed uintptr) uintptr {
+		return uintptr(c.ID) ^ seed
+	}
+
+	type UserProfile struct {
+		Name string
+		Tags []string
+	}
+
+	func (u UserProfile) Equal(other UserProfile) bool {
+		return u.Name == other.Name && slices.Equal(u.Tags, other.Tags)
+	}
+
 	// Using the interface-based cache with custom types
 	interfaceCache := pb.NewMapOf[CustomKey, UserProfile]()
 
 	interfaceCache.Store(CustomKey{ID: 1, Name: "user1"}, UserProfile{
 		Name: "John Doe",
 		Tags: []string{"admin", "active"},
-		Data: map[string]interface{}{"role": "manager", "level": 5},
 	})
 
 	// Load and verify custom equality
@@ -650,14 +669,13 @@ func interfaceUsageExamples() {
 	sameProfile := UserProfile{
 		Name: "John Doe",
 		Tags: []string{"admin", "active"},
-		Data: map[string]interface{}{"role": "manager", "level": 5},
 	}
 
 	// This will use the custom Equal method for comparison
 	swapped := interfaceCache.CompareAndSwap(
 		CustomKey{ID: 1, Name: "user1"}, 
 		sameProfile, // old value (will match due to custom Equal)
-		UserProfile{Name: "Jane Doe", Tags: []string{"user"}, Data: map[string]interface{}{"role": "employee"}},
+		UserProfile{Name: "Jane Doe", Tags: []string{"user"}},
 	)
 	if swapped {
 		fmt.Println("Successfully swapped user profile using custom equality")
@@ -675,18 +693,6 @@ import (
 
 func advancedOperations() {
 	cache := pb.NewMapOf[string, int]()
-
-	// Store if absent - only stores if key doesn't exist
-	stored := cache.StoreIfAbsent("key4", 400)
-	if stored {
-		fmt.Println("key4 stored successfully")
-	}
-
-	// Update if present - only updates if key exists
-	updated := cache.UpdateIfPresent("key4", 450)
-	if updated {
-		fmt.Println("key4 updated successfully")
-	}
 
 	// ProcessEntry: Atomic conditional processing with complex business logic
 	cache.ProcessEntry("user:789", func(entry *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
@@ -754,6 +760,7 @@ func iterationOperations() {
 import (
 	"fmt"
 	"maps"
+	"github.com/llxisdsh/pb"
 )
 
 func batchOperations() {
@@ -765,21 +772,20 @@ func batchOperations() {
 		"batch2": 2000,
 		"batch3": 3000,
 	}
-	cache.StoreAll(batchData)
+	cache.FromMap(batchData)
 
 	// Load multiple values
 	keys := []string{"batch1", "batch2", "nonexistent"}
-	results := cache.LoadAll(keys)
-	for key, result := range results {
-		if result.Exists {
-			fmt.Printf("%s: %d\n", key, result.Value)
+	for _, key := range keys {
+		if value, ok := cache.Load(key); ok {
+			fmt.Printf("%s: %d\n", key, value)
 		} else {
 			fmt.Printf("%s: not found\n", key)
 		}
 	}
 
-	// Delete multiple values
-	cache.DeleteAll([]string{"batch1", "batch2"})
+	// Delete multiple values using BatchDelete
+	cache.BatchDelete([]string{"batch1", "batch2"})
 
 	// RangeProcessEntry: Batch process all entries
 	cache.RangeProcessEntry(func(loaded *pb.EntryOf[string, int]) *pb.EntryOf[string, int] {
@@ -813,14 +819,10 @@ func capacityManagement() {
 	size := cache.Size()
 	fmt.Printf("Current size: %d\n", size)
 
-	// Check if empty
-	if cache.IsEmpty() {
+	// Check if map is zero-value
+	if cache.IsZero() {
 		fmt.Println("Cache is empty")
 	}
-
-	// Check if map is zero-value
-	isEmpty := cache.IsZero()
-	fmt.Printf("Is empty: %t\n", isEmpty)
 
 	// Pre-allocate capacity to avoid frequent resizing
 	cache.Grow(10000)
@@ -852,7 +854,7 @@ func dataConversionAndSerialization() {
 	fmt.Printf("Cloned size: %d\n", clonedCache.Size())
 
 	// Convert to Go map
-	goMap := cache.ToGoMap()
+	goMap := cache.ToMap()
 	fmt.Printf("Go map: %+v\n", goMap)
 
 	// Load from Go map
@@ -860,15 +862,7 @@ func dataConversionAndSerialization() {
 		"new1": 100,
 		"new2": 200,
 	}
-	cache.FromGoMap(newData)
-
-	// ToMap: Convert to regular Go map
-	regularMap := cache.ToMap()
-	fmt.Printf("Regular map size: %d\n", len(regularMap))
-
-	// FromMap: Batch import from regular Go map
-	sourceMap := map[string]int{"import1": 1, "import2": 2}
-	cache.FromMap(sourceMap)
+	cache.FromMap(newData)
 
 	// JSON serialization
 	jsonData, err := json.Marshal(&cache)
