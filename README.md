@@ -376,12 +376,60 @@ Benchmark results indicate that pb.MapOf matches the native Go map in memory eff
 
 ## ⚡ Performance Tips
 
-While MapOf primarily leverages Go's built-in hash function (which is highly optimized with assembly instructions), it includes specialized optimizations to achieve extreme performance:
+To achieve the exceptional performance shown in the benchmarks above, pb.MapOf employs multiple optimization strategies. While it primarily leverages Go's built-in hash function (which is highly optimized with assembly instructions), it provides several specialized optimizations for different scenarios:
 
-- **Integer Key Optimization**: Uses the raw key value as hash for integer types (`int`, `uint`, `uintptr`, `int8`, `uint8`, `int16`, `uint16`, `int32`, `uint32`, `int64`, `uint64`), similar to Java's `Integer.hashCode()` approach, delivering **4-6x performance improvement**
-- **String/[]byte Key Optimization**: By default uses Go's built-in hash function, but additionally provides `WithFastStringHasher` for short string keys, implementing an algorithm similar to Java's `String.hashCode()`, achieving **2-3x performance improvement**
+### Optimization Strategies
 
-**Important Note**: These optimizations may not always be effective due to potential hash collisions from the customized hashing approach. However, they are generally beneficial in typical use cases. You can override these defaults using `WithKeyHasher` or `WithKeyHasherUnsafe` if needed.
+MapOf offers three main approaches to maximize performance for different key types and use cases:
+
+#### 1. Built-in Optimizations (Automatic)
+- **Integer Key Optimization**: Automatically uses raw key values as hash for integer types (int, int32, int64, uint, etc.), delivering **4-6x performance improvement**
+- **Pointer Key Optimization**: Directly uses pointer addresses as hash values for maximum efficiency
+- **Memory Layout Optimization**: Cache-line aligned structures prevent false sharing in multi-core environments
+
+#### 2. Configurable Optimizations
+- **Fast String Hasher**: Use `WithFastStringHasher()` for short string keys (≤12 bytes), achieving **2-3x performance improvement**
+- **Pre-sizing**: Use `WithPresize(n)` to avoid rehashing during initial population, especially beneficial for large datasets
+- **Shrink Control**: Use `WithShrinkEnabled()` to automatically reduce memory usage when map size decreases significantly
+
+#### 3. Custom Hash Functions
+
+For specialized use cases, you can implement custom hash functions to achieve optimal performance:
+
+```go
+import (
+    "slices"
+    "github.com/llxisdsh/pb"
+)
+
+// Method 1: Using WithKeyHasher for runtime configuration
+type UserID struct { ID int64 }
+m1 := pb.NewMapOf[UserID, string](pb.WithKeyHasher(func(key UserID, seed uintptr) uintptr {
+    return uintptr(key.ID) ^ seed  // Simple but effective for unique IDs
+}))
+
+// Method 2: Implementing IHashCode interface (compile-time detection)
+func (u UserID) HashCode(seed uintptr) uintptr { 
+    return uintptr(u.ID) ^ seed 
+}
+m2 := pb.NewMapOf[UserID, string]() // Automatically detects and uses IHashCode
+
+// Method 3: Implementing IEqual for custom value comparison
+type Profile struct {
+    Name string
+    Tags []string
+}
+func (p Profile) Equal(other Profile) bool {
+    return p.Name == other.Name && slices.Equal(p.Tags, other.Tags)
+}
+m3 := pb.NewMapOf[string, Profile]() // Automatically detects and uses IEqual
+```
+
+**Performance Notes**:
+- Custom hash functions can provide significant performance gains for domain-specific key types
+- Interface implementations (`IHashCode`, `IEqual`) are automatically detected at compile time
+- `With*` functions take precedence over interface implementations when both are present
+- Well-designed custom hash functions typically outweigh potential collision risks
 
 ## 🚀 Quick Start
 
@@ -402,103 +450,244 @@ go get golang.org/x/sys@latest
 
 ### Usage
 
+#### 1. Basic Initialization
+
 ```go
 package main
 
 import (
-	"encoding/json"
-	"fmt"
 	"github.com/llxisdsh/pb"
 )
 
 func main() {
-	// === Initialization ===
-	// Zero-value initialization - ready to use with lazy initialization
+	// Zero-value initialization with lazy loading
 	var cache pb.MapOf[string, int]
-
-	// After zero initialization, InitWithOptions can be used to configure initialization (optional).
-	// MapOf does not support multiple initializations.
-	// NewMapOf neither requires nor allows the use of InitWithOptions.
 	cache.InitWithOptions(pb.WithPresize(100), pb.WithShrinkEnabled())
 
-	// Pre-sized initialization - optimal for known capacity scenarios
+	// Direct initialization with options
 	cache2 := pb.NewMapOf[string, int](pb.WithPresize(1000000))
-
-	// Shrink-enabled initialization - suitable for fluctuating data volumes
 	cache3 := pb.NewMapOf[string, int](pb.WithShrinkEnabled())
-
-	// Fast String Hasher - optimized for short string/[]byte keys
-	// Provides 2-3x write throughput improvement for keys ≤12 bytes
-	// Approaches native Go map performance for short strings
-	// Ideal for identifiers, tags, short descriptive text
-	fastStringCache := pb.NewMapOf[string, int](pb.WithFastStringHasher())
-	fastByteCache := pb.NewMapOf[[]byte, int](pb.WithFastStringHasher())
-
-	// Custom Hash Function initialization - default is Go's built-in hash function
-	type UserID struct {
-		UserID   int64
-		TenantID int64
-	}
-	userCache := pb.NewMapOf[UserID, string](pb.WithKeyHasher(func(key UserID, seed uintptr) uintptr {
-		return uintptr(key.UserID)
-	}))
-
-	// Custom Value Equals Function initialization - default is Go's built-in value comparison
-	comparableCache := pb.NewMapOf[string, int](pb.WithValueEqual(func(a, b int) bool { 
-		return a == b 
-	}))
-
-	// Using multiple initialization configurations
 	cache4 := pb.NewMapOf[string, int](pb.WithPresize(1000000), pb.WithShrinkEnabled())
-	
-	// === Basic Read/Write Operations ===
-	// Store: Insert or update a key-value pair
-	cache.Store("user:123", 42)
+}
+```
 
-	// Load: Retrieve value with existence check
-	value, exists := cache.Load("user:123")
-	fmt.Printf("Value: %d, Exists: %t\n", value, exists)
+#### 2. Basic Read/Write Operations
 
-	// Delete: Remove a key-value pair
-	cache.Delete("user:123")
+```go
+import (
+	"fmt"
+	"github.com/llxisdsh/pb"
+)
 
-	// === Atomic Operations ===
-	// LoadOrStore: Atomic read-or-insert operation
-	actual, loaded := cache.LoadOrStore("user:456", 100)
-	fmt.Printf("Actual: %d, Was loaded: %t\n", actual, loaded)
+func basicOperations() {
+	cache := pb.NewMapOf[string, int]()
 
-	// LoadOrStoreFn: Lazy value generation - function called only if key doesn't exist
-	// Perfect for expensive computations
+	// Store and load values
+	cache.Store("key1", 100)
+	cache.Store("key2", 200)
+
+	value, exists := cache.Load("key1")
+	if exists {
+		fmt.Printf("key1: %d\n", value)
+	}
+
+	// Load or store atomically
+	actual, loaded := cache.LoadOrStore("key3", 300)
+	if loaded {
+		fmt.Printf("key3 already exists: %d\n", actual)
+	} else {
+		fmt.Printf("key3 stored: %d\n", actual)
+	}
+
+	cache.Delete("key2")
+}
+```
+
+#### 3. Atomic Operations
+
+```go
+import (
+	"fmt"
+	"github.com/llxisdsh/pb"
+)
+
+func atomicOperations() {
+	cache := pb.NewMapOf[string, int]()
+	cache.Store("key1", 100)
+
+	// Atomic swap
+	oldValue, swapped := cache.Swap("key1", 150)
+	if swapped {
+		fmt.Printf("Swapped key1 from %d to 150\n", oldValue)
+	}
+
+	// Compare and swap
+	swapped = cache.CompareAndSwap("key1", 150, 175)
+	if swapped {
+		fmt.Println("Successfully swapped key1 from 150 to 175")
+	}
+
+	// Compare and delete
+	deleted := cache.CompareAndDelete("key1", 175)
+	if deleted {
+		fmt.Println("Successfully deleted key1 with value 175")
+	}
+
+	// Lazy value generation
 	result := cache.LoadOrStoreFn("computed:key", func() int {
 		fmt.Println("Computing expensive value...")
 		return 43
 	})
 	fmt.Printf("Result: %d\n", result)
+}
+```
 
-	// LoadAndDelete: Atomic read-and-delete operation
-	deletedValue, wasPresent := cache.LoadAndDelete("user:456")
-	fmt.Printf("Deleted value: %d, Was present: %t\n", deletedValue, wasPresent)
+#### 4. Advanced Initialization with Custom Functions
 
-	// LoadAndUpdate: Atomic update operation
-	previousValue, wasUpdated := cache.LoadAndUpdate("counter", 1)
-	fmt.Printf("Previous: %d, Updated: %t\n", previousValue, wasUpdated)
+```go
+import "github.com/llxisdsh/pb"
 
-	// === Compare-and-Swap Operations (requires comparable values) ===
-	comparableCache.Store("counter", 10)
+func advancedInitialization() {
+	// Fast string hasher for short keys (≤12 bytes)
+	fastStringCache := pb.NewMapOf[string, int](pb.WithFastStringHasher())
 
-	// CompareAndSwap: Compare and swap if values match
-	swapped := comparableCache.CompareAndSwap("counter", 10, 20)
-	fmt.Printf("Swapped: %t\n", swapped)
+	// Custom hash function
+	type UserID struct {
+		UserID   int64
+		TenantID int64
+	}
+	userCache := pb.NewMapOf[UserID, string](pb.WithKeyHasher(func(key UserID, seed uintptr) uintptr {
+		return uintptr(key.UserID) ^ seed
+	}))
 
-	// CompareAndDelete: Compare and delete if values match
-	deleted := comparableCache.CompareAndDelete("counter", 20)
-	fmt.Printf("Deleted: %t\n", deleted)
+	// Custom value equality for non-comparable types
+	type Profile struct {
+		Name string
+		Tags []string
+	}
+	profileCache := pb.NewMapOf[string, Profile](pb.WithValueEqual(func(a, b Profile) bool {
+		return a.Name == b.Name
+	}))
+}
+```
 
-	// Swap: Exchange value and return old one
-	oldVal, loaded := comparableCache.Swap("new_key", 30)
-	fmt.Printf("Old value: %d, Was loaded: %t\n", oldVal, loaded)
+#### 5. Interface-Based Initialization (Alternative to With* functions)
 
-	// === Advanced Operations ===
+```go
+import (
+	"slices"
+	"github.com/llxisdsh/pb"
+)
+
+func interfaceBasedInitialization() {
+	// Custom key type implementing IHashCode interface
+	type CustomKey struct {
+		ID   int64
+		Name string
+	}
+
+	// Implement IHashCode for custom hashing
+	func (c CustomKey) HashCode(seed uintptr) uintptr {
+		return uintptr(c.ID) ^ seed
+	}
+
+	// Implement IHashOpts for hash distribution optimization
+	func (CustomKey) HashOpts() []pb.HashOptimization {
+		return []pb.HashOptimization{pb.LinearDistribution}
+	}
+
+	// Custom value type implementing IEqual interface (for non-comparable types)
+	type UserProfile struct {
+		Name string
+		Tags []string // slice makes this non-comparable
+	}
+
+	// Implement IEqual for custom equality comparison
+	func (u UserProfile) Equal(other UserProfile) bool {
+		return u.Name == other.Name && slices.Equal(u.Tags, other.Tags)
+	}
+
+	// Interface-based initialization - automatically detects interfaces
+	interfaceCache := pb.NewMapOf[CustomKey, UserProfile]()
+
+	// You can still override interface implementations with explicit functions
+	overrideCache := pb.NewMapOf[CustomKey, UserProfile](
+		pb.WithKeyHasher(func(key CustomKey, seed uintptr) uintptr {
+			return uintptr(key.ID*31 + int64(len(key.Name))) ^ seed
+		}),
+		pb.WithValueEqual(func(a, b UserProfile) bool {
+			return a.Name == b.Name // simplified comparison
+		}),
+	)
+}
+```
+
+#### 6. Interface Usage Examples
+
+```go
+import (
+	"fmt"
+	"github.com/llxisdsh/pb"
+)
+
+func interfaceUsageExamples() {
+	// Using the interface-based cache with custom types
+	interfaceCache := pb.NewMapOf[CustomKey, UserProfile]()
+
+	interfaceCache.Store(CustomKey{ID: 1, Name: "user1"}, UserProfile{
+		Name: "John Doe",
+		Tags: []string{"admin", "active"},
+		Data: map[string]interface{}{"role": "manager", "level": 5},
+	})
+
+	// Load and verify custom equality
+	profile, exists := interfaceCache.Load(CustomKey{ID: 1, Name: "user1"})
+	if exists {
+		fmt.Printf("Found profile: %s\n", profile.Name)
+	}
+
+	// Demonstrate custom equality with non-comparable types
+	sameProfile := UserProfile{
+		Name: "John Doe",
+		Tags: []string{"admin", "active"},
+		Data: map[string]interface{}{"role": "manager", "level": 5},
+	}
+
+	// This will use the custom Equal method for comparison
+	swapped := interfaceCache.CompareAndSwap(
+		CustomKey{ID: 1, Name: "user1"}, 
+		sameProfile, // old value (will match due to custom Equal)
+		UserProfile{Name: "Jane Doe", Tags: []string{"user"}, Data: map[string]interface{}{"role": "employee"}},
+	)
+	if swapped {
+		fmt.Println("Successfully swapped user profile using custom equality")
+	}
+}
+```
+
+#### 7. Advanced Operations
+
+```go
+import (
+	"fmt"
+	"github.com/llxisdsh/pb"
+)
+
+func advancedOperations() {
+	cache := pb.NewMapOf[string, int]()
+
+	// Store if absent - only stores if key doesn't exist
+	stored := cache.StoreIfAbsent("key4", 400)
+	if stored {
+		fmt.Println("key4 stored successfully")
+	}
+
+	// Update if present - only updates if key exists
+	updated := cache.UpdateIfPresent("key4", 450)
+	if updated {
+		fmt.Println("key4 updated successfully")
+	}
+
 	// ProcessEntry: Atomic conditional processing with complex business logic
 	cache.ProcessEntry("user:789", func(entry *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
 		if entry != nil {
@@ -517,11 +706,33 @@ func main() {
 		fmt.Printf("Entry: %s -> %d\n", entry.Key, entry.Value)
 	}
 
-	// === Iteration Operations ===
-	// Range: Iterate over all key-value pairs
+	// LoadAndDelete: Atomic read-and-delete operation
+	deletedValue, wasPresent := cache.LoadAndDelete("user:456")
+	fmt.Printf("Deleted value: %d, Was present: %t\n", deletedValue, wasPresent)
+
+	// LoadAndUpdate: Atomic update operation
+	previousValue, wasUpdated := cache.LoadAndUpdate("counter", 1)
+	fmt.Printf("Previous: %d, Updated: %t\n", previousValue, wasUpdated)
+}
+```
+
+#### 8. Iteration Operations
+
+```go
+import (
+	"fmt"
+	"github.com/llxisdsh/pb"
+)
+
+func iterationOperations() {
+	cache := pb.NewMapOf[string, int]()
+	cache.Store("key1", 100)
+	cache.Store("key2", 200)
+
+	// Range over all key-value pairs
 	cache.Range(func(key string, value int) bool {
-		fmt.Printf("%s: %d\n", key, value)
-		return true // Return false to stop iteration early
+		fmt.Printf("Key: %s, Value: %d\n", key, value)
+		return true // continue iteration
 	})
 
 	// RangeEntry: Iterate over all entry pointers (more efficient)
@@ -534,8 +745,42 @@ func main() {
 	for key, value := range cache.All() {
 		fmt.Printf("%s: %d\n", key, value)
 	}
+}
+```
 
-	// === Batch Operations ===
+#### 9. Batch Operations
+
+```go
+import (
+	"fmt"
+	"maps"
+)
+
+func batchOperations() {
+	cache := pb.NewMapOf[string, int]()
+
+	// Store multiple values
+	batchData := map[string]int{
+		"batch1": 1000,
+		"batch2": 2000,
+		"batch3": 3000,
+	}
+	cache.StoreAll(batchData)
+
+	// Load multiple values
+	keys := []string{"batch1", "batch2", "nonexistent"}
+	results := cache.LoadAll(keys)
+	for key, result := range results {
+		if result.Exists {
+			fmt.Printf("%s: %d\n", key, result.Value)
+		} else {
+			fmt.Printf("%s: not found\n", key)
+		}
+	}
+
+	// Delete multiple values
+	cache.DeleteAll([]string{"batch1", "batch2"})
+
 	// RangeProcessEntry: Batch process all entries
 	cache.RangeProcessEntry(func(loaded *pb.EntryOf[string, int]) *pb.EntryOf[string, int] {
 		if loaded != nil && loaded.Value < 100 {
@@ -550,33 +795,72 @@ func main() {
 	cache.BatchProcess(maps.All(data), func(_ string, v int, loaded *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
 		return &pb.EntryOf[string, int]{Value: v * 10}, v, true
 	})
+}
+```
 
-	// === Capacity Management ===
-	// Size: Get current number of elements
+#### 10. Capacity Management
+
+```go
+import (
+	"fmt"
+	"github.com/llxisdsh/pb"
+)
+
+func capacityManagement() {
+	cache := pb.NewMapOf[string, int]()
+
+	// Get current size
 	size := cache.Size()
 	fmt.Printf("Current size: %d\n", size)
 
-	// IsZero: Check if map is empty
+	// Check if empty
+	if cache.IsEmpty() {
+		fmt.Println("Cache is empty")
+	}
+
+	// Check if map is zero-value
 	isEmpty := cache.IsZero()
 	fmt.Printf("Is empty: %t\n", isEmpty)
 
-	// Grow: Pre-allocate capacity to avoid frequent resizing
+	// Pre-allocate capacity to avoid frequent resizing
 	cache.Grow(10000)
 
-	// Shrink: Manually shrink to release excess memory
+	// Manual shrink
 	cache.Shrink()
 
-	// Clear: Remove all data and reset to initial capacity
+	// Clear all entries
 	cache.Clear()
+}
+```
 
-	// === Data Conversion ===
-	// Repopulate with some data for demonstration
+#### 11. Data Conversion and Serialization
+
+```go
+import (
+	"encoding/json"
+	"fmt"
+	"github.com/llxisdsh/pb"
+)
+
+func dataConversionAndSerialization() {
+	cache := pb.NewMapOf[string, int]()
 	cache.Store("key1", 100)
 	cache.Store("key2", 200)
 
 	// Clone: Deep copy the entire map
 	clonedCache := cache.Clone()
 	fmt.Printf("Cloned size: %d\n", clonedCache.Size())
+
+	// Convert to Go map
+	goMap := cache.ToGoMap()
+	fmt.Printf("Go map: %+v\n", goMap)
+
+	// Load from Go map
+	newData := map[string]int{
+		"new1": 100,
+		"new2": 200,
+	}
+	cache.FromGoMap(newData)
 
 	// ToMap: Convert to regular Go map
 	regularMap := cache.ToMap()
@@ -586,17 +870,21 @@ func main() {
 	sourceMap := map[string]int{"import1": 1, "import2": 2}
 	cache.FromMap(sourceMap)
 
-	// === Output And Statistics ===
-	// JSON Marshal
-	jsonData, _ := json.Marshal(&cache)
-	fmt.Printf("Final cache json output: %s\n", jsonData)
+	// JSON serialization
+	jsonData, err := json.Marshal(&cache)
+	if err == nil {
+		fmt.Printf("JSON: %s\n", jsonData)
+	}
 
-	// JSON Unmarshal
-	cache.Clear()
-	_ = json.Unmarshal(jsonData, &cache)
+	// JSON deserialization
+	var newCache pb.MapOf[string, int]
+	err = json.Unmarshal(jsonData, &newCache)
+	if err == nil {
+		fmt.Println("Successfully deserialized from JSON")
+	}
 
-	// String output
-	fmt.Printf("Final cache output: %v\n", &cache)
+	// String representation
+	fmt.Printf("Cache contents: %s\n", cache.String())
 
 	// Stats: Get detailed performance statistics
 	stats := cache.Stats()

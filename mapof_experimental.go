@@ -29,15 +29,15 @@ func WithFastStringHasher() func(*MapConfig) {
 }
 
 //go:nosplit
-func fastStringHasher(value unsafe.Pointer, seed uintptr) uintptr {
-	key := *(*[]byte)(value)
+func fastStringHasher(ptr unsafe.Pointer, seed uintptr) uintptr {
+	key := *(*[]byte)(ptr)
 	if len(key) <= 12 {
 		for _, c := range key {
 			seed = seed*31 + uintptr(c)
 		}
 		return seed
 	}
-	return buildInStringHasher(value, seed)
+	return buildInStringHasher(ptr, seed)
 }
 
 var buildInStringHasher, _ = defaultHasherUsingBuiltIn[string, struct{}]()

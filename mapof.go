@@ -6,6 +6,7 @@ import (
 	"math"
 	"math/bits"
 	"math/rand/v2"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -351,10 +352,10 @@ func WithValueEqual[V any](
 //
 // Usage:
 //
-//	unsafeEqual := func(ptr1, ptr2 unsafe.Pointer) bool {
+//	unsafeEqual := func(ptr, other unsafe.Pointer) bool {
 //		// Cast pointers to your value type and implement comparison
-//		val1 := *(*MyStruct)(ptr1)
-//		val2 := *(*MyStruct)(ptr2)
+//		val1 := *(*MyStruct)(ptr)
+//		val2 := *(*MyStruct)(other)
 //		return val1.ID == val2.ID // example comparison
 //	}
 //	m := NewMapOf[string, MyStruct](WithValueEqualUnsafe(unsafeEqual))
@@ -515,9 +516,79 @@ func (table *mapOfTable) isZero() bool {
 	return true
 }
 
+// IHashCode defines a custom hash function interface for key types.
+// Key types implementing this interface can provide their own hash computation,
+// serving as an alternative to WithKeyHasher for type-specific optimization.
+//
+// This interface is automatically detected during MapOf initialization and
+// takes
+// precedence over the default built-in hasher but is overridden by explicit
+// WithKeyHasher configuration.
+//
+// Usage:
+//
+//	type UserID struct {
+//		ID int64
+//		Tenant string
+//	}
+//
+//	func (u *UserID) HashCode(seed uintptr) uintptr {
+//		return uintptr(u.ID) ^ seed
+//	}
+type IHashCode interface {
+	HashCode(seed uintptr) uintptr
+}
+
+// IHashOpts defines hash distribution optimization interface for key types.
+// Key types implementing this interface can specify their preferred hash
+// distribution strategy, serving as an alternative to WithKeyHasher's opts
+// parameter.
+//
+// This interface is automatically detected during MapOf initialization and
+// provides fine-grained control over hash-to-bucket mapping strategies.
+//
+// Usage:
+//
+//	type SequentialID int64
+//
+//	func (*SequentialID) HashOpts() []HashOptimization {
+//		return []HashOptimization{LinearDistribution}
+//	}
+type IHashOpts interface {
+	HashOpts() []HashOptimization
+}
+
+// IEqual defines a custom equality comparison interface for value types.
+// Value types implementing this interface can provide their own equality logic,
+// serving as an alternative to WithValueEqual for type-specific comparison.
+//
+// This interface is automatically detected during MapOf initialization and is
+// essential for non-comparable value types or custom equality semantics.
+// It takes precedence over the default built-in comparison but is overridden
+// by explicit WithValueEqual configuration.
+//
+// Usage:
+//
+//	type UserProfile struct {
+//		Name string
+//		Tags []string // slice makes this non-comparable
+//	}
+//
+//	func (u *UserProfile) Equal(other UserProfile) bool {
+//		return u.Name == other.Name && slices.Equal(u.Tags, other.Tags)
+//	}
+type IEqual[T any] interface {
+	Equal(other T) bool
+}
+
 // InitWithOptions initializes the MapOf instance using variadic option
 // parameters. This is a convenience method that allows configuring MapOf
 // through the functional options pattern.
+//
+// Configuration Priority (highest to lowest):
+//   - Explicit With* functions (WithKeyHasher, WithValueEqual)
+//   - Interface implementations (IHashCode, IHashOpts, IEqual)
+//   - Default built-in implementations (defaultHasher) - fallback
 //
 // Parameters:
 //   - options: configuration option functions such as WithPresize,
@@ -536,37 +607,34 @@ func (m *MapOf[K, V]) InitWithOptions(
 	options ...func(*MapConfig),
 ) {
 	c := &MapConfig{}
+
+	// parse interface
+	var zeroK K
+	ak := any(&zeroK)
+	if _, ok := ak.(IHashCode); ok {
+		c.KeyHash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
+			return any((*K)(ptr)).(IHashCode).HashCode(seed)
+		}
+	}
+
+	if i, ok := ak.(IHashOpts); ok {
+		c.HashOpts = i.HashOpts()
+	}
+
+	var zeroV V
+	vk := any(&zeroV)
+	if _, ok := vk.(IEqual[V]); ok {
+		c.ValEqual = func(ptr unsafe.Pointer, other unsafe.Pointer) bool {
+			return any((*V)(ptr)).(IEqual[V]).Equal(*(*V)(other))
+		}
+	}
+
+	// parse options
 	for _, o := range options {
 		o(c)
 	}
-	m.init(c)
-}
 
-// initWithConfig initializes the MapOf instance using a pre-built MapConfig.
-// This is a more direct initialization method, suitable for scenarios where the
-// same configuration needs to be reused.
-//
-// Parameters:
-//   - config: a pre-configured MapConfig instance containing all necessary
-//     configuration parameters
-//
-// Usage example:
-//
-//	config := &MapConfig{
-//	    SizeHint: 1000,
-//	    ShrinkEnabled: true,
-//	}
-//	m.initWithConfig(config)
-//
-// Notes:
-//   - This function is not thread-safe and should only be called before MapOf
-//     is used
-//   - The passed MapConfig will be used directly without copying
-//   - The behavior of calling this function multiple times is undefined
-func (m *MapOf[K, V]) initWithConfig(
-	config *MapConfig,
-) {
-	m.init(config)
+	m.init(c)
 }
 
 func (m *MapOf[K, V]) init(
@@ -3024,8 +3092,8 @@ func runtime_doSpin()
 //func runtime_nanotime() int64
 
 type (
-	hashFunc  func(unsafe.Pointer, uintptr) uintptr
-	equalFunc func(unsafe.Pointer, unsafe.Pointer) bool
+	hashFunc  func(ptr unsafe.Pointer, seed uintptr) uintptr
+	equalFunc func(ptr unsafe.Pointer, other unsafe.Pointer) bool
 )
 
 func defaultHasher[K comparable, V any]() (
@@ -3037,40 +3105,71 @@ func defaultHasher[K comparable, V any]() (
 
 	switch any(*new(K)).(type) {
 	case uint, int, uintptr:
-		return func(value unsafe.Pointer, _ uintptr) uintptr {
-			return *(*uintptr)(value)
-		}, valEqual, true
-
+		return hashUintptr, valEqual, true
 	case uint64, int64:
 		if bits.UintSize == 32 {
-			return func(value unsafe.Pointer, _ uintptr) uintptr {
-				v := *(*uint64)(value)
-				return uintptr(v) ^ uintptr(v>>32)
-			}, valEqual, true
+			return hashUint64On32Bit, valEqual, true
 		}
-
-		return func(value unsafe.Pointer, _ uintptr) uintptr {
-			return uintptr(*(*uint64)(value))
-		}, valEqual, true
-
+		return hashUint64, valEqual, true
 	case uint32, int32:
-		return func(value unsafe.Pointer, _ uintptr) uintptr {
-			return uintptr(*(*uint32)(value))
-		}, valEqual, true
-
+		return hashUint32, valEqual, true
 	case uint16, int16:
-		return func(value unsafe.Pointer, _ uintptr) uintptr {
-			return uintptr(*(*uint16)(value))
-		}, valEqual, true
-
+		return hashUint16, valEqual, true
 	case uint8, int8:
-		return func(value unsafe.Pointer, _ uintptr) uintptr {
-			return uintptr(*(*uint8)(value))
-		}, valEqual, true
-
+		return hashUint8, valEqual, true
 	default:
-		return keyHash, valEqual, false
+		// for types like integers
+		var zeroK K
+		kType := reflect.TypeOf(zeroK)
+		switch kType.Kind() {
+		case reflect.Uint, reflect.Int, reflect.Uintptr:
+			return hashUintptr, valEqual, true
+		case reflect.Int64, reflect.Uint64:
+			if bits.UintSize == 32 {
+				return hashUint64On32Bit, valEqual, true
+			}
+			return hashUint64, valEqual, true
+		case reflect.Int32, reflect.Uint32:
+			return hashUint32, valEqual, true
+		case reflect.Int16, reflect.Uint16:
+			return hashUint16, valEqual, true
+		case reflect.Int8, reflect.Uint8:
+			return hashUint8, valEqual, true
+		default:
+			return keyHash, valEqual, false
+		}
 	}
+}
+
+//go:nosplit
+func hashUintptr(ptr unsafe.Pointer, _ uintptr) uintptr {
+	return *(*uintptr)(ptr)
+}
+
+//go:nosplit
+func hashUint64On32Bit(ptr unsafe.Pointer, _ uintptr) uintptr {
+	v := *(*uint64)(ptr)
+	return uintptr(v) ^ uintptr(v>>32)
+}
+
+//go:nosplit
+func hashUint64(ptr unsafe.Pointer, _ uintptr) uintptr {
+	return uintptr(*(*uint64)(ptr))
+}
+
+//go:nosplit
+func hashUint32(ptr unsafe.Pointer, _ uintptr) uintptr {
+	return uintptr(*(*uint32)(ptr))
+}
+
+//go:nosplit
+func hashUint16(ptr unsafe.Pointer, _ uintptr) uintptr {
+	return uintptr(*(*uint16)(ptr))
+}
+
+//go:nosplit
+func hashUint8(ptr unsafe.Pointer, _ uintptr) uintptr {
+	return uintptr(*(*uint8)(ptr))
 }
 
 // defaultHasherUsingBuiltIn gets Go's built-in hash and equality functions
