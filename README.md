@@ -544,7 +544,7 @@ func customOptimizations() {
 	
 	// Method 1: Using With* functions for runtime configuration
 
-	// Override built-in long string optimization if needed
+	// Built-in hasher: better for long strings (lower collisions) but slower for short strings (2-3x)
 	stringCache := pb.NewMapOf[string, int](pb.WithBuiltInHasher[string]())
 
 	// Custom hash function for pointer keys
