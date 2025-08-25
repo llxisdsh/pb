@@ -429,7 +429,8 @@ import (
 func main() {
 	// Zero-value initialization with lazy loading
 	var cache pb.MapOf[string, int]
-    // Init with options if needed
+
+	// Optional initialization, Must be called once before use.
 	cache.InitWithOptions(pb.WithPresize(1000000))
 
 	// Direct initialization with options
@@ -536,6 +537,11 @@ import (
 )
 
 func customOptimizations() {
+	// Configuration Priority (highest to lowest):
+	//   - Explicit With* functions (WithKeyHasher, WithValueEqual)
+	//   - Interface implementations (IHashCode, IHashOpts, IEqual)
+	//   - Default built-in implementations (defaultHasher) - fallback
+	
 	// Method 1: Using With* functions for runtime configuration
 
 	// Override built-in long string optimization if needed
