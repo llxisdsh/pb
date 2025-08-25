@@ -805,7 +805,7 @@ Optimization Selection Guide:
 
 ## 🙏 Acknowledgments
 
-pb.MapOf builds upon the excellent work of [xsync](https://github.com/puzpuzpuz/xsync) (specifically the v3 version, which is licensed under MIT). We extend our gratitude to the xsync authors and the broader Go community.
+pb.MapOf builds upon the excellent work of [xsync](https://github.com/puzpuzpuz/xsync)(v3, MIT licensed). We extend our gratitude to the xsync authors and the broader Go community.
 Reproduce its introduction below:
 
 ```
