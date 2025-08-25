@@ -381,8 +381,8 @@ To achieve exceptional performance, pb.MapOf employs multiple optimization strat
 ### Optimization Strategies
 
 #### 1. Built-in Optimizations (Automatic)
-- **Integer Key Optimization**: Uses raw key values as hash for integer types, delivering **4-6x performance improvement**
-- **String Key Optimization**: Automatically enabled for short string and []byte keys (≤12 bytes), achieving **2-3x performance improvement**
+- **Integer Key Optimization**: Uses raw key values as hash for integer types, delivering 4-6x performance improvement
+- **String Key Optimization**: Automatically enabled for short string and []byte keys (≤12 bytes), achieving 2-3x performance improvement
 - **Memory Layout Optimization**: Cache-line aligned structures prevent false sharing
 
 **Note**: Default optimizations may increase hash collision rates in some scenarios. For domain-specific optimizations, see custom hash functions in the Usage section.
