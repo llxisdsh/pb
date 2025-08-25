@@ -105,3 +105,45 @@ func (m *MapOf[K, V]) Init(
 		)...,
 	)
 }
+
+// WithFastStringHasher returns a MapConfig option that enables optimized
+// hashing for string and []byte keys.
+//
+// DEPRECATED: This function is deprecated as the fast string hasher is now
+// the default behavior for string and []byte keys. The optimized hashing
+// strategy is automatically applied when using NewMapOf with string or []byte
+// keys without any additional configuration.
+//
+// If you need to revert to Go's built-in hasher for compatibility or
+// debugging purposes, use WithBuiltInHasher instead:
+//
+//	// Use built-in hasher instead of the optimized one
+//	m := NewMapOf[string, int](WithBuiltInHasher[string]())
+//
+// Performance characteristics (for reference):
+// - For short strings/[]byte (≤12 bytes): Provides 2-3x throughput
+// improvement compared to the built-in hasher
+// - For longer strings: Slightly lower performance than the built-in hasher
+//
+// This hasher uses a simple polynomial rolling hash for short keys and falls
+// back to the built-in string hasher for longer keys.
+//
+// Deprecated: Use the default behavior or WithBuiltInHasher[string]() to
+// explicitly use the built-in hasher.
+func WithFastStringHasher() func(*MapConfig) {
+	return func(c *MapConfig) {
+		c.KeyHash = fastStringHasher
+	}
+}
+
+//go:nosplit
+func fastStringHasher(ptr unsafe.Pointer, seed uintptr) uintptr {
+	key := *(*string)(ptr)
+	if len(key) <= 12 {
+		for _, c := range key {
+			seed = seed*31 + uintptr(c)
+		}
+		return seed
+	}
+	return builtInStringHasher(ptr, seed)
+}

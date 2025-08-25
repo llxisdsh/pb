@@ -99,8 +99,8 @@ type MapOf[K comparable, V any] struct {
 		totalGrowths  atomic.Uint32
 		totalShrinks  atomic.Uint32
 		seed          uintptr
-		keyHash       hashFunc
-		valEqual      equalFunc
+		keyHash       HashFunc
+		valEqual      EqualFunc
 		minTableLen   int
 		shrinkEnabled bool
 		intKey        bool
@@ -111,8 +111,8 @@ type MapOf[K comparable, V any] struct {
 	totalGrowths  atomic.Uint32
 	totalShrinks  atomic.Uint32
 	seed          uintptr
-	keyHash       hashFunc  // WithKeyHasher
-	valEqual      equalFunc // WithValueEqual
+	keyHash       HashFunc  // WithKeyHasher
+	valEqual      EqualFunc // WithValueEqual
 	minTableLen   int       // WithPresize
 	shrinkEnabled bool      // WithShrinkEnabled
 	intKey        bool
@@ -140,7 +140,7 @@ type MapConfig struct {
 	// If nil, the built-in hash function will be used.
 	// Custom hash functions can improve performance for specific key types
 	// or provide better hash distribution.
-	KeyHash hashFunc
+	KeyHash HashFunc
 
 	// HashOpts specifies the hash distribution optimization strategies to use.
 	// These options control how hash values are converted to bucket indices
@@ -154,7 +154,7 @@ type MapConfig struct {
 	// This is primarily used for compare-and-swap operations.
 	// Note: Using Compare* methods with non-comparable value types
 	// will panic if ValEqual is nil.
-	ValEqual equalFunc
+	ValEqual EqualFunc
 
 	// SizeHint provides an estimate of the expected number of entries.
 	// This is used to pre-allocate the underlying hash table with appropriate
@@ -297,7 +297,7 @@ func WithKeyHasher[K comparable](
 //   - Only use if you understand Go's unsafe package
 //   - Distribution strategies still apply to the hash output
 func WithKeyHasherUnsafe(
-	hs hashFunc,
+	hs HashFunc,
 	opts ...HashOptimization,
 ) func(*MapConfig) {
 	return func(c *MapConfig) {
@@ -317,10 +317,10 @@ func WithKeyHasherUnsafe(
 // Usage:
 //
 //	// For custom structs with specific equality logic
-//	equalFunc := func(a, b MyStruct) bool {
+//	EqualFunc := func(a, b MyStruct) bool {
 //		return a.ID == b.ID && a.Name == b.Name
 //	}
-//	m := NewMapOf[string, MyStruct](WithValueEqual(equalFunc))
+//	m := NewMapOf[string, MyStruct](WithValueEqual(EqualFunc))
 //
 // Use cases:
 //   - Custom equality for structs (compare specific fields)
@@ -365,7 +365,7 @@ func WithValueEqual[V any](
 //   - Both pointers must point to valid memory of the same type
 //   - Incorrect pointer operations will cause crashes or memory corruption
 //   - Only use if you understand Go's unsafe package
-func WithValueEqualUnsafe(eq equalFunc) func(*MapConfig) {
+func WithValueEqualUnsafe(eq EqualFunc) func(*MapConfig) {
 	return func(c *MapConfig) {
 		c.ValEqual = eq
 	}
@@ -544,6 +544,8 @@ type IHashCode interface {
 // distribution strategy, serving as an alternative to WithKeyHasher's opts
 // parameter.
 //
+// Note: IHashOpts only takes effect when the Key type also implements IHashCode.
+//
 // This interface is automatically detected during MapOf initialization and
 // provides fine-grained control over hash-to-bucket mapping strategies.
 //
@@ -608,30 +610,32 @@ func (m *MapOf[K, V]) InitWithOptions(
 ) {
 	c := &MapConfig{}
 
-	// parse interface
-	var zeroK K
-	ak := any(&zeroK)
-	if _, ok := ak.(IHashCode); ok {
-		c.KeyHash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
-			return any((*K)(ptr)).(IHashCode).HashCode(seed)
-		}
-	}
-
-	if i, ok := ak.(IHashOpts); ok {
-		c.HashOpts = i.HashOpts()
-	}
-
-	var zeroV V
-	vk := any(&zeroV)
-	if _, ok := vk.(IEqual[V]); ok {
-		c.ValEqual = func(ptr unsafe.Pointer, other unsafe.Pointer) bool {
-			return any((*V)(ptr)).(IEqual[V]).Equal(*(*V)(other))
-		}
-	}
-
 	// parse options
 	for _, o := range options {
 		o(c)
+	}
+
+	// parse interface
+	if c.KeyHash == nil {
+		var zeroK K
+		ak := any(&zeroK)
+		if _, ok := ak.(IHashCode); ok {
+			c.KeyHash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
+				return any((*K)(ptr)).(IHashCode).HashCode(seed)
+			}
+			if i, ok := ak.(IHashOpts); ok {
+				c.HashOpts = i.HashOpts()
+			}
+		}
+	}
+	if c.ValEqual == nil {
+		var zeroV V
+		vk := any(&zeroV)
+		if _, ok := vk.(IEqual[V]); ok {
+			c.ValEqual = func(ptr unsafe.Pointer, other unsafe.Pointer) bool {
+				return any((*V)(ptr)).(IEqual[V]).Equal(*(*V)(other))
+			}
+		}
 	}
 
 	m.init(c)
@@ -644,15 +648,15 @@ func (m *MapOf[K, V]) init(
 	m.keyHash, m.valEqual, m.intKey = defaultHasher[K, V]()
 	if c.KeyHash != nil {
 		m.keyHash = c.KeyHash
-	}
-	for _, o := range c.HashOpts {
-		switch o {
-		case LinearDistribution:
-			m.intKey = true
-		case ShiftDistribution:
-			m.intKey = false
-		case AutoDistribution:
-			// default distribution
+		for _, o := range c.HashOpts {
+			switch o {
+			case LinearDistribution:
+				m.intKey = true
+			case ShiftDistribution:
+				m.intKey = false
+			case AutoDistribution:
+				// default distribution
+			}
 		}
 	}
 	if c.ValEqual != nil {
@@ -3092,13 +3096,13 @@ func runtime_doSpin()
 //func runtime_nanotime() int64
 
 type (
-	hashFunc  func(ptr unsafe.Pointer, seed uintptr) uintptr
-	equalFunc func(ptr unsafe.Pointer, other unsafe.Pointer) bool
+	HashFunc  func(ptr unsafe.Pointer, seed uintptr) uintptr
+	EqualFunc func(ptr unsafe.Pointer, other unsafe.Pointer) bool
 )
 
 func defaultHasher[K comparable, V any]() (
-	keyHash hashFunc,
-	valEqual equalFunc,
+	keyHash HashFunc,
+	valEqual EqualFunc,
 	intKey bool,
 ) {
 	keyHash, valEqual = defaultHasherUsingBuiltIn[K, V]()
@@ -3117,6 +3121,10 @@ func defaultHasher[K comparable, V any]() (
 		return hashUint16, valEqual, true
 	case uint8, int8:
 		return hashUint8, valEqual, true
+	case string:
+		return hashString, valEqual, false
+	case []byte:
+		return hashString, valEqual, false
 	default:
 		// for types like integers
 		var zeroK K
@@ -3135,10 +3143,16 @@ func defaultHasher[K comparable, V any]() (
 			return hashUint16, valEqual, true
 		case reflect.Int8, reflect.Uint8:
 			return hashUint8, valEqual, true
-		default:
-			return keyHash, valEqual, false
+		case reflect.String:
+			return hashString, valEqual, false
+		case reflect.Slice:
+			// Check if it's []byte
+			if kType.Elem().Kind() == reflect.Uint8 {
+				return hashString, valEqual, false
+			}
 		}
 	}
+	return keyHash, valEqual, false
 }
 
 //go:nosplit
@@ -3172,6 +3186,20 @@ func hashUint8(ptr unsafe.Pointer, _ uintptr) uintptr {
 	return uintptr(*(*uint8)(ptr))
 }
 
+//go:nosplit
+func hashString(ptr unsafe.Pointer, seed uintptr) uintptr {
+	key := *(*string)(ptr)
+	if len(key) <= 12 {
+		for _, c := range key {
+			seed = seed*31 + uintptr(c)
+		}
+		return seed
+	}
+	return builtInStringHasher(ptr, seed)
+}
+
+var builtInStringHasher, _ = defaultHasherUsingBuiltIn[string, struct{}]()
+
 // defaultHasherUsingBuiltIn gets Go's built-in hash and equality functions
 // for the specified types using reflection.
 //
@@ -3182,8 +3210,8 @@ func hashUint8(ptr unsafe.Pointer, _ uintptr) uintptr {
 //   - This implementation relies on Go's internal type representation
 //   - It should be verified for compatibility with each Go version upgrade
 func defaultHasherUsingBuiltIn[K comparable, V any]() (
-	keyHash hashFunc,
-	valEqual equalFunc,
+	keyHash HashFunc,
+	valEqual EqualFunc,
 ) {
 	var m map[K]V
 	mapType := iTypeOf(m).MapType()

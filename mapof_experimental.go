@@ -2,45 +2,44 @@ package pb
 
 import "unsafe"
 
-// WithFastStringHasher returns a MapConfig option that enables optimized
-// hashing
-// for string and []byte keys.
+// WithBuiltInHasher returns a MapConfig option that explicitly sets the
+// built-in hash function for the specified type.
+//
+// This option is useful when you want to explicitly use Go's built-in hasher
+// instead of any optimized variants. It ensures that the map uses the same
+// hashing strategy as Go's native map implementation.
 //
 // Performance characteristics:
-// - For short strings/[]byte (≤12 bytes): Provides 2-3x throughput
-// improvement
-//
-//	  compared to the default hasher, approaching native Go map performance
-//	- For longer strings: Slightly lower performance than the built-in hasher
-//
-// This hasher uses a simple polynomial rolling hash for short keys and falls
-// back to the built-in string hasher for longer keys. It's particularly
-// effective for
-// workloads with predominantly short string keys such as identifiers, tags, or
-// short descriptive text.
+// - Provides consistent performance across all key sizes
+// - Uses Go's optimized internal hash functions
+// - Guaranteed compatibility with future Go versions
+// - May be slower than specialized hashers for specific use cases
 //
 // Usage:
 //
-//	m := NewMapOf[string, int](WithFastStringHasher())
-func WithFastStringHasher() func(*MapConfig) {
+//	m := NewMapOf[string, int](WithBuiltInHasher[string]())
+func WithBuiltInHasher[T comparable]() func(*MapConfig) {
 	return func(c *MapConfig) {
-		c.KeyHash = fastStringHasher
+		c.KeyHash = GetBuiltInHasher[T]()
 	}
 }
 
-//go:nosplit
-func fastStringHasher(ptr unsafe.Pointer, seed uintptr) uintptr {
-	key := *(*[]byte)(ptr)
-	if len(key) <= 12 {
-		for _, c := range key {
-			seed = seed*31 + uintptr(c)
-		}
-		return seed
-	}
-	return buildInStringHasher(ptr, seed)
+// GetBuiltInHasher returns Go's built-in hash function for the specified type.
+// This function provides direct access to the same hash function that Go's
+// built-in map uses internally, ensuring optimal performance and compatibility.
+//
+// The returned hash function is type-specific and optimized for the given
+// comparable type T. It uses Go's internal type representation to access
+// the most efficient hashing implementation available.
+//
+// Usage:
+//
+//	hashFunc := GetBuiltInHasher[string]()
+//	m := NewMapOf[string, int](WithKeyHasherUnsafe(GetBuiltInHasher[string]()))
+func GetBuiltInHasher[T comparable]() HashFunc {
+	keyHash, _ := defaultHasherUsingBuiltIn[T, struct{}]()
+	return keyHash
 }
-
-var buildInStringHasher, _ = defaultHasherUsingBuiltIn[string, struct{}]()
 
 // ProcessEntryOptimistic processes a key-value pair using the provided
 // function.

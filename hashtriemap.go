@@ -29,8 +29,8 @@ import (
 type HashTrieMap[K comparable, V any] struct {
 	initMu   sync.Mutex
 	root     atomic.Pointer[indirect[K, V]]
-	keyHash  hashFunc
-	valEqual equalFunc
+	keyHash  HashFunc
+	valEqual EqualFunc
 	seed     uintptr
 }
 
@@ -445,7 +445,7 @@ func (ht *HashTrieMap[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 // Returns a non-nil node, which will always be an entry, if found.
 //
 // If i != nil then i.mu is locked, and it is the caller's responsibility to unlock it.
-func (ht *HashTrieMap[K, V]) find(i0 *indirect[K, V], key K, hash uintptr, valEqual equalFunc, value V) (i *indirect[K, V], hashShift uint, slot *atomic.Pointer[node[K, V]], n *node[K, V]) {
+func (ht *HashTrieMap[K, V]) find(i0 *indirect[K, V], key K, hash uintptr, valEqual EqualFunc, value V) (i *indirect[K, V], hashShift uint, slot *atomic.Pointer[node[K, V]], n *node[K, V]) {
 	for i = i0; ; i = ht.root.Load() {
 		// Find the key or return if it's not there.
 		// i = ht.root.Load()
@@ -664,7 +664,7 @@ func (e *entry[K, V]) lookup(key K) (V, bool) {
 	return *new(V), false
 }
 
-func (e *entry[K, V]) lookupWithValue(key K, value V, valEqual equalFunc) (V, bool) {
+func (e *entry[K, V]) lookupWithValue(key K, value V, valEqual EqualFunc) (V, bool) {
 	for e != nil {
 		if e.key == key && (valEqual == nil || valEqual(unsafe.Pointer(&e.value), noescape(unsafe.Pointer(&value)))) {
 			return e.value, true
@@ -707,7 +707,7 @@ func (head *entry[K, V]) swap(hash uintptr, key K, new V) (*entry[K, V], V, bool
 // equal. Returns the new entry chain and whether or not anything was swapped.
 //
 // compareAndSwap must be called under the mutex of the indirect node which e is a child of.
-func (head *entry[K, V]) compareAndSwap(hash uintptr, key K, old, new V, valEqual equalFunc) (*entry[K, V], bool) {
+func (head *entry[K, V]) compareAndSwap(hash uintptr, key K, old, new V, valEqual EqualFunc) (*entry[K, V], bool) {
 	if head.key == key && valEqual(unsafe.Pointer(&head.value), noescape(unsafe.Pointer(&old))) {
 		// Return the new head of the list.
 		e := newEntryNode(hash, key, new)
@@ -757,7 +757,7 @@ func (head *entry[K, V]) loadAndDelete(key K) (V, *entry[K, V], bool) {
 // equal. Returns the new entry chain and whether or not anything was deleted.
 //
 // compareAndDelete must be called under the mutex of the indirect node which e is a child of.
-func (head *entry[K, V]) compareAndDelete(key K, value V, valEqual equalFunc) (*entry[K, V], bool) {
+func (head *entry[K, V]) compareAndDelete(key K, value V, valEqual EqualFunc) (*entry[K, V], bool) {
 	if head.key == key && valEqual(unsafe.Pointer(&head.value), noescape(unsafe.Pointer(&value))) {
 		// Drop the head of the list.
 		return head.overflow.Load(), true
