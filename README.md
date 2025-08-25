@@ -394,7 +394,7 @@ To achieve exceptional performance, pb.MapOf employs multiple optimization strat
 
 #### 3. Performance Guidelines
 - Custom hash functions provide significant gains for domain-specific key types
-- Interface implementations are automatically detected at compile time
+- Interface implementations are automatically detected at initial time
 - `With*` functions take precedence over interface implementations
 - Well-designed custom hash functions typically outweigh collision risks
 
