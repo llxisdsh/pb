@@ -544,7 +544,7 @@ type IHashCode interface {
 // distribution strategy, serving as an alternative to WithKeyHasher's opts
 // parameter.
 //
-// Note: IHashOpts only takes effect when the Key type also implements IHashCode.
+// Note: IHashOpts only works if Key implements IHashCode.
 //
 // This interface is automatically detected during MapOf initialization and
 // provides fine-grained control over hash-to-bucket mapping strategies.

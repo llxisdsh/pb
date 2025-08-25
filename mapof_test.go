@@ -3195,7 +3195,8 @@ func TestMapOfResize(t *testing.T) {
 	if stats.Size != numEntries {
 		t.Fatalf("size was too small: %d", stats.Size)
 	}
-	// fastStringHasher has a certain collision rate, which may slightly increase the required capacity.
+	// fastStringHasher has a certain collision rate, which may slightly
+	// increase the required capacity.
 	expectedCapacity := 2 * (calcTableLen(numEntries) * EntriesPerMapOfBucket) // + (numEntries/EntriesPerMapOfBucket + 1)
 	if stats.Capacity > expectedCapacity {
 		t.Fatalf(

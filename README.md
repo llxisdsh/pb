@@ -376,60 +376,27 @@ Benchmark results indicate that pb.MapOf matches the native Go map in memory eff
 
 ## ⚡ Performance Tips
 
-To achieve the exceptional performance shown in the benchmarks above, pb.MapOf employs multiple optimization strategies. While it primarily leverages Go's built-in hash function (which is highly optimized with assembly instructions), it provides several specialized optimizations for different scenarios:
+To achieve exceptional performance, pb.MapOf employs multiple optimization strategies:
 
 ### Optimization Strategies
 
-MapOf offers three main approaches to maximize performance for different key types and use cases:
-
 #### 1. Built-in Optimizations (Automatic)
-- **Integer Key Optimization**: Automatically uses raw key values as hash for integer types (int, int32, int64, uint, etc.), delivering **4-6x performance improvement**
-- **Pointer Key Optimization**: Directly uses pointer addresses as hash values for maximum efficiency
-- **Memory Layout Optimization**: Cache-line aligned structures prevent false sharing in multi-core environments
+- **Integer Key Optimization**: Uses raw key values as hash for integer types, delivering **4-6x performance improvement**
+- **String Key Optimization**: Automatically enabled for short string and []byte keys (≤12 bytes), achieving **2-3x performance improvement**
+- **Memory Layout Optimization**: Cache-line aligned structures prevent false sharing
+
+**Note**: Default optimizations may increase hash collision rates in some scenarios. For domain-specific optimizations, see custom hash functions in the Usage section.
 
 #### 2. Configurable Optimizations
-- **Fast String Hasher**: Use `WithFastStringHasher()` for short string keys (≤12 bytes), achieving **2-3x performance improvement**
-- **Pre-sizing**: Use `WithPresize(n)` to avoid rehashing during initial population, especially beneficial for large datasets
-- **Shrink Control**: Use `WithShrinkEnabled()` to automatically reduce memory usage when map size decreases significantly
+- **Pre-sizing**: Use `WithPresize(n)` to avoid rehashing during initial population
+- **Shrink Control**: Use `WithShrinkEnabled()` to automatically reduce memory usage when map size decreases
+- **Custom Hash Functions**: Implement `IHashCode` interface or use `WithKeyHasher()` for specialized key types (see Usage section for examples)
 
-#### 3. Custom Hash Functions
-
-For specialized use cases, you can implement custom hash functions to achieve optimal performance:
-
-```go
-import (
-    "slices"
-    "github.com/llxisdsh/pb"
-)
-
-// Method 1: Using WithKeyHasher for runtime configuration
-type UserID struct { ID int64 }
-m1 := pb.NewMapOf[UserID, string](pb.WithKeyHasher(func(key UserID, seed uintptr) uintptr {
-    return uintptr(key.ID) ^ seed  // Simple but effective for unique IDs
-}))
-
-// Method 2: Implementing IHashCode interface (compile-time detection)
-func (u UserID) HashCode(seed uintptr) uintptr { 
-    return uintptr(u.ID) ^ seed 
-}
-m2 := pb.NewMapOf[UserID, string]() // Automatically detects and uses IHashCode
-
-// Method 3: Implementing IEqual for custom value comparison
-type Profile struct {
-    Name string
-    Tags []string
-}
-func (p Profile) Equal(other Profile) bool {
-    return p.Name == other.Name && slices.Equal(p.Tags, other.Tags)
-}
-m3 := pb.NewMapOf[string, Profile]() // Automatically detects and uses IEqual
-```
-
-**Performance Notes**:
-- Custom hash functions can provide significant performance gains for domain-specific key types
-- Interface implementations (`IHashCode`, `IEqual`) are automatically detected at compile time
-- `With*` functions take precedence over interface implementations when both are present
-- Well-designed custom hash functions typically outweigh potential collision risks
+#### 3. Performance Guidelines
+- Custom hash functions provide significant gains for domain-specific key types
+- Interface implementations are automatically detected at compile time
+- `With*` functions take precedence over interface implementations
+- Well-designed custom hash functions typically outweigh collision risks
 
 ## 🚀 Quick Start
 
@@ -462,12 +429,11 @@ import (
 func main() {
 	// Zero-value initialization with lazy loading
 	var cache pb.MapOf[string, int]
-	cache.InitWithOptions(pb.WithPresize(100), pb.WithShrinkEnabled())
+    // Init with options if needed
+	cache.InitWithOptions(pb.WithPresize(1000000))
 
 	// Direct initialization with options
-	cache2 := pb.NewMapOf[string, int](pb.WithPresize(1000000))
-	cache3 := pb.NewMapOf[string, int](pb.WithShrinkEnabled())
-	cache4 := pb.NewMapOf[string, int](pb.WithPresize(1000000), pb.WithShrinkEnabled())
+	cache2 := pb.NewMapOf[string, int](pb.WithPresize(1000000), pb.WithShrinkEnabled())
 }
 ```
 
@@ -539,160 +505,6 @@ func atomicOperations() {
 		return 43
 	})
 	fmt.Printf("Result: %d, Loaded: %t\n", result, loaded)
-}
-```
-
-#### 4. Advanced Initialization with Custom Functions
-
-```go
-import "github.com/llxisdsh/pb"
-
-func advancedInitialization() {
-	// Fast string hasher for short keys (≤12 bytes)
-	fastStringCache := pb.NewMapOf[string, int](pb.WithFastStringHasher())
-
-	// Custom hash function
-	type UserID struct {
-		UserID   int64
-		TenantID int64
-	}
-	userCache := pb.NewMapOf[UserID, string](pb.WithKeyHasher(func(key UserID, seed uintptr) uintptr {
-		return uintptr(key.UserID) ^ seed
-	}))
-
-	// Custom value equality for non-comparable types
-	type Profile struct {
-		Name string
-		Tags []string
-	}
-	profileCache := pb.NewMapOf[string, Profile](pb.WithValueEqual(func(a, b Profile) bool {
-		return a.Name == b.Name
-	}))
-}
-```
-
-#### 5. Interface-Based Initialization (Alternative to With* functions)
-
-```go
-import (
-	"slices"
-	"github.com/llxisdsh/pb"
-)
-
-func interfaceBasedInitialization() {
-	// Custom key type implementing IHashCode interface
-	type CustomKey struct {
-		ID   int64
-		Name string
-	}
-
-	// Implement IHashCode for custom hashing
-	func (c *CustomKey) HashCode(seed uintptr) uintptr {
-		return uintptr(c.ID) ^ seed
-	}
-
-	// Implement IHashOpts for hash distribution optimization
-	func (*CustomKey) HashOpts() []pb.HashOptimization {
-		return []pb.HashOptimization{pb.LinearDistribution}
-	}
-
-	// Custom value type implementing IEqual interface (for non-comparable types)
-	type UserProfile struct {
-		Name string
-		Tags []string // slice makes this non-comparable
-	}
-
-	// Implement IEqual for custom equality comparison
-	func (u *UserProfile) Equal(other UserProfile) bool {
-		return u.Name == other.Name && slices.Equal(u.Tags, other.Tags)
-	}
-
-	// Interface-based initialization - automatically detects interfaces
-	interfaceCache := pb.NewMapOf[CustomKey, UserProfile]()
-
-	// You can still override interface implementations with explicit functions
-	overrideCache := pb.NewMapOf[CustomKey, UserProfile](
-		pb.WithKeyHasher(func(key CustomKey, seed uintptr) uintptr {
-			return uintptr(key.ID*31 + int64(len(key.Name))) ^ seed
-		}),
-		pb.WithValueEqual(func(a, b UserProfile) bool {
-			return a.Name == b.Name // simplified comparison
-		}),
-	)
-}
-```
-
-#### 6. Interface Usage Examples
-
-```go
-import (
-	"fmt"
-	"slices"
-	"github.com/llxisdsh/pb"
-)
-
-func interfaceUsageExamples() {
-	// Define custom types with interface implementations
-	type CustomKey struct {
-		ID   int64
-		Name string
-	}
-
-	func (c CustomKey) HashCode(seed uintptr) uintptr {
-		return uintptr(c.ID) ^ seed
-	}
-
-	type UserProfile struct {
-		Name string
-		Tags []string
-	}
-
-	func (u UserProfile) Equal(other UserProfile) bool {
-		return u.Name == other.Name && slices.Equal(u.Tags, other.Tags)
-	}
-
-	// Using the interface-based cache with custom types
-	interfaceCache := pb.NewMapOf[CustomKey, UserProfile]()
-
-	interfaceCache.Store(CustomKey{ID: 1, Name: "user1"}, UserProfile{
-		Name: "John Doe",
-		Tags: []string{"admin", "active"},
-	})
-
-	// Load and verify custom equality
-	profile, exists := interfaceCache.Load(CustomKey{ID: 1, Name: "user1"})
-	if exists {
-		fmt.Printf("Found profile: %s\n", profile.Name)
-	}
-
-	// Demonstrate custom equality with non-comparable types
-	sameProfile := UserProfile{
-		Name: "John Doe",
-		Tags: []string{"admin", "active"},
-	}
-
-	// This will use the custom Equal method for comparison
-	swapped := interfaceCache.CompareAndSwap(
-		CustomKey{ID: 1, Name: "user1"}, 
-		sameProfile, // old value (will match due to custom Equal)
-		UserProfile{Name: "Jane Doe", Tags: []string{"user"}},
-	)
-	if swapped {
-		fmt.Println("Successfully swapped user profile using custom equality")
-	}
-}
-```
-
-#### 7. Advanced Operations
-
-```go
-import (
-	"fmt"
-	"github.com/llxisdsh/pb"
-)
-
-func advancedOperations() {
-	cache := pb.NewMapOf[string, int]()
 
 	// ProcessEntry: Atomic conditional processing with complex business logic
 	cache.ProcessEntry("user:789", func(entry *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
@@ -705,24 +517,68 @@ func advancedOperations() {
 		return &pb.EntryOf[string, int]{Value: 1}, 0, false
 	})
 
-	// LoadEntry: Get entry pointer for high-performance scenarios
-	// Warning: Never modify the Key or Value in the returned Entry
-	entry := cache.LoadEntry("user:789")
-	if entry != nil {
-		fmt.Printf("Entry: %s -> %d\n", entry.Key, entry.Value)
-	}
-
 	// LoadAndDelete: Atomic read-and-delete operation
 	deletedValue, wasPresent := cache.LoadAndDelete("user:456")
 	fmt.Printf("Deleted value: %d, Was present: %t\n", deletedValue, wasPresent)
 
-	// LoadAndUpdate: Atomic update operation
+	// LoadAndUpdate: Atomic read-and-update operation
 	previousValue, wasUpdated := cache.LoadAndUpdate("counter", 1)
 	fmt.Printf("Previous: %d, Updated: %t\n", previousValue, wasUpdated)
 }
 ```
 
-#### 8. Iteration Operations
+#### 4. Custom Hash Functions and Equality
+
+```go
+import (
+	"slices"
+	"github.com/llxisdsh/pb"
+)
+
+func customOptimizations() {
+	// Method 1: Using With* functions for runtime configuration
+
+	// Override built-in long string optimization if needed
+	stringCache := pb.NewMapOf[string, int](pb.WithBuiltInHasher[string]())
+
+	// Custom hash function for pointer keys
+	type UserID struct {
+		UserID   int64
+		TenantID int64
+	}
+	userCache := pb.NewMapOf[UserID, string](pb.WithKeyHasher(func(key UserID, seed uintptr) uintptr {
+		return uintptr(key.UserID) ^ seed
+	}))
+
+	// Method 2: Interface-based (runtime init check)
+	type CustomKey struct {
+		ID   int64
+		Name string
+	}
+
+	// Implement IHashCode for custom hashing
+	func (c *CustomKey) HashCode(uintptr) uintptr {
+		return uintptr(c.ID)
+	}
+
+	// Custom value type with IEqual for non-comparable types
+	type UserProfile struct {
+		Name string
+		Tags []string // slice makes this non-comparable
+	}
+
+	func (u *UserProfile) Equal(other UserProfile) bool {
+		return u.Name == other.Name && slices.Equal(u.Tags, other.Tags)
+	}
+
+	// Automatically detects and uses interfaces
+	var interfaceCache MapOf[CustomKey, UserProfile]
+	// Or
+	interfaceCache2 := pb.NewMapOf[CustomKey, UserProfile]()
+}
+```
+
+#### 5. Iteration Operations
 
 ```go
 import (
@@ -754,7 +610,7 @@ func iterationOperations() {
 }
 ```
 
-#### 9. Batch Operations
+#### 6. Batch Operations
 
 ```go
 import (
@@ -804,7 +660,7 @@ func batchOperations() {
 }
 ```
 
-#### 10. Capacity Management
+#### 7. Capacity Management
 
 ```go
 import (
@@ -835,7 +691,7 @@ func capacityManagement() {
 }
 ```
 
-#### 11. Data Conversion and Serialization
+#### 8. Data Conversion and Serialization
 
 ```go
 import (
