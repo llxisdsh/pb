@@ -3188,13 +3188,19 @@ func hashUint8(ptr unsafe.Pointer, _ uintptr) uintptr {
 
 //go:nosplit
 func hashString(ptr unsafe.Pointer, seed uintptr) uintptr {
-	key := *(*string)(ptr)
-	if len(key) <= 12 {
-		for _, c := range key {
-			seed = seed*31 + uintptr(c)
+	// The algorithm has good cache affinity
+	type stringHeader struct {
+		data unsafe.Pointer
+		len  int
+	}
+	s := (*stringHeader)(ptr)
+	if s.len <= 12 {
+		for i := 0; i < s.len; i++ {
+			seed = seed*31 + uintptr(*(*uint8)(unsafe.Add(noescape(s.data), i)))
 		}
 		return seed
 	}
+	// Fallback to the built-in hash function
 	return builtInStringHasher(ptr, seed)
 }
 
