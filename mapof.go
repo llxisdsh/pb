@@ -899,13 +899,17 @@ func (m *MapOf[K, V]) processEntry(
 				return value, status
 			}
 			// Delete
-			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
-			storeUint64(&oldBucket.meta, newmetaw)
 			storePointer(
 				oldBucket.at(oldIdx),
 				nil,
 			)
-			rootb.unlock()
+			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
+			if oldBucket == rootb {
+				storeUint64(&oldBucket.meta, newmetaw&(^opLockMask))
+			} else {
+				storeUint64(&oldBucket.meta, newmetaw)
+				rootb.unlock()
+			}
 			table.addSize(bidx, -1)
 
 			// Check if table shrinking is needed
@@ -934,15 +938,25 @@ func (m *MapOf[K, V]) processEntry(
 		}
 		newEntry.Key = *key
 		if emptyBucket != nil {
-			storeUint64(
-				&emptyBucket.meta,
-				setByte(emptyBucket.meta, h2v, emptyIdx),
-			)
+			// publish pointer first, then meta; readers check meta before pointer
+			// so they won't observe a partially-initialized entry, and this reduces
+			// the window where meta is visible but pointer is still nil
 			storePointer(
 				emptyBucket.at(emptyIdx),
 				unsafe.Pointer(newEntry),
 			)
-			rootb.unlock()
+			if emptyBucket == rootb {
+				storeUint64(
+					&emptyBucket.meta,
+					setByte(emptyBucket.meta, h2v, emptyIdx)&(^opLockMask),
+				)
+			} else {
+				storeUint64(
+					&emptyBucket.meta,
+					setByte(emptyBucket.meta, h2v, emptyIdx),
+				)
+				rootb.unlock()
+			}
 			table.addSize(bidx, 1)
 			return value, status
 		}
@@ -2941,43 +2955,47 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 //	}
 //}
 
+//goland:noinspection ALL
+const useAutoDetectedTSO = atomicLevel == -1 &&
+	(runtime.GOARCH == "amd64" || runtime.GOARCH == "386")
+
 //go:nosplit
 func loadPointer(addr *unsafe.Pointer) unsafe.Pointer {
-	if //goland:noinspection ALL
-	atomicLevel == 0 {
-		return atomic.LoadPointer(addr)
-	} else {
+	//goland:noinspection ALL
+	if useAutoDetectedTSO || atomicLevel >= 1 {
 		return *addr
+	} else {
+		return atomic.LoadPointer(addr)
 	}
 }
 
 //go:nosplit
 func storePointer(addr *unsafe.Pointer, val unsafe.Pointer) {
-	if //goland:noinspection ALL
-	atomicLevel < 2 {
-		atomic.StorePointer(addr, val)
-	} else {
+	//goland:noinspection ALL
+	if useAutoDetectedTSO || atomicLevel >= 2 {
 		*addr = val
+	} else {
+		atomic.StorePointer(addr, val)
 	}
 }
 
 //go:nosplit
 func loadUint64(addr *uint64) uint64 {
-	if //goland:noinspection ALL
-	atomicLevel == 0 {
-		return atomic.LoadUint64(addr)
-	} else {
+	//goland:noinspection ALL
+	if (useAutoDetectedTSO || atomicLevel >= 1) && bits.UintSize >= 64 {
 		return *addr
+	} else {
+		return atomic.LoadUint64(addr)
 	}
 }
 
 //go:nosplit
 func storeUint64(addr *uint64, val uint64) {
-	if //goland:noinspection ALL
-	atomicLevel < 2 {
-		atomic.StoreUint64(addr, val)
-	} else {
+	//goland:noinspection ALL
+	if (useAutoDetectedTSO || atomicLevel >= 2) && bits.UintSize >= 64 {
 		*addr = val
+	} else {
+		atomic.StoreUint64(addr, val)
 	}
 }
 

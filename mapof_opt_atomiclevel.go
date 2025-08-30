@@ -3,7 +3,8 @@
 package pb
 
 // atomicLevel:
+//   - -1: Auto Detect.
 //   - 0: Both reads and writes are atomic.
 //   - 1: Reads are non-atomic, writes are atomic.
 //   - 2: Neither reads nor writes are atomic (requires a strong memory model).
-const atomicLevel = 0
+const atomicLevel = -1
