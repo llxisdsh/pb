@@ -395,7 +395,7 @@ type bucketOf struct {
 //
 //go:nosplit
 func (b *bucketOf) lock() {
-	cur := atomic.LoadUint64(&b.meta)
+	cur := loadUint64(&b.meta)
 	if atomic.CompareAndSwapUint64(&b.meta, cur&(^opLockMask), cur|opLockMask) {
 		return
 	}
@@ -418,6 +418,11 @@ func (b *bucketOf) tryLock() bool {
 //go:nosplit
 func (b *bucketOf) unlock() {
 	atomic.StoreUint64(&b.meta, b.meta&(^opLockMask))
+}
+
+//go:nosplit
+func (b *bucketOf) unlockAndStoreMeta(meta uint64) {
+	atomic.StoreUint64(&b.meta, meta&(^opLockMask))
 }
 
 //go:nosplit
@@ -905,7 +910,7 @@ func (m *MapOf[K, V]) processEntry(
 			)
 			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
 			if oldBucket == rootb {
-				storeUint64(&oldBucket.meta, newmetaw&(^opLockMask))
+				rootb.unlockAndStoreMeta(newmetaw)
 			} else {
 				storeUint64(&oldBucket.meta, newmetaw)
 				rootb.unlock()
@@ -946,10 +951,7 @@ func (m *MapOf[K, V]) processEntry(
 				unsafe.Pointer(newEntry),
 			)
 			if emptyBucket == rootb {
-				storeUint64(
-					&emptyBucket.meta,
-					setByte(emptyBucket.meta, h2v, emptyIdx)&(^opLockMask),
-				)
+				rootb.unlockAndStoreMeta(setByte(emptyBucket.meta, h2v, emptyIdx))
 			} else {
 				storeUint64(
 					&emptyBucket.meta,
@@ -1325,9 +1327,9 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 						storePointer(b.at(idx), unsafe.Pointer(newEntry))
 					} else {
 						// Delete
+						storePointer(b.at(idx), nil)
 						newmetaw := setByte(metaw, emptyMetaSlot, idx)
 						storeUint64(&b.meta, newmetaw)
-						storePointer(b.at(idx), nil)
 						table.addSize(i, -1)
 					}
 				}
@@ -2921,7 +2923,7 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 //	clearMask := ^(uint64(0xff) << shift)
 //	newVal := uint64(new) << shift
 //	for /*tryCount != 0*/ {
-//		cur := atomic.LoadUint64(addr)
+//		cur := loadUint64(addr)
 //		if uint8((cur>>shift)&0xff) != old {
 //			return false
 //		}
@@ -2947,7 +2949,7 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 //	mask := uint64(0xff) << shift
 //
 //	for {
-//		oldVal := atomic.LoadUint64(addr)
+//		oldVal := loadUint64(addr)
 //		newVal := (oldVal &^ mask) | (uint64(newByte) << shift)
 //		if atomic.CompareAndSwapUint64(addr, oldVal, newVal) {
 //			return
@@ -2957,7 +2959,8 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 
 //goland:noinspection ALL
 const useAutoDetectedTSO = atomicLevel == -1 &&
-	(runtime.GOARCH == "amd64" || runtime.GOARCH == "386")
+	(runtime.GOARCH == "amd64" || runtime.GOARCH == "386" ||
+		runtime.GOARCH == "s390x" || runtime.GOARCH == "s390")
 
 //go:nosplit
 func loadPointer(addr *unsafe.Pointer) unsafe.Pointer {
@@ -3020,7 +3023,7 @@ func clearOp(meta uint64) uint64 {
 
 ////go:nosplit
 //func loadOp(addr *uint64, mask uint64) bool {
-//	cur := atomic.LoadUint64(addr)
+//	cur := loadUint64(addr)
 //	return getOp(cur, mask)
 //}
 //
@@ -3036,7 +3039,7 @@ func clearOp(meta uint64) uint64 {
 //go:nosplit
 func casOp(addr *uint64, mask uint64, old, new bool) bool {
 	for {
-		cur := atomic.LoadUint64(addr)
+		cur := loadUint64(addr)
 		op := getOp(cur, mask)
 		if op != old {
 			return false
