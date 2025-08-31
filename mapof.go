@@ -2976,7 +2976,7 @@ func loadPointer(addr *unsafe.Pointer) unsafe.Pointer {
 func storePointer(addr *unsafe.Pointer, val unsafe.Pointer) {
 	//goland:noinspection ALL
 	if useAutoDetectedTSO || atomicLevel >= 2 {
-		*addr = val
+		*addr = val // requires lock
 	} else {
 		atomic.StorePointer(addr, val)
 	}
@@ -2996,7 +2996,7 @@ func loadUint64(addr *uint64) uint64 {
 func storeUint64(addr *uint64, val uint64) {
 	//goland:noinspection ALL
 	if (useAutoDetectedTSO || atomicLevel >= 2) && bits.UintSize >= 64 {
-		*addr = val
+		*addr = val // requires lock
 	} else {
 		atomic.StoreUint64(addr, val)
 	}
