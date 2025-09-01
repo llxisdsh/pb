@@ -3,7 +3,6 @@
 package pb
 
 import (
-	"sync/atomic"
 	"unsafe"
 )
 
@@ -16,9 +15,9 @@ const enablePadding = true
 
 // counterStripe represents a striped counter to reduce contention.
 type counterStripe struct {
-	c atomic.Uintptr // Counter value, accessed atomically
+	c uintptr // Counter value, accessed atomically
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
-		c atomic.Uintptr
+		c uintptr
 	}{})%CacheLineSize) % CacheLineSize]byte
 }

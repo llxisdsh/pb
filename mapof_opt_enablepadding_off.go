@@ -2,8 +2,6 @@
 
 package pb
 
-import "sync/atomic"
-
 // enablePadding is true, the counting structure `counterStripe` will be padded
 // to align with a cache line,This can mitigate the impact of false sharing on
 // certain machine architectures. This constant may also be used for other
@@ -13,5 +11,5 @@ const enablePadding = false
 
 // counterStripe represents a striped counter to reduce contention.
 type counterStripe struct {
-	c atomic.Uintptr // Counter value, accessed atomically
+	c uintptr // Counter value, accessed atomically
 }
