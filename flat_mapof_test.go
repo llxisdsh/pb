@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-// TestFlatMapOf_BasicOperations tests basic Load and ProcessEntry operations
+// TestFlatMapOf_BasicOperations tests basic Load and Process operations
 func TestFlatMapOf_BasicOperations(t *testing.T) {
 	m := NewFlatMapOf[string, int]()
 
@@ -19,7 +19,7 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 	}
 
 	// Test insert
-	actual, ok := m.ProcessEntry("key1", func(old int, loaded bool) (int, ComputeOp, int, bool) {
+	actual, ok := m.Process("key1", func(old int, loaded bool) (int, ComputeOp, int, bool) {
 		if loaded {
 			t.Error("Expected not loaded for new key")
 		}
@@ -35,7 +35,7 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 	}
 
 	// Test update
-	actual, ok = m.ProcessEntry("key1", func(old int, loaded bool) (int, ComputeOp, int, bool) {
+	actual, ok = m.Process("key1", func(old int, loaded bool) (int, ComputeOp, int, bool) {
 		if !loaded || old != 42 {
 			t.Errorf("Expected loaded=true, old=42, got loaded=%v, old=%v", loaded, old)
 		}
@@ -51,7 +51,7 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 	}
 
 	// Test delete
-	actual, ok = m.ProcessEntry("key1", func(old int, loaded bool) (int, ComputeOp, int, bool) {
+	actual, ok = m.Process("key1", func(old int, loaded bool) (int, ComputeOp, int, bool) {
 		if !loaded || old != 52 {
 			t.Errorf("Expected loaded=true, old=52, got loaded=%v, old=%v", loaded, old)
 		}
@@ -67,10 +67,10 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 	}
 
 	// Test cancel operation
-	m.ProcessEntry("key2", func(old int, loaded bool) (int, ComputeOp, int, bool) {
+	m.Process("key2", func(old int, loaded bool) (int, ComputeOp, int, bool) {
 		return 100, UpdateOp, 100, true
 	})
-	actual, ok = m.ProcessEntry("key2", func(old int, loaded bool) (int, ComputeOp, int, bool) {
+	actual, ok = m.Process("key2", func(old int, loaded bool) (int, ComputeOp, int, bool) {
 		return 999, CancelOp, old, loaded
 	})
 	if !ok || actual != 100 {
@@ -84,7 +84,7 @@ func TestFlatMapOf_MultipleKeys(t *testing.T) {
 
 	// Insert multiple keys
 	for i := 0; i < 100; i++ {
-		m.ProcessEntry(i, func(old string, loaded bool) (string, ComputeOp, string, bool) {
+		m.Process(i, func(old string, loaded bool) (string, ComputeOp, string, bool) {
 			newV := fmt.Sprintf("value_%d", i)
 			return newV, UpdateOp, newV, true
 		})
@@ -100,7 +100,7 @@ func TestFlatMapOf_MultipleKeys(t *testing.T) {
 
 	// Delete even keys
 	for i := 0; i < 100; i += 2 {
-		m.ProcessEntry(i, func(old string, loaded bool) (string, ComputeOp, string, bool) {
+		m.Process(i, func(old string, loaded bool) (string, ComputeOp, string, bool) {
 			return "", DeleteOp, "", false
 		})
 	}
@@ -138,7 +138,7 @@ func TestFlatMapOf_Concurrent(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < numOpsPerGoroutine; i++ {
 				key := goroutineID*numOpsPerGoroutine + i
-				m.ProcessEntry(key, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+				m.Process(key, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 					return key * 2, UpdateOp, key * 2, true
 				})
 			}
@@ -179,7 +179,7 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 
 	// Pre-populate with some data
 	for i := 0; i < 1000; i++ {
-		m.ProcessEntry(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+		m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 			return i, UpdateOp, i, true
 		})
 	}
@@ -215,7 +215,7 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 					return
 				default:
 					key := rand.Intn(1000)
-					m.ProcessEntry(key, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+					m.Process(key, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 						newV := rand.Intn(10000)
 						return newV, UpdateOp, newV, true
 					})
@@ -240,7 +240,7 @@ func TestFlatMapOf_DoubleBufferConsistency(t *testing.T) {
 
 	// Insert initial data
 	for i := 0; i < numKeys; i++ {
-		m.ProcessEntry(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+		m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 			return i, UpdateOp, i, true
 		})
 	}
@@ -281,7 +281,7 @@ func TestFlatMapOf_DoubleBufferConsistency(t *testing.T) {
 		defer wg.Done()
 		for update := 0; update < numUpdates; update++ {
 			for i := 0; i < numKeys; i++ {
-				m.ProcessEntry(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+				m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 					return old + 1000, UpdateOp, old + 1000, true
 				})
 			}
@@ -302,7 +302,7 @@ func TestFlatMapOf_EdgeCases(t *testing.T) {
 	m := NewFlatMapOf[string, string]()
 
 	// Test with empty string key
-	m.ProcessEntry("", func(old string, loaded bool) (string, ComputeOp, string, bool) {
+	m.Process("", func(old string, loaded bool) (string, ComputeOp, string, bool) {
 		return "empty_key_value", UpdateOp, "empty_key_value", true
 	})
 	if val, ok := m.Load(""); !ok || val != "empty_key_value" {
@@ -314,7 +314,7 @@ func TestFlatMapOf_EdgeCases(t *testing.T) {
 	for i := range longKey {
 		longKey = longKey[:i] + "a" + longKey[i+1:]
 	}
-	m.ProcessEntry(longKey, func(old string, loaded bool) (string, ComputeOp, string, bool) {
+	m.Process(longKey, func(old string, loaded bool) (string, ComputeOp, string, bool) {
 		return "long_key_value", UpdateOp, "long_key_value", true
 	})
 	if val, ok := m.Load(longKey); !ok || val != "long_key_value" {

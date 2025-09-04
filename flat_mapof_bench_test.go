@@ -19,7 +19,7 @@ func BenchmarkFlatMapOf_Load(b *testing.B) {
 
 			// Pre-populate
 			for i := 0; i < size; i++ {
-				m.ProcessEntry(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+				m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 					return i * 2, UpdateOp, i * 2, false
 				})
 			}
@@ -45,7 +45,7 @@ func BenchmarkFlatMapOf_ProcessEntry(b *testing.B) {
 
 			// Pre-populate
 			for i := 0; i < size; i++ {
-				m.ProcessEntry(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+				m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 					return i, UpdateOp, i, false
 				})
 			}
@@ -54,7 +54,7 @@ func BenchmarkFlatMapOf_ProcessEntry(b *testing.B) {
 			b.RunParallel(func(pb *testing.PB) {
 				for pb.Next() {
 					key := rand.Intn(size)
-					m.ProcessEntry(key, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+					m.Process(key, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 						return old + 1, UpdateOp, old + 1, false
 					})
 				}
@@ -74,7 +74,7 @@ func BenchmarkFlatMapOf_MixedWorkload(b *testing.B) {
 
 			// Pre-populate
 			for i := 0; i < size; i++ {
-				m.ProcessEntry(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+				m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 					return i, UpdateOp, i, false
 				})
 			}
@@ -88,7 +88,7 @@ func BenchmarkFlatMapOf_MixedWorkload(b *testing.B) {
 						m.Load(key)
 					} else {
 						// Write operation
-						m.ProcessEntry(key, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+						m.Process(key, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 							return old + 1, UpdateOp, old + 1, false
 						})
 					}
@@ -108,7 +108,7 @@ func BenchmarkFlatMapOf_HighContention(b *testing.B) {
 
 			// Pre-populate hot keys
 			for i := 0; i < hotKeys; i++ {
-				m.ProcessEntry(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+				m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 					return i, UpdateOp, i, false
 				})
 			}
@@ -120,7 +120,7 @@ func BenchmarkFlatMapOf_HighContention(b *testing.B) {
 					if rand.Intn(2) == 0 {
 						m.Load(key)
 					} else {
-						m.ProcessEntry(key, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+						m.Process(key, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 							return old + 1, UpdateOp, old + 1, false
 						})
 					}
@@ -142,7 +142,7 @@ func BenchmarkFlatMapOf_Resize(b *testing.B) {
 
 				// Pre-populate up to size
 				for j := 0; j < size; j++ {
-					m.ProcessEntry(j, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+					m.Process(j, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 						return j, UpdateOp, j, false
 					})
 				}
@@ -160,7 +160,7 @@ func BenchmarkFlatMapOf_Resize(b *testing.B) {
 				// Insert new keys until auto-grow happens once
 				k := size
 				for {
-					m.ProcessEntry(k, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+					m.Process(k, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 						return k, UpdateOp, k, false
 					})
 					k++
@@ -185,7 +185,7 @@ func BenchmarkFlatMapOf_Memory(b *testing.B) {
 
 			m := NewFlatMapOf[int, int]()
 			for i := 0; i < size; i++ {
-				m.ProcessEntry(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+				m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 					return i, UpdateOp, i, false
 				})
 			}
@@ -209,7 +209,7 @@ func BenchmarkFlatMapOf_StringKeys(b *testing.B) {
 	keys := make([]string, size)
 	for i := 0; i < size; i++ {
 		keys[i] = fmt.Sprintf("key_%d_%d", i, rand.Intn(1000))
-		m.ProcessEntry(keys[i], func(old int, loaded bool) (int, ComputeOp, int, bool) {
+		m.Process(keys[i], func(old int, loaded bool) (int, ComputeOp, int, bool) {
 			return i, UpdateOp, i, false
 		})
 	}
@@ -231,7 +231,7 @@ func BenchmarkFlatMapOf_ConcurrentResize(b *testing.B) {
 
 		// Pre-populate
 		for i := 0; i < initialSize; i++ {
-			m.ProcessEntry(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+			m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 				return i, UpdateOp, i, false
 			})
 		}
@@ -283,7 +283,7 @@ func BenchmarkFlatMapOf_ConcurrentResize(b *testing.B) {
 					b.Logf("Timeout waiting for resize, breaking out of loop")
 					break insertLoop
 				default:
-					m.ProcessEntry(k, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+					m.Process(k, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 						return k, UpdateOp, k, false
 					})
 					k++
@@ -320,7 +320,7 @@ func BenchmarkFlatMapOf_LargeValues(b *testing.B) {
 
 	// Pre-populate
 	for i := 0; i < size; i++ {
-		m.ProcessEntry(i, func(old LargeValue, loaded bool) (LargeValue, ComputeOp, LargeValue, bool) {
+		m.Process(i, func(old LargeValue, loaded bool) (LargeValue, ComputeOp, LargeValue, bool) {
 			newV := LargeValue{
 				ID:   int64(i),
 				Name: fmt.Sprintf("item_%d", i),

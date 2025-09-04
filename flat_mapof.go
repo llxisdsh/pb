@@ -105,28 +105,18 @@ func (t *flatTable[K, V]) SumSize() int {
 }
 
 //go:nosplit
-func (t *flatTable[K, V]) SumSizeAtLeast(limit int) bool {
+func (t *flatTable[K, V]) SumSizeExceeds(limit int) bool {
 	var sum uintptr
 	for i := 0; i <= t.sizeMask; i++ {
 		sum += loadUintptr(&t.size.At(i).c)
-		if int(sum) >= limit {
+		if int(sum) > limit {
 			return true
 		}
 	}
 	return false
 }
 
-//go:nosplit
-func (t *flatTable[K, V]) IsZero() bool {
-	for i := 0; i <= t.sizeMask; i++ {
-		if loadUintptr(&t.size.At(i).c) != 0 {
-			return false
-		}
-	}
-	return true
-}
-
-// flatBucketOf stores inline _keys and two value buffers for each slot.
+// flatBucketOf stores inline keys and two value buffers for each slot.
 // vers packs one byte per slot (aligned with meta byte order). LSB of that byte
 // indicates which buffer is active: 0 -> A, 1 -> B. Writers increment that byte
 // to toggle buffers. Readers verify the byte before/after to detect changes.
@@ -142,6 +132,30 @@ type flatBucketOf[K comparable, V any] struct {
 	_valsA [entriesPerMapOfBucket]V
 	_valsB [entriesPerMapOfBucket]V
 	next   unsafe.Pointer // *flatBucketOf[K,V]
+}
+
+//go:nosplit
+func (b *flatBucketOf[K, V]) Key(i int) *K {
+	return (*K)(unsafe.Add(
+		unsafe.Pointer(&b._keys),
+		uintptr(i)*unsafe.Sizeof(*new(K)),
+	))
+}
+
+//go:nosplit
+func (b *flatBucketOf[K, V]) ValA(i int) *V {
+	return (*V)(unsafe.Add(
+		unsafe.Pointer(&b._valsA),
+		uintptr(i)*unsafe.Sizeof(*new(V)),
+	))
+}
+
+//go:nosplit
+func (b *flatBucketOf[K, V]) ValB(i int) *V {
+	return (*V)(unsafe.Add(
+		unsafe.Pointer(&b._valsB),
+		uintptr(i)*unsafe.Sizeof(*new(V)),
+	))
 }
 
 //go:nosplit
@@ -182,30 +196,6 @@ func (b *flatBucketOf[K, V]) Unlock() {
 //go:nosplit
 func (b *flatBucketOf[K, V]) UnlockWithMeta(meta uint64) {
 	atomic.StoreUint64(&b.meta, meta&(^opLockMask))
-}
-
-//go:nosplit
-func (b *flatBucketOf[K, V]) Key(i int) *K {
-	return (*K)(unsafe.Add(
-		unsafe.Pointer(&b._keys),
-		uintptr(i)*unsafe.Sizeof(*new(K)),
-	))
-}
-
-//go:nosplit
-func (b *flatBucketOf[K, V]) ValA(i int) *V {
-	return (*V)(unsafe.Add(
-		unsafe.Pointer(&b._valsA),
-		uintptr(i)*unsafe.Sizeof(*new(V)),
-	))
-}
-
-//go:nosplit
-func (b *flatBucketOf[K, V]) ValB(i int) *V {
-	return (*V)(unsafe.Add(
-		unsafe.Pointer(&b._valsB),
-		uintptr(i)*unsafe.Sizeof(*new(V)),
-	))
 }
 
 // NewFlatMapOf creates a new FlatMapOf instance with optional configuration.
@@ -340,7 +330,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	}
 }
 
-// ProcessEntry applies a compute-style update to the map entry for the given key.
+// Process applies a compute-style update to the map entry for the given key.
 // The function fn receives the current value (if any) and whether the key exists,
 // and returns the new value, operation type, result value, and status.
 //
@@ -350,7 +340,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 //   - DeleteOp: delete the key if present
 //
 // This operation is performed under a bucket lock for consistency.
-func (m *FlatMapOf[K, V]) ProcessEntry(
+func (m *FlatMapOf[K, V]) Process(
 	key K,
 	fn func(old V, loaded bool) (V, ComputeOp, V, bool),
 ) (V, bool) {
@@ -539,7 +529,7 @@ func (m *FlatMapOf[K, V]) ProcessEntry(
 
 // Store sets the value for a key.
 func (m *FlatMapOf[K, V]) Store(key K, value V) {
-	m.ProcessEntry(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {
+	m.Process(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {
 		return value, UpdateOp, old, loaded
 	})
 }
@@ -552,7 +542,7 @@ func (m *FlatMapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 		return v, true
 	}
 
-	return m.ProcessEntry(key,
+	return m.Process(key,
 		func(old V, loaded bool) (V, ComputeOp, V, bool) {
 			if loaded {
 				return old, CancelOp, old, loaded
@@ -564,7 +554,7 @@ func (m *FlatMapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 
 // Delete deletes the value for a key.
 func (m *FlatMapOf[K, V]) Delete(key K) {
-	m.ProcessEntry(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {
+	m.Process(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {
 		return old, DeleteOp, old, loaded
 	})
 }
@@ -592,7 +582,7 @@ func (m *FlatMapOf[K, V]) Size() int {
 //go:nosplit
 func (m *FlatMapOf[K, V]) IsZero() bool {
 	table := (*flatTable[K, V])(loadPointer(&m.table))
-	return table.IsZero()
+	return table.SumSizeExceeds(0)
 }
 
 type flatResizeState struct {
