@@ -582,7 +582,7 @@ func (m *FlatMapOf[K, V]) Size() int {
 //go:nosplit
 func (m *FlatMapOf[K, V]) IsZero() bool {
 	table := (*flatTable[K, V])(loadPointer(&m.table))
-	return table.SumSizeExceeds(0)
+	return !table.SumSizeExceeds(0)
 }
 
 type flatResizeState struct {
