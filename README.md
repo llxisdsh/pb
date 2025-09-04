@@ -19,7 +19,7 @@ Quick Benchmark Comparison:
 
 | Implementation  | Load (ns/op) | Store (ns/op) | Throughput (M ops/s) |
 |-----------------|-------------:|--------------:|---------------------:|
-| **pb.MapOf** 🏆 |     **0.20** |      **0.59** |            **92.83** |
+| **pb.MapOf** 🏆 |     **0.18** |      **0.58** |            **92.83** |
 | sync.Map        |         3.66 |         24.27 |                21.84 |
 
 
@@ -829,6 +829,26 @@ MapOf also borrows ideas from Java's j.u.c.ConcurrentHashMap
 (immutable K/V pair structs instead of atomic snapshots)
 and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 ```
+
+---
+
+# pb.FlatMapOf
+
+FlatMapOf is a cache-friendly, double-buffered flat hash map tailored for small key/value pairs. It inlines keys and keeps two value buffers per slot (A/B), so readers are lock-free and writers flip a per-slot version byte for consistency.
+
+Why choose it
+- Faster writes in most workloads than MapOf; on single-threaded inserts it can even beat the native Go map.
+- Great read latency with excellent cache locality and fewer GC roots than pointer-based maps.
+- Familiar API: supports pre-sizing and custom hash/equality like MapOf.
+
+Trade-offs
+- Higher memory per bucket due to A/B buffers and inline storage.
+- No shrinking (WithShrinkEnabled is not supported).
+- Best for small values; very large values may favor MapOf.
+
+When to use which
+- Pick FlatMapOf for small K/V, write-heavy or read-mostly workloads where cache locality and GC overhead matter.
+- Pick MapOf when memory efficiency and shrinking support are more important, or values are large.
 
 ---
 
