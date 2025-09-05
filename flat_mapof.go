@@ -283,10 +283,10 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 				for {
 					ver1 := loadUint64(&b.vers)
 					vb1 := uint8(ver1 >> shift)
-					if (vb1 & 1) == 1 {
-						value = *b.ValB(idx)
-					} else {
+					if (vb1 & 1) == 0 {
 						value = *b.ValA(idx)
+					} else {
+						value = *b.ValB(idx)
 					}
 					ver2 := loadUint64(&b.vers)
 					if vb1 == uint8(ver2>>shift) {
@@ -315,10 +315,10 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 				for {
 					ver1 := loadUint64(&b.vers)
 					vb1 := uint8(ver1 >> shift)
-					if (vb1 & 1) == 1 {
-						value = *b.ValB(idx)
-					} else {
+					if (vb1 & 1) == 0 {
 						value = *b.ValA(idx)
+					} else {
+						value = *b.ValB(idx)
 					}
 					ver2 := loadUint64(&b.vers)
 					if vb1 == uint8(ver2>>shift) {
@@ -394,12 +394,12 @@ func (m *FlatMapOf[K, V]) Process(
 					oldB = b
 					oldIdx = idx
 					oldMeta = metaw
-					// shift := idx << 3
-					vb := uint8(b.vers >> (idx << 3))
-					if (vb & 1) == 1 {
-						oldVal = *b.ValB(idx)
-					} else {
+					shift := idx << 3
+					vb := uint8(b.vers >> shift)
+					if (vb & 1) == 0 {
 						oldVal = *b.ValA(idx)
+					} else {
+						oldVal = *b.ValB(idx)
 					}
 					loaded = true
 					break findLoop
@@ -426,12 +426,12 @@ func (m *FlatMapOf[K, V]) Process(
 			verAll := oldB.vers
 			shift := oldIdx << 3
 			vb := uint8(verAll >> shift)
-			if (vb & 1) == 1 {
-				// B is active, prepare A
-				*oldB.ValA(oldIdx) = oldVal
-			} else {
+			if (vb & 1) == 0 {
 				// A is active, prepare B
 				*oldB.ValB(oldIdx) = oldVal
+			} else {
+				// B is active, prepare A
+				*oldB.ValA(oldIdx) = oldVal
 			}
 			// 2) Bump version to invalidate in-flight readers
 			//    and flip active buffer
@@ -440,13 +440,11 @@ func (m *FlatMapOf[K, V]) Process(
 			// 3) Publish delete by clearing the meta slot first (under root lock)
 			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
 			// 4) Drop references and release lock
-			var zeroK K
-			var zeroV V
 			// Publish meta to non-root bucket, then clear refs and unlock root
 			storeUint64(&oldB.meta, newmetaw)
-			*oldB.Key(oldIdx) = zeroK
-			*oldB.ValA(oldIdx) = zeroV
-			*oldB.ValB(oldIdx) = zeroV
+			*oldB.Key(oldIdx) = *new(K)
+			*oldB.ValA(oldIdx) = *new(V)
+			*oldB.ValB(oldIdx) = *new(V)
 			rootB.Unlock()
 			table.AddSize(bidx, -1)
 			return value, status
@@ -456,23 +454,22 @@ func (m *FlatMapOf[K, V]) Process(
 				verAll := oldB.vers
 				shift := oldIdx << 3
 				vb := uint8(verAll >> shift)
-				if (vb & 1) == 1 {
-					*oldB.ValA(oldIdx) = newV
-				} else {
+				if (vb & 1) == 0 {
 					*oldB.ValB(oldIdx) = newV
+				} else {
+					*oldB.ValA(oldIdx) = newV
 				}
 				// increment version byte
 				mask := uint64(0xff) << shift
 				newVerAll := (verAll &^ mask) | (uint64(vb+1) << shift)
 				storeUint64(&oldB.vers, newVerAll)
 				// clear previously active buffer to release references
-				var zero V
-				if (vb & 1) == 1 {
-					// previously active was B
-					*oldB.ValB(oldIdx) = zero
-				} else {
+				if (vb & 1) == 0 {
 					// previously active was A
-					*oldB.ValA(oldIdx) = zero
+					*oldB.ValA(oldIdx) = *new(V)
+				} else {
+					// previously active was B
+					*oldB.ValB(oldIdx) = *new(V)
 				}
 				rootB.Unlock()
 				return value, status
@@ -485,7 +482,7 @@ func (m *FlatMapOf[K, V]) Process(
 				verAll := emptyB.vers
 				shift := emptyIdx << 3
 				mask := uint64(0xff) << shift
-				verAll = (verAll &^ mask) | (uint64(0) << shift)
+				verAll = verAll &^ mask // | (uint64(0) << shift)
 				storeUint64(&emptyB.vers, verAll)
 				// publish meta
 				newMeta := setByte(emptyB.meta, h2v, emptyIdx)
@@ -710,13 +707,13 @@ func (m *FlatMapOf[K, V]) copyFlatBucketRange(
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				idx := firstMarkedByteIndex(markedw)
 				k := *b.Key(idx)
-				// shift := idx << 3
-				ver := uint8(b.vers >> (idx << 3))
+				shift := idx << 3
+				ver := uint8(b.vers >> shift)
 				var v V
-				if (ver & 1) == 1 {
-					v = *b.ValB(idx)
-				} else {
+				if (ver & 1) == 0 {
 					v = *b.ValA(idx)
+				} else {
+					v = *b.ValB(idx)
 				}
 				hash := m.keyHash(noescape(unsafe.Pointer(&k)), m.seed)
 				bidx := newTable.bucketsMask & h1(hash, m.intKey)
