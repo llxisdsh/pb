@@ -461,8 +461,7 @@ func (m *FlatMapOf[K, V]) Process(
 				}
 				// increment version byte
 				mask := uint64(0xff) << shift
-				newVerAll := (verAll &^ mask) | (uint64(vb+1) << shift)
-				storeUint64(&oldB.vers, newVerAll)
+				storeUint64(&oldB.vers, verAll&^mask|(uint64(vb+1)<<shift))
 				// clear previously active buffer to release references
 				if (vb & 1) == 0 {
 					// previously active was A
@@ -482,8 +481,8 @@ func (m *FlatMapOf[K, V]) Process(
 				verAll := emptyB.vers
 				shift := emptyIdx << 3
 				mask := uint64(0xff) << shift
-				verAll = verAll &^ mask // | (uint64(0) << shift)
-				storeUint64(&emptyB.vers, verAll)
+				// verAll = verAll &^ mask | (uint64(0) << shift)
+				storeUint64(&emptyB.vers, verAll&^mask)
 				// publish meta
 				newMeta := setByte(emptyB.meta, h2v, emptyIdx)
 				storeUint64(&emptyB.meta, newMeta)
