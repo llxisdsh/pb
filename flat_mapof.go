@@ -30,8 +30,9 @@ import (
 //   - No shrinking support (WithShrinkEnabled not available)
 //   - Optimized for small K/V pairs; may be less efficient for large values
 //
-// NOTE: This type shares hashing, constants, and low-level helpers with MapOf
-//       via the same package.
+// Notes:
+//   - This type shares hashing, constants, and low-level helpers with MapOf
+//     via the same package.
 type FlatMapOf[K comparable, V any] struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
@@ -278,16 +279,17 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
 			if *b.Key(idx) == key {
+				shift := idx << 3
 				for {
 					ver1 := loadUint64(&b.vers)
-					vb1 := uint8(ver1 >> uint(idx*8))
+					vb1 := uint8(ver1 >> shift)
 					if (vb1 & 1) == 1 {
 						value = *b.ValB(idx)
 					} else {
 						value = *b.ValA(idx)
 					}
 					ver2 := loadUint64(&b.vers)
-					if vb1 == uint8(ver2>>uint(idx*8)) {
+					if vb1 == uint8(ver2>>shift) {
 						return value, true
 					}
 				}
@@ -308,17 +310,18 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				idx := firstMarkedByteIndex(markedw)
 				key := *b.Key(idx)
+				shift := idx << 3
 				var value V
 				for {
 					ver1 := loadUint64(&b.vers)
-					vb1 := uint8(ver1 >> uint(idx*8))
+					vb1 := uint8(ver1 >> shift)
 					if (vb1 & 1) == 1 {
 						value = *b.ValB(idx)
 					} else {
 						value = *b.ValA(idx)
 					}
 					ver2 := loadUint64(&b.vers)
-					if vb1 == uint8(ver2>>uint(idx*8)) {
+					if vb1 == uint8(ver2>>shift) {
 						break
 					}
 				}
@@ -391,7 +394,8 @@ func (m *FlatMapOf[K, V]) Process(
 					oldB = b
 					oldIdx = idx
 					oldMeta = metaw
-					vb := uint8(b.vers >> uint(idx*8))
+					// shift := idx << 3
+					vb := uint8(b.vers >> (idx << 3))
 					if (vb & 1) == 1 {
 						oldVal = *b.ValB(idx)
 					} else {
@@ -420,7 +424,7 @@ func (m *FlatMapOf[K, V]) Process(
 			// 1) Write oldVal into the inactive buffer so after version flip
 			//    readers still see a consistent value
 			verAll := oldB.vers
-			shift := uint(oldIdx * 8)
+			shift := oldIdx << 3
 			vb := uint8(verAll >> shift)
 			if (vb & 1) == 1 {
 				// B is active, prepare A
@@ -450,14 +454,14 @@ func (m *FlatMapOf[K, V]) Process(
 			if loaded {
 				// write to inactive buffer then toggle version byte
 				verAll := oldB.vers
-				vb := uint8(verAll >> uint(oldIdx*8))
+				shift := oldIdx << 3
+				vb := uint8(verAll >> shift)
 				if (vb & 1) == 1 {
 					*oldB.ValA(oldIdx) = newV
 				} else {
 					*oldB.ValB(oldIdx) = newV
 				}
 				// increment version byte
-				shift := uint(oldIdx * 8)
 				mask := uint64(0xff) << shift
 				newVerAll := (verAll &^ mask) | (uint64(vb+1) << shift)
 				storeUint64(&oldB.vers, newVerAll)
@@ -479,7 +483,7 @@ func (m *FlatMapOf[K, V]) Process(
 				// initialize A buffer and set version byte to even (A active)
 				*emptyB.ValA(emptyIdx) = newV
 				verAll := emptyB.vers
-				shift := uint(emptyIdx * 8)
+				shift := emptyIdx << 3
 				mask := uint64(0xff) << shift
 				verAll = (verAll &^ mask) | (uint64(0) << shift)
 				storeUint64(&emptyB.vers, verAll)
@@ -706,7 +710,8 @@ func (m *FlatMapOf[K, V]) copyFlatBucketRange(
 			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 				idx := firstMarkedByteIndex(markedw)
 				k := *b.Key(idx)
-				ver := uint8(b.vers >> uint(idx*8))
+				// shift := idx << 3
+				ver := uint8(b.vers >> (idx << 3))
 				var v V
 				if (ver & 1) == 1 {
 					v = *b.ValB(idx)

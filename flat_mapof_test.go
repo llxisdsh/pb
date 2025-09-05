@@ -229,7 +229,7 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 	close(stop)
 	wg.Wait()
 
-	t.Log("Concurrent read/write test completed successfully")
+	//t.Log("Concurrent read/write test completed successfully")
 }
 
 // TestFlatMapOf_DoubleBufferConsistency tests the double buffer mechanism
@@ -294,7 +294,7 @@ func TestFlatMapOf_DoubleBufferConsistency(t *testing.T) {
 	close(stop)
 	wg.Wait()
 
-	t.Log("Double buffer consistency test completed")
+	//t.Log("Double buffer consistency test completed")
 }
 
 // TestFlatMapOf_EdgeCases tests edge cases and error conditions
