@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -80,28 +81,29 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 
 // TestFlatMapOf_MultipleKeys tests operations with multiple keys
 func TestFlatMapOf_MultipleKeys(t *testing.T) {
-	m := NewFlatMapOf[int, string]()
+	m := NewFlatMapOf[int, *string]()
 
 	// Insert multiple keys
 	for i := 0; i < 100; i++ {
-		m.Process(i, func(old string, loaded bool) (string, ComputeOp, string, bool) {
+		m.Process(i, func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
 			newV := fmt.Sprintf("value_%d", i)
-			return newV, UpdateOp, newV, true
+			return &newV, UpdateOp, &newV, true
 		})
 	}
 
 	// Verify all keys
 	for i := 0; i < 100; i++ {
 		expected := fmt.Sprintf("value_%d", i)
-		if val, ok := m.Load(i); !ok || val != expected {
+		if val, ok := m.Load(i); !ok || *val != expected {
 			t.Errorf("Key %d: expected (%s, true), got (%v, %v)", i, expected, val, ok)
 		}
 	}
 
 	// Delete even keys
 	for i := 0; i < 100; i += 2 {
-		m.Process(i, func(old string, loaded bool) (string, ComputeOp, string, bool) {
-			return "", DeleteOp, "", false
+		m.Process(i, func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
+			newV := ""
+			return &newV, DeleteOp, &newV, false
 		})
 	}
 
@@ -116,7 +118,7 @@ func TestFlatMapOf_MultipleKeys(t *testing.T) {
 		} else {
 			// Odd keys should remain
 			expected := fmt.Sprintf("value_%d", i)
-			if !ok || val != expected {
+			if !ok || *val != expected {
 				t.Errorf("Key %d: expected (%s, true), got (%v, %v)", i, expected, val, ok)
 			}
 		}
@@ -299,14 +301,15 @@ func TestFlatMapOf_DoubleBufferConsistency(t *testing.T) {
 
 // TestFlatMapOf_EdgeCases tests edge cases and error conditions
 func TestFlatMapOf_EdgeCases(t *testing.T) {
-	m := NewFlatMapOf[string, string]()
+	m := NewFlatMapOf[string, *string]()
 
 	// Test with empty string key
-	m.Process("", func(old string, loaded bool) (string, ComputeOp, string, bool) {
-		return "empty_key_value", UpdateOp, "empty_key_value", true
+	m.Process("", func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
+		newV := "empty_key_value"
+		return &newV, UpdateOp, &newV, true
 	})
-	if val, ok := m.Load(""); !ok || val != "empty_key_value" {
-		t.Errorf("Empty key test failed: got (%v, %v)", val, ok)
+	if val, ok := m.Load(""); !ok || *val != "empty_key_value" {
+		t.Errorf("Empty key test failed: got (%v, %v)", *val, ok)
 	}
 
 	// Test with very long key
@@ -314,16 +317,17 @@ func TestFlatMapOf_EdgeCases(t *testing.T) {
 	for i := range longKey {
 		longKey = longKey[:i] + "a" + longKey[i+1:]
 	}
-	m.Process(longKey, func(old string, loaded bool) (string, ComputeOp, string, bool) {
-		return "long_key_value", UpdateOp, "long_key_value", true
+	m.Process(longKey, func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
+		newV := "long_key_value"
+		return &newV, UpdateOp, &newV, true
 	})
-	if val, ok := m.Load(longKey); !ok || val != "long_key_value" {
-		t.Errorf("Long key test failed: got (%v, %v)", val, ok)
+	if val, ok := m.Load(longKey); !ok || *val != "long_key_value" {
+		t.Errorf("Long key test failed: got (%v, %v)", *val, ok)
 	}
 
 	// Verify data still intact
-	if val, ok := m.Load(""); !ok || val != "empty_key_value" {
-		t.Errorf("After invalid grow, empty key test failed: got (%v, %v)", val, ok)
+	if val, ok := m.Load(""); !ok || *val != "empty_key_value" {
+		t.Errorf("After invalid grow, empty key test failed: got (%v, %v)", *val, ok)
 	}
 }
 
@@ -388,11 +392,11 @@ func TestFlatMapOf_LoadOrStore(t *testing.T) {
 
 // TestFlatMapOf_Range tests the Range method
 func TestFlatMapOf_Range(t *testing.T) {
-	m := NewFlatMapOf[int, string]()
+	m := NewFlatMapOf[int, *string]()
 
 	// Test empty map
 	count := 0
-	m.Range(func(k int, v string) bool {
+	m.Range(func(k int, v *string) bool {
 		count++
 		return true
 	})
@@ -404,14 +408,14 @@ func TestFlatMapOf_Range(t *testing.T) {
 	expected := make(map[int]string)
 	for i := 0; i < 10; i++ {
 		value := fmt.Sprintf("value_%d", i)
-		m.Store(i, value)
+		m.Store(i, &value)
 		expected[i] = value
 	}
 
 	// Test full iteration
 	found := make(map[int]string)
-	m.Range(func(k int, v string) bool {
-		found[k] = v
+	m.Range(func(k int, v *string) bool {
+		found[k] = *v
 		return true
 	})
 
@@ -427,7 +431,7 @@ func TestFlatMapOf_Range(t *testing.T) {
 
 	// Test early termination
 	count = 0
-	m.Range(func(k int, v string) bool {
+	m.Range(func(k int, v *string) bool {
 		count++
 		return count < 5 // Stop after 5 iterations
 	})
@@ -468,7 +472,7 @@ func TestFlatMapOf_Range(t *testing.T) {
 
 // TestFlatMapOf_Size tests the Size method
 func TestFlatMapOf_Size(t *testing.T) {
-	m := NewFlatMapOf[int, string]()
+	m := NewFlatMapOf[int, *string]()
 
 	// Test empty map
 	if size := m.Size(); size != 0 {
@@ -477,7 +481,8 @@ func TestFlatMapOf_Size(t *testing.T) {
 
 	// Add items and check size
 	for i := 0; i < 10; i++ {
-		m.Store(i, fmt.Sprintf("value_%d", i))
+		value := fmt.Sprintf("value_%d", i)
+		m.Store(i, &value)
 		expectedSize := i + 1
 		if size := m.Size(); size != expectedSize {
 			t.Errorf("After storing %d items, expected size %d, got %d", expectedSize, expectedSize, size)
@@ -529,5 +534,251 @@ func TestFlatMapOf_IsZero(t *testing.T) {
 	}
 	if !m.IsZero() {
 		t.Error("Expected IsZero() to return true after deleting all items")
+	}
+}
+
+// TestFlatMapOf_DoubleBufferConsistency_StressABA stresses rapid A/B flips on the same key
+// and verifies that readers never observe torn values (i.e., reading half old, half new).
+// This detects correctness of the double-buffer protocol under extreme contention.
+func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
+	type pair struct{ X, Y uint32 }
+	m := NewFlatMapOf[int, pair]()
+
+	// Initialize key 0
+	m.Store(0, pair{X: 0, Y: ^uint32(0)})
+
+	var (
+		wg   sync.WaitGroup
+		stop = make(chan struct{})
+		seq  uint32
+	)
+
+	// Start multiple writers to maximize flip frequency on the same slot
+	writerN := 4
+	for w := 0; w < writerN; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					s := atomic.AddUint32(&seq, 1)
+					val := pair{X: s, Y: ^s}
+					m.Process(0, func(old pair, loaded bool) (pair, ComputeOp, pair, bool) {
+						return val, UpdateOp, val, true
+					})
+				}
+			}
+		}()
+	}
+
+	// Start readers to continuously validate that values are not torn
+	readerN := 8
+	for r := 0; r < readerN; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					v, ok := m.Load(0)
+					if !ok {
+						t.Fatalf("key missing while stressed")
+					}
+					if v.Y != ^v.X {
+						t.Fatalf("torn read detected: %+v", v)
+					}
+				}
+			}
+		}()
+	}
+
+	// Run for a short duration to stress concurrent flips
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
+// TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
+// ... existing code ...
+func TestFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
+	// Goal: Observe the undesirable return of "ok==true && value==0" under race between
+	// concurrent Insert/Delete and Load operations.
+	//
+	// Explanation:
+	// - Delete sequence in write path: (1) clear meta, then (2) zero the value.
+	// - Read path loads meta first (old snapshot may still show slot as valid), then value.
+	// - If reader gets a pre-deletion meta snapshot while value has been zeroed by writer,
+	//   it may return (ok=true, value=0).
+	// - This is why the comment suggests: "for stricter semantics, add a post-read meta
+	//   verification and retry/return miss if slot is unpublished".
+	//
+	// Test strategy: Continuously write a constant non-zero value and immediately delete;
+	// run parallel Load operations.
+	// If (ok=true && value==0) is observed, record the count but do not fail (avoiding
+	// timing-related flakiness).
+	//
+	// Tip: Use go test -race, and increase duration/concurrency appropriately to
+	// increase observation probability.
+
+	m := NewFlatMapOf[string, uint64]()
+	const key = "k"
+	const insertedVal uint64 = 1 // 恒非零，便于区分“被清零”的值
+
+	var (
+		anom uint64 // 统计 ok==true 且 value==0 的次数
+		stop uint32
+	)
+
+	readers := runtime.GOMAXPROCS(0) * 4
+	dur := 2 * time.Second
+
+	var wg sync.WaitGroup
+	wg.Add(readers + 1)
+
+	go func() {
+		defer wg.Done()
+		deadline := time.Now().Add(dur)
+		for time.Now().Before(deadline) {
+			m.Store(key, insertedVal)
+			runtime.Gosched() // 扩大竞争机会
+			m.Delete(key)
+			runtime.Gosched()
+		}
+		atomic.StoreUint32(&stop, 1)
+	}()
+
+	// readers
+	for i := 0; i < readers; i++ {
+		go func() {
+			defer wg.Done()
+			for atomic.LoadUint32(&stop) == 0 {
+				v, ok := m.Load(key)
+				if ok && v == 0 {
+					atomic.AddUint64(&anom, 1)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	t.Logf("Load/Delete race: observed ok==true && value==0 %d times (dur=%v, readers=%d)", anom, dur, readers)
+
+	// Explanation:
+	// - If anom > 0, it indicates that readers judged existence based on old meta snapshots but read zeroed values; this perfectly matches the behavior described in the Load comment.
+	// - If anom == 0, it does not mean the scenario is impossible, but merely that the current stress level and timing did not trigger it; try increasing concurrency/duration or running on a busy machine.
+}
+
+// TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
+// ... existing code ...
+func TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
+	// This test stresses concurrent delete/re-insert cycles to try to expose
+	// torn reads on keys when K is larger than machine word size.
+	// It also serves as a good target for `go test -race` which should report
+	// a data race if key memory is read while being concurrently cleared.
+
+	type bigKey struct{ A, B uint64 }
+
+	m := NewFlatMapOf[bigKey, int]()
+
+	const N = 1024
+	keys := make([]bigKey, N)
+	for i := 0; i < N; i++ {
+		// Maintain invariant: B == ^A
+		ai := uint64(i*2654435761 + 123456789)
+		keys[i] = bigKey{A: ai, B: ^ai}
+		m.Store(keys[i], i)
+	}
+
+	var (
+		wg           sync.WaitGroup
+		stop         = make(chan struct{})
+		foundTornKey atomic.Bool
+	)
+
+	// Readers: continuously range and validate key invariant
+	readerN := 8
+	wg.Add(readerN)
+	for r := 0; r < readerN; r++ {
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					m.Range(func(k bigKey, _ int) bool {
+						if k.B != ^k.A {
+							foundTornKey.Store(true)
+							return false
+						}
+						return true
+					})
+				}
+			}
+		}()
+	}
+
+	// Additional readers: hammer Load to exercise key comparisons
+	loadN := 4
+	wg.Add(loadN)
+	for r := 0; r < loadN; r++ {
+		go func(id int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					for i := id; i < N; i += loadN {
+						m.Load(keys[i])
+					}
+				}
+			}
+		}(r)
+	}
+
+	// Writers: repeatedly delete and re-insert the same keys to trigger
+	// meta-clearing followed by key memory clearing in current implementation.
+	writerN := 2
+	wg.Add(writerN)
+	for w := 0; w < writerN; w++ {
+		go func(offset int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					for i := offset; i < N; i += writerN {
+						k := keys[i]
+						// Delete
+						m.Process(k, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+							return 0, DeleteOp, 0, false
+						})
+						// Re-insert
+						m.Process(k, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+							return i, UpdateOp, i, true
+						})
+					}
+					runtime.Gosched()
+				}
+			}
+		}(w)
+	}
+
+	// Run for a short duration
+	dur := 1500 * time.Millisecond
+	timer := time.NewTimer(dur)
+	<-timer.C
+	close(stop)
+	wg.Wait()
+
+	if foundTornKey.Load() {
+		t.Fatalf("detected possible torn read of key: invariant k.B == ^k.A violated under concurrency")
 	}
 }
