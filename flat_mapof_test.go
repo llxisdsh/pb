@@ -20,12 +20,15 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 	}
 
 	// Test insert
-	actual, ok := m.Process("key1", func(old int, loaded bool) (int, ComputeOp, int, bool) {
-		if loaded {
-			t.Error("Expected not loaded for new key")
-		}
-		return 42, UpdateOp, 42, true
-	})
+	actual, ok := m.Process(
+		"key1",
+		func(old int, loaded bool) (int, ComputeOp, int, bool) {
+			if loaded {
+				t.Error("Expected not loaded for new key")
+			}
+			return 42, UpdateOp, 42, true
+		},
+	)
 	if !ok || actual != 42 {
 		t.Errorf("Expected (42, true), got (%v, %v)", actual, ok)
 	}
@@ -36,12 +39,19 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 	}
 
 	// Test update
-	actual, ok = m.Process("key1", func(old int, loaded bool) (int, ComputeOp, int, bool) {
-		if !loaded || old != 42 {
-			t.Errorf("Expected loaded=true, old=42, got loaded=%v, old=%v", loaded, old)
-		}
-		return old + 10, UpdateOp, old + 10, true
-	})
+	actual, ok = m.Process(
+		"key1",
+		func(old int, loaded bool) (int, ComputeOp, int, bool) {
+			if !loaded || old != 42 {
+				t.Errorf(
+					"Expected loaded=true, old=42, got loaded=%v, old=%v",
+					loaded,
+					old,
+				)
+			}
+			return old + 10, UpdateOp, old + 10, true
+		},
+	)
 	if !ok || actual != 52 {
 		t.Errorf("Expected (52, true), got (%v, %v)", actual, ok)
 	}
@@ -52,12 +62,19 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 	}
 
 	// Test delete
-	actual, ok = m.Process("key1", func(old int, loaded bool) (int, ComputeOp, int, bool) {
-		if !loaded || old != 52 {
-			t.Errorf("Expected loaded=true, old=52, got loaded=%v, old=%v", loaded, old)
-		}
-		return 0, DeleteOp, old, false
-	})
+	actual, ok = m.Process(
+		"key1",
+		func(old int, loaded bool) (int, ComputeOp, int, bool) {
+			if !loaded || old != 52 {
+				t.Errorf(
+					"Expected loaded=true, old=52, got loaded=%v, old=%v",
+					loaded,
+					old,
+				)
+			}
+			return 0, DeleteOp, old, false
+		},
+	)
 	if ok {
 		t.Errorf("Expected ok=false after delete, got ok=%v", ok)
 	}
@@ -71,9 +88,12 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 	m.Process("key2", func(old int, loaded bool) (int, ComputeOp, int, bool) {
 		return 100, UpdateOp, 100, true
 	})
-	actual, ok = m.Process("key2", func(old int, loaded bool) (int, ComputeOp, int, bool) {
-		return 999, CancelOp, old, loaded
-	})
+	actual, ok = m.Process(
+		"key2",
+		func(old int, loaded bool) (int, ComputeOp, int, bool) {
+			return 999, CancelOp, old, loaded
+		},
+	)
 	if !ok || actual != 100 {
 		t.Errorf("Expected (100, true) after cancel, got (%v, %v)", actual, ok)
 	}
@@ -85,26 +105,38 @@ func TestFlatMapOf_MultipleKeys(t *testing.T) {
 
 	// Insert multiple keys
 	for i := 0; i < 100; i++ {
-		m.Process(i, func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
-			newV := fmt.Sprintf("value_%d", i)
-			return &newV, UpdateOp, &newV, true
-		})
+		m.Process(
+			i,
+			func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
+				newV := fmt.Sprintf("value_%d", i)
+				return &newV, UpdateOp, &newV, true
+			},
+		)
 	}
 
 	// Verify all keys
 	for i := 0; i < 100; i++ {
 		expected := fmt.Sprintf("value_%d", i)
 		if val, ok := m.Load(i); !ok || *val != expected {
-			t.Errorf("Key %d: expected (%s, true), got (%v, %v)", i, expected, val, ok)
+			t.Errorf(
+				"Key %d: expected (%s, true), got (%v, %v)",
+				i,
+				expected,
+				val,
+				ok,
+			)
 		}
 	}
 
 	// Delete even keys
 	for i := 0; i < 100; i += 2 {
-		m.Process(i, func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
-			newV := ""
-			return &newV, DeleteOp, &newV, false
-		})
+		m.Process(
+			i,
+			func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
+				newV := ""
+				return &newV, DeleteOp, &newV, false
+			},
+		)
 	}
 
 	// Verify deletions
@@ -113,7 +145,12 @@ func TestFlatMapOf_MultipleKeys(t *testing.T) {
 		if i%2 == 0 {
 			// Even keys should be deleted
 			if ok {
-				t.Errorf("Key %d should be deleted, but got (%v, %v)", i, val, ok)
+				t.Errorf(
+					"Key %d should be deleted, but got (%v, %v)",
+					i,
+					val,
+					ok,
+				)
 			}
 		} else {
 			// Odd keys should remain
@@ -138,11 +175,14 @@ func TestFlatMapOf_Concurrent(t *testing.T) {
 	for g := 0; g < numGoroutines; g++ {
 		go func(goroutineID int) {
 			defer wg.Done()
-			for i := 0; i < numOpsPerGoroutine; i++ {
+			for i := 1; i <= numOpsPerGoroutine; i++ {
 				key := goroutineID*numOpsPerGoroutine + i
-				m.Process(key, func(old int, loaded bool) (int, ComputeOp, int, bool) {
-					return key * 2, UpdateOp, key * 2, true
-				})
+				m.Process(
+					key,
+					func(old int, loaded bool) (int, ComputeOp, int, bool) {
+						return key * 2, UpdateOp, key * 2, true
+					},
+				)
 			}
 		}(g)
 	}
@@ -150,7 +190,7 @@ func TestFlatMapOf_Concurrent(t *testing.T) {
 	// Concurrent readers
 	for g := 0; g < numGoroutines; g++ {
 		go func(goroutineID int) {
-			for i := 0; i < numOpsPerGoroutine; i++ {
+			for i := 1; i <= numOpsPerGoroutine; i++ {
 				key := goroutineID*numOpsPerGoroutine + i
 				// May or may not find the key depending on timing
 				m.Load(key)
@@ -162,11 +202,17 @@ func TestFlatMapOf_Concurrent(t *testing.T) {
 
 	// Verify final state
 	for g := 0; g < numGoroutines; g++ {
-		for i := 0; i < numOpsPerGoroutine; i++ {
+		for i := 1; i <= numOpsPerGoroutine; i++ {
 			key := g*numOpsPerGoroutine + i
 			expected := key * 2
 			if val, ok := m.Load(key); !ok || val != expected {
-				t.Errorf("Key %d: expected (%d, true), got (%v, %v)", key, expected, val, ok)
+				t.Errorf(
+					"Key %d: expected (%d, true), got (%v, %v)",
+					key,
+					expected,
+					val,
+					ok,
+				)
 			}
 		}
 	}
@@ -217,10 +263,13 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 					return
 				default:
 					key := rand.Intn(1000)
-					m.Process(key, func(old int, loaded bool) (int, ComputeOp, int, bool) {
-						newV := rand.Intn(10000)
-						return newV, UpdateOp, newV, true
-					})
+					m.Process(
+						key,
+						func(old int, loaded bool) (int, ComputeOp, int, bool) {
+							newV := rand.Intn(10000)
+							return newV, UpdateOp, newV, true
+						},
+					)
 				}
 			}
 		}()
@@ -231,7 +280,7 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 	close(stop)
 	wg.Wait()
 
-	//t.Log("Concurrent read/write test completed successfully")
+	// t.Log("Concurrent read/write test completed successfully")
 }
 
 // TestFlatMapOf_DoubleBufferConsistency tests the double buffer mechanism
@@ -241,7 +290,7 @@ func TestFlatMapOf_DoubleBufferConsistency(t *testing.T) {
 	const numUpdates = 50
 
 	// Insert initial data
-	for i := 0; i < numKeys; i++ {
+	for i := 1; i <= numKeys; i++ {
 		m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 			return i, UpdateOp, i, true
 		})
@@ -260,13 +309,14 @@ func TestFlatMapOf_DoubleBufferConsistency(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					for i := 0; i < numKeys; i++ {
+					for i := 1; i <= numKeys; i++ {
 						val, ok := m.Load(i)
 						if !ok {
 							t.Errorf("Key %d should exist", i)
 							return
 						}
-						// Value should be consistent (either old or new, but not corrupted)
+						// Value should be consistent (either old or new, but
+						// not corrupted)
 						if val < 0 {
 							t.Errorf("Corrupted value %d for key %d", val, i)
 							return
@@ -282,10 +332,13 @@ func TestFlatMapOf_DoubleBufferConsistency(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for update := 0; update < numUpdates; update++ {
-			for i := 0; i < numKeys; i++ {
-				m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
-					return old + 1000, UpdateOp, old + 1000, true
-				})
+			for i := 1; i <= numKeys; i++ {
+				m.Process(
+					i,
+					func(old int, loaded bool) (int, ComputeOp, int, bool) {
+						return old + 1000, UpdateOp, old + 1000, true
+					},
+				)
 			}
 			runtime.Gosched() // Give readers a chance
 		}
@@ -296,7 +349,7 @@ func TestFlatMapOf_DoubleBufferConsistency(t *testing.T) {
 	close(stop)
 	wg.Wait()
 
-	//t.Log("Double buffer consistency test completed")
+	// t.Log("Double buffer consistency test completed")
 }
 
 // TestFlatMapOf_EdgeCases tests edge cases and error conditions
@@ -304,10 +357,13 @@ func TestFlatMapOf_EdgeCases(t *testing.T) {
 	m := NewFlatMapOf[string, *string]()
 
 	// Test with empty string key
-	m.Process("", func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
-		newV := "empty_key_value"
-		return &newV, UpdateOp, &newV, true
-	})
+	m.Process(
+		"",
+		func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
+			newV := "empty_key_value"
+			return &newV, UpdateOp, &newV, true
+		},
+	)
 	if val, ok := m.Load(""); !ok || *val != "empty_key_value" {
 		t.Errorf("Empty key test failed: got (%v, %v)", *val, ok)
 	}
@@ -317,17 +373,24 @@ func TestFlatMapOf_EdgeCases(t *testing.T) {
 	for i := range longKey {
 		longKey = longKey[:i] + "a" + longKey[i+1:]
 	}
-	m.Process(longKey, func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
-		newV := "long_key_value"
-		return &newV, UpdateOp, &newV, true
-	})
+	m.Process(
+		longKey,
+		func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
+			newV := "long_key_value"
+			return &newV, UpdateOp, &newV, true
+		},
+	)
 	if val, ok := m.Load(longKey); !ok || *val != "long_key_value" {
 		t.Errorf("Long key test failed: got (%v, %v)", *val, ok)
 	}
 
 	// Verify data still intact
 	if val, ok := m.Load(""); !ok || *val != "empty_key_value" {
-		t.Errorf("After invalid grow, empty key test failed: got (%v, %v)", *val, ok)
+		t.Errorf(
+			"After invalid grow, empty key test failed: got (%v, %v)",
+			*val,
+			ok,
+		)
 	}
 }
 
@@ -485,7 +548,12 @@ func TestFlatMapOf_Size(t *testing.T) {
 		m.Store(i, &value)
 		expectedSize := i + 1
 		if size := m.Size(); size != expectedSize {
-			t.Errorf("After storing %d items, expected size %d, got %d", expectedSize, expectedSize, size)
+			t.Errorf(
+				"After storing %d items, expected size %d, got %d",
+				expectedSize,
+				expectedSize,
+				size,
+			)
 		}
 	}
 
@@ -494,7 +562,12 @@ func TestFlatMapOf_Size(t *testing.T) {
 		m.Delete(i)
 		expectedSize := 10 - i - 1
 		if size := m.Size(); size != expectedSize {
-			t.Errorf("After deleting %d items, expected size %d, got %d", i+1, expectedSize, size)
+			t.Errorf(
+				"After deleting %d items, expected size %d, got %d",
+				i+1,
+				expectedSize,
+				size,
+			)
 		}
 	}
 }
@@ -521,7 +594,7 @@ func TestFlatMapOf_IsZero(t *testing.T) {
 	}
 
 	// Add multiple items
-	for i := 0; i < 5; i++ {
+	for i := 1; i <= 10; i++ {
 		m.Store(fmt.Sprintf("key_%d", i), i)
 	}
 	if m.IsZero() {
@@ -529,7 +602,7 @@ func TestFlatMapOf_IsZero(t *testing.T) {
 	}
 
 	// Delete all items
-	for i := 0; i < 5; i++ {
+	for i := 1; i <= 10; i++ {
 		m.Delete(fmt.Sprintf("key_%d", i))
 	}
 	if !m.IsZero() {
@@ -537,9 +610,10 @@ func TestFlatMapOf_IsZero(t *testing.T) {
 	}
 }
 
-// TestFlatMapOf_DoubleBufferConsistency_StressABA stresses rapid A/B flips on the same key
-// and verifies that readers never observe torn values (i.e., reading half old, half new).
-// This detects correctness of the double-buffer protocol under extreme contention.
+// TestFlatMapOf_DoubleBufferConsistency_StressABA stresses rapid A/B flips on
+// the same key and verifies that readers never observe torn values (i.e.,
+// reading half old, half new). This detects correctness of the double-buffer
+// protocol under extreme contention.
 func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
 	type pair struct{ X, Y uint32 }
 	m := NewFlatMapOf[int, pair]()
@@ -566,9 +640,12 @@ func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
 				default:
 					s := atomic.AddUint32(&seq, 1)
 					val := pair{X: s, Y: ^s}
-					m.Process(0, func(old pair, loaded bool) (pair, ComputeOp, pair, bool) {
-						return val, UpdateOp, val, true
-					})
+					m.Process(
+						0,
+						func(old pair, loaded bool) (pair, ComputeOp, pair, bool) {
+							return val, UpdateOp, val, true
+						},
+					)
 				}
 			}
 		}()
@@ -606,23 +683,29 @@ func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
 // TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 // ... existing code ...
 func TestFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
-	// Goal: Observe the undesirable return of "ok==true && value==0" under race between
+	// Goal: Observe the undesirable return of "ok==true && value==0" under race
+	// between
 	// concurrent Insert/Delete and Load operations.
 	//
 	// Explanation:
 	// - Delete sequence in write path: (1) clear meta, then (2) zero the value.
-	// - Read path loads meta first (old snapshot may still show slot as valid), then value.
-	// - If reader gets a pre-deletion meta snapshot while value has been zeroed by writer,
+	// - Read path loads meta first (old snapshot may still show slot as valid),
+	// then value. - If reader gets a pre-deletion meta snapshot while value has
+	// been zeroed by writer,
 	//   it may return (ok=true, value=0).
-	// - This is why the comment suggests: "for stricter semantics, add a post-read meta
+	// - This is why the comment suggests: "for stricter semantics, add a
+	// post-read meta
 	//   verification and retry/return miss if slot is unpublished".
 	//
-	// Test strategy: Continuously write a constant non-zero value and immediately delete;
+	// Test strategy: Continuously write a constant non-zero value and
+	// immediately delete;
 	// run parallel Load operations.
-	// If (ok=true && value==0) is observed, record the count but do not fail (avoiding
+	// If (ok=true && value==0) is observed, record the count but do not fail
+	// (avoiding
 	// timing-related flakiness).
 	//
-	// Tip: Use go test -race, and increase duration/concurrency appropriately to
+	// Tip: Use go test -race, and increase duration/concurrency appropriately
+	// to
 	// increase observation probability.
 
 	m := NewFlatMapOf[string, uint64]()
@@ -666,11 +749,22 @@ func TestFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
 	}
 
 	wg.Wait()
-	t.Logf("Load/Delete race: observed ok==true && value==0 %d times (dur=%v, readers=%d)", anom, dur, readers)
+	if anom > 0 {
+		t.Fatalf(
+			"Load/Delete race: observed ok==true && value==0 %d times (dur=%v, readers=%d)",
+			anom,
+			dur,
+			readers,
+		)
+	}
 
 	// Explanation:
-	// - If anom > 0, it indicates that readers judged existence based on old meta snapshots but read zeroed values; this perfectly matches the behavior described in the Load comment.
-	// - If anom == 0, it does not mean the scenario is impossible, but merely that the current stress level and timing did not trigger it; try increasing concurrency/duration or running on a busy machine.
+	// - If anom > 0, it indicates that readers judged existence based on old
+	// meta snapshots but read zeroed values; this perfectly matches the
+	// behavior described in the Load comment. - If anom == 0, it does not mean
+	// the scenario is impossible, but merely that the current stress level and
+	// timing did not trigger it; try increasing concurrency/duration or running
+	// on a busy machine.
 }
 
 // TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
@@ -757,13 +851,19 @@ func TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 					for i := offset; i < N; i += writerN {
 						k := keys[i]
 						// Delete
-						m.Process(k, func(old int, loaded bool) (int, ComputeOp, int, bool) {
-							return 0, DeleteOp, 0, false
-						})
+						m.Process(
+							k,
+							func(old int, loaded bool) (int, ComputeOp, int, bool) {
+								return 0, DeleteOp, 0, false
+							},
+						)
 						// Re-insert
-						m.Process(k, func(old int, loaded bool) (int, ComputeOp, int, bool) {
-							return i, UpdateOp, i, true
-						})
+						m.Process(
+							k,
+							func(old int, loaded bool) (int, ComputeOp, int, bool) {
+								return i, UpdateOp, i, true
+							},
+						)
 					}
 					runtime.Gosched()
 				}
@@ -779,6 +879,8 @@ func TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 	wg.Wait()
 
 	if foundTornKey.Load() {
-		t.Fatalf("detected possible torn read of key: invariant k.B == ^k.A violated under concurrency")
+		t.Fatalf(
+			"detected possible torn read of key: invariant k.B == ^k.A violated under concurrency",
+		)
 	}
 }

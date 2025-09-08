@@ -237,6 +237,7 @@ func TestTypeSizes(t *testing.T) {
 		}
 	}
 }
+
 func TestAtomicValue_Sizes(t *testing.T) {
 	tests := []struct {
 		name string
@@ -254,7 +255,10 @@ func TestAtomicValue_Sizes(t *testing.T) {
 		{"atomicValue[float32]", unsafe.Sizeof(*new(atomicValue[float32]))},
 		{"atomicValue[float64]", unsafe.Sizeof(*new(atomicValue[float64]))},
 		{"atomicValue[*int]", unsafe.Sizeof(*new(atomicValue[*int]))},
-		{"atomicValue[SmallStruct]", unsafe.Sizeof(*new(atomicValue[SmallStruct]))},
+		{
+			"atomicValue[SmallStruct]",
+			unsafe.Sizeof(*new(atomicValue[SmallStruct])),
+		},
 	}
 
 	uint64Size := unsafe.Sizeof(uint64(0))

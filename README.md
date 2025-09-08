@@ -834,21 +834,31 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 
 # pb.FlatMapOf
 
-FlatMapOf is a cache-friendly, double-buffered flat hash map tailored for small key/value pairs. It inlines keys and keeps two value buffers per slot (A/B), so readers are lock-free and writers flip a per-slot version byte for consistency.
+`FlatMapOf` is a cache-friendly flat hash map for small key/value pairs.
+It inlines keys and stores per-slot values to minimize pointer chasing
+and reduce GC roots. Reads are lock-free. Writers serialize per-bucket
+for consistency.
 
 Why choose it
-- Faster writes in most workloads than MapOf; on single-threaded inserts it can even beat the native Go map.
-- Great read latency with excellent cache locality and fewer GC roots than pointer-based maps.
-- Familiar API: supports pre-sizing and custom hash/equality like MapOf.
+- Very fast for small K/V with great cache locality.
+- GC-friendly: fewer pointers and compact layout reduce GC pressure.
+- Familiar API: supports pre-sizing and custom hash/equality like `MapOf`.
 
 Trade-offs
-- Higher memory per bucket due to A/B buffers and inline storage.
-- No shrinking (WithShrinkEnabled is not supported).
-- Best for small values; very large values may favor MapOf.
+- No shrinking (`WithShrinkEnabled` is not supported).
+- Only supports value type V with a size <= 8 bytes; for larger values, please use `MapOf`.
+- Per-bucket metadata and inline keys increase bucket footprint.
+
+Behavior notes
+- Publication ordering prevents torn key/value reads under concurrency.
+- Optional zero-as-deleted read semantics via `WithZeroAsDeleted`.
+  Default is disabled; zero values are treated as normal values.
 
 When to use which
-- Pick FlatMapOf for small K/V, write-heavy or read-mostly workloads where cache locality and GC overhead matter.
-- Pick MapOf when memory efficiency and shrinking support are more important, or values are large.
+- Pick `FlatMapOf` for small K/V, write-heavy or read-mostly workloads
+  where cache locality and GC overhead matter.
+- Pick `MapOf` when memory efficiency and shrinking support are more
+  important, or values are large.
 
 ---
 

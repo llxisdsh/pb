@@ -171,6 +171,11 @@ type MapConfig struct {
 	// which provides better performance but may use more memory.
 	// When true, the map will shrink when occupancy < 1/mapShrinkFraction.
 	ShrinkEnabled bool
+
+	// Treat zero value as logically deleted.
+	// Read paths filter it, write paths treat zero as delete.
+	// (Only applicable to FlatMapOf)
+	zeroAsDeleted bool
 }
 
 // WithPresize configuring new MapOf instance with capacity enough
