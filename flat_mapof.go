@@ -231,11 +231,6 @@ func (t *flatTable[K, V]) SumSizeExceeds(limit int) bool {
 	return false
 }
 
-//type flatEntry[K comparable, V comparable] struct {
-//	val atomicValue[V]
-//	key K
-//}
-
 // flatBucket stores inline keys and atomic values for each slot.
 // Uses atomicValue for lock-free value access instead of double buffering.
 type flatBucket[K comparable, V comparable] struct {
