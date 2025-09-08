@@ -61,26 +61,28 @@ import (
 type FlatMapOf[K comparable, V comparable] struct {
 	//lint:ignore U1000 prevents false sharing
 	pad [(CacheLineSize - unsafe.Sizeof(struct {
+		_           noCopy
 		table       unsafe.Pointer
 		resizeState unsafe.Pointer
 		seed        uintptr
 		keyHash     HashFunc
-		valEqual    EqualFunc
+		// valEqual    EqualFunc
 		minTableLen int
 		// shrinkEnabled bool
-		intKey bool
+		intKey        bool
+		zeroAsDeleted bool
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	_           noCopy
 	table       unsafe.Pointer // *flatTable[K,V]
 	resizeState unsafe.Pointer // *flatResizeState
 	seed        uintptr
-	keyHash     HashFunc
-	valEqual    EqualFunc
-	minTableLen int
+	keyHash     HashFunc // WithKeyHasher
+	// valEqual    EqualFunc
+	minTableLen int // WithPresize
 	// shrinkEnabled bool
 	intKey        bool
-	zeroAsDeleted bool
+	zeroAsDeleted bool // WithZeroAsDeleted
 }
 
 // WithZeroAsDeleted configures the map to treat zero values as logically
@@ -129,19 +131,19 @@ func NewFlatMapOf[K comparable, V comparable](
 			}
 		}
 	}
-	if cfg.ValEqual == nil {
-		var zeroV V
-		vk := any(&zeroV)
-		if _, ok := vk.(IEqual[V]); ok {
-			cfg.ValEqual = func(ptr unsafe.Pointer, other unsafe.Pointer) bool {
-				return any((*V)(ptr)).(IEqual[V]).Equal(*(*V)(other))
-			}
-		}
-	}
+	// if cfg.ValEqual == nil {
+	// 	var zeroV V
+	// 	vk := any(&zeroV)
+	// 	if _, ok := vk.(IEqual[V]); ok {
+	// 		cfg.ValEqual = func(ptr unsafe.Pointer, other unsafe.Pointer) bool {
+	// 			return any((*V)(ptr)).(IEqual[V]).Equal(*(*V)(other))
+	// 		}
+	// 	}
+	// }
 
 	m := &FlatMapOf[K, V]{}
 	m.seed = uintptr(rand.Uint64())
-	m.keyHash, m.valEqual, m.intKey = defaultHasher[K, V]()
+	m.keyHash, _, m.intKey = defaultHasher[K, V]()
 	if cfg.KeyHash != nil {
 		m.keyHash = cfg.KeyHash
 		for _, o := range cfg.HashOpts {
@@ -155,9 +157,9 @@ func NewFlatMapOf[K comparable, V comparable](
 			}
 		}
 	}
-	if cfg.ValEqual != nil {
-		m.valEqual = cfg.ValEqual
-	}
+	// if cfg.ValEqual != nil {
+	// 	m.valEqual = cfg.ValEqual
+	// }
 	m.minTableLen = calcTableLen(cfg.SizeHint)
 	// m.shrinkEnabled = cfg.ShrinkEnabled
 	m.zeroAsDeleted = cfg.zeroAsDeleted
