@@ -912,7 +912,7 @@ func (m *MapOf[K, V]) processEntry(
 					newEntry.setHash(hash)
 				}
 				newEntry.Key = *key
-				storePointer(
+				storePointerNoWB(
 					oldBucket.At(oldIdx),
 					unsafe.Pointer(newEntry),
 				)
@@ -920,12 +920,12 @@ func (m *MapOf[K, V]) processEntry(
 				return value, status
 			}
 			// Delete
-			storePointer(oldBucket.At(oldIdx), nil)
+			storePointerNoWB(oldBucket.At(oldIdx), nil)
 			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
 			if oldBucket == rootb {
 				rootb.UnlockWithMeta(newmetaw)
 			} else {
-				storeUint64(&oldBucket.meta, newmetaw)
+				storeUint64NoWB(&oldBucket.meta, newmetaw)
 				rootb.Unlock()
 			}
 			table.AddSize(bidx, -1)
@@ -960,11 +960,11 @@ func (m *MapOf[K, V]) processEntry(
 			// pointer so they won't observe a partially-initialized entry,
 			// and this reduces the window where meta is visible but pointer is
 			// still nil
-			storePointer(emptyBucket.At(emptyIdx), unsafe.Pointer(newEntry))
+			storePointerNoWB(emptyBucket.At(emptyIdx), unsafe.Pointer(newEntry))
 			if emptyBucket == rootb {
 				rootb.UnlockWithMeta(setByte(emptyBucket.meta, h2v, emptyIdx))
 			} else {
-				storeUint64(
+				storeUint64NoWB(
 					&emptyBucket.meta,
 					setByte(emptyBucket.meta, h2v, emptyIdx),
 				)
@@ -975,7 +975,7 @@ func (m *MapOf[K, V]) processEntry(
 		}
 
 		// No empty slot, create new bucket and insert
-		storePointer(&lastBucket.next, unsafe.Pointer(&bucketOf{
+		storePointerNoWB(&lastBucket.next, unsafe.Pointer(&bucketOf{
 			meta: setByte(emptyMeta, h2v, 0),
 			entries: [entriesPerMapOfBucket]unsafe.Pointer{
 				unsafe.Pointer(newEntry),
@@ -1335,12 +1335,12 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 					} else if newEntry != nil {
 						// Update
 						newEntry.Key = e.Key
-						storePointer(b.At(idx), unsafe.Pointer(newEntry))
+						storePointerNoWB(b.At(idx), unsafe.Pointer(newEntry))
 					} else {
 						// Delete
-						storePointer(b.At(idx), nil)
+						storePointerNoWB(b.At(idx), nil)
 						newmetaw := setByte(metaw, emptyMetaSlot, idx)
-						storeUint64(&b.meta, newmetaw)
+						storeUint64NoWB(&b.meta, newmetaw)
 						table.AddSize(i, -1)
 					}
 				}
@@ -2626,8 +2626,8 @@ func (m *MapOf[K, V]) CloneTo(clone *MapOf[K, V]) {
 // so it should be used only for diagnostics or debugging purposes.
 func (m *MapOf[K, V]) Stats() *MapStats {
 	stats := &MapStats{
-		TotalGrowths: loadUint32(&m.totalGrowths),
-		TotalShrinks: loadUint32(&m.totalShrinks),
+		TotalGrowths: atomic.LoadUint32(&m.totalGrowths),
+		TotalShrinks: atomic.LoadUint32(&m.totalShrinks),
 		MinEntries:   math.MaxInt,
 	}
 	table := (*mapOfTable)(loadPointer(&m.table))
@@ -2928,101 +2928,6 @@ func markZeroBytes(w uint64) uint64 {
 func setByte(w uint64, b uint8, idx int) uint64 {
 	shift := idx << 3
 	return (w &^ (0xff << shift)) | (uint64(b) << shift)
-}
-
-//goland:noinspection ALL
-const useAutoDetectedTSO = atomicLevel == -1 &&
-	(runtime.GOARCH == "amd64" || runtime.GOARCH == "386" ||
-		runtime.GOARCH == "s390x" || runtime.GOARCH == "s390")
-
-//go:nosplit
-func loadPointer(addr *unsafe.Pointer) unsafe.Pointer {
-	//goland:noinspection ALL
-	if useAutoDetectedTSO || atomicLevel >= 1 {
-		return *addr
-	} else {
-		return atomic.LoadPointer(addr)
-	}
-}
-
-// storePointer stores a pointer value at the given address.
-// Note: Must be called with lock held to ensure safety.
-//
-//go:nosplit
-func storePointer(addr *unsafe.Pointer, val unsafe.Pointer) {
-	//goland:noinspection ALL
-	if useAutoDetectedTSO || atomicLevel >= 2 {
-		*addr = val
-	} else {
-		atomic.StorePointer(addr, val)
-	}
-}
-
-//go:nosplit
-func loadUintptr(addr *uintptr) uintptr {
-	//goland:noinspection ALL
-	if useAutoDetectedTSO || atomicLevel >= 1 {
-		return *addr
-	} else {
-		return atomic.LoadUintptr(addr)
-	}
-}
-
-//// storeUintptr stores an uintptr value at the given address.
-//// Note: Must be called with lock held to ensure safety.
-////go:nosplit
-//func storeUintptr(addr *uintptr, val uintptr) {
-//	//goland:noinspection ALL
-//	if useAutoDetectedTSO || atomicLevel >= 2 {
-//		*addr = val
-//	} else {
-//		atomic.StoreUintptr(addr, val)
-//	}
-//}
-
-//go:nosplit
-func loadUint32(addr *uint32) uint32 {
-	//goland:noinspection ALL
-	if useAutoDetectedTSO || atomicLevel >= 1 {
-		return *addr
-	} else {
-		return atomic.LoadUint32(addr)
-	}
-}
-
-//// storeUint32 stores an uint32 value at the given address.
-//// Note: Must be called with lock held to ensure safety.
-////go:nosplit
-//func storeUint32(addr *uint32, val uint32) {
-//	//goland:noinspection ALL
-//	if useAutoDetectedTSO || atomicLevel >= 2 {
-//		*addr = val
-//	} else {
-//		atomic.StoreUint32(addr, val)
-//	}
-//}
-
-//go:nosplit
-func loadUint64(addr *uint64) uint64 {
-	//goland:noinspection ALL
-	if (useAutoDetectedTSO || atomicLevel >= 1) && bits.UintSize >= 64 {
-		return *addr
-	} else {
-		return atomic.LoadUint64(addr)
-	}
-}
-
-// storeUint64 stores an uint64 value at the given address.
-// Note: Must be called with lock held to ensure safety.
-//
-//go:nosplit
-func storeUint64(addr *uint64, val uint64) {
-	//goland:noinspection ALL
-	if (useAutoDetectedTSO || atomicLevel >= 2) && bits.UintSize >= 64 {
-		*addr = val
-	} else {
-		atomic.StoreUint64(addr, val)
-	}
 }
 
 // noescape hides a pointer from escape analysis. noescape is

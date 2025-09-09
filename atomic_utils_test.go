@@ -10,13 +10,13 @@ func TestAtomicValue_Bool(t *testing.T) {
 	var av atomicValue[bool]
 
 	// 测试存储和加载 true
-	av.Store(true)
+	av.StoreNoWB(true)
 	if !av.Load() {
 		t.Errorf("Expected true, got %v", av.Load())
 	}
 
 	// 测试存储和加载 false
-	av.Store(false)
+	av.StoreNoWB(false)
 	if av.Load() {
 		t.Errorf("Expected false, got %v", av.Load())
 	}
@@ -28,7 +28,7 @@ func TestAtomicValue_Int8(t *testing.T) {
 
 	testValues := []int8{-128, -1, 0, 1, 127}
 	for _, val := range testValues {
-		av.Store(val)
+		av.StoreNoWB(val)
 		if av.Load() != val {
 			t.Errorf("Expected %v, got %v", val, av.Load())
 		}
@@ -41,7 +41,7 @@ func TestAtomicValue_Uint8(t *testing.T) {
 
 	testValues := []uint8{0, 1, 128, 255}
 	for _, val := range testValues {
-		av.Store(val)
+		av.StoreNoWB(val)
 		if av.Load() != val {
 			t.Errorf("Expected %v, got %v", val, av.Load())
 		}
@@ -54,7 +54,7 @@ func TestAtomicValue_Int16(t *testing.T) {
 
 	testValues := []int16{-32768, -1, 0, 1, 32767}
 	for _, val := range testValues {
-		av.Store(val)
+		av.StoreNoWB(val)
 		if av.Load() != val {
 			t.Errorf("Expected %v, got %v", val, av.Load())
 		}
@@ -67,7 +67,7 @@ func TestAtomicValue_Uint16(t *testing.T) {
 
 	testValues := []uint16{0, 1, 32768, 65535}
 	for _, val := range testValues {
-		av.Store(val)
+		av.StoreNoWB(val)
 		if av.Load() != val {
 			t.Errorf("Expected %v, got %v", val, av.Load())
 		}
@@ -80,7 +80,7 @@ func TestAtomicValue_Int32(t *testing.T) {
 
 	testValues := []int32{-2147483648, -1, 0, 1, 2147483647}
 	for _, val := range testValues {
-		av.Store(val)
+		av.StoreNoWB(val)
 		if av.Load() != val {
 			t.Errorf("Expected %v, got %v", val, av.Load())
 		}
@@ -93,7 +93,7 @@ func TestAtomicValue_Uint32(t *testing.T) {
 
 	testValues := []uint32{0, 1, 2147483648, 4294967295}
 	for _, val := range testValues {
-		av.Store(val)
+		av.StoreNoWB(val)
 		if av.Load() != val {
 			t.Errorf("Expected %v, got %v", val, av.Load())
 		}
@@ -106,7 +106,7 @@ func TestAtomicValue_Int64(t *testing.T) {
 
 	testValues := []int64{-9223372036854775808, -1, 0, 1, 9223372036854775807}
 	for _, val := range testValues {
-		av.Store(val)
+		av.StoreNoWB(val)
 		if av.Load() != val {
 			t.Errorf("Expected %v, got %v", val, av.Load())
 		}
@@ -119,7 +119,7 @@ func TestAtomicValue_Uint64(t *testing.T) {
 
 	testValues := []uint64{0, 1, 9223372036854775808, 18446744073709551615}
 	for _, val := range testValues {
-		av.Store(val)
+		av.StoreNoWB(val)
 		if av.Load() != val {
 			t.Errorf("Expected %v, got %v", val, av.Load())
 		}
@@ -132,7 +132,7 @@ func TestAtomicValue_Float32(t *testing.T) {
 
 	testValues := []float32{-3.14, 0.0, 3.14, 1.23e10}
 	for _, val := range testValues {
-		av.Store(val)
+		av.StoreNoWB(val)
 		if av.Load() != val {
 			t.Errorf("Expected %v, got %v", val, av.Load())
 		}
@@ -145,7 +145,7 @@ func TestAtomicValue_Float64(t *testing.T) {
 
 	testValues := []float64{-3.14159265359, 0.0, 3.14159265359, 1.23e100}
 	for _, val := range testValues {
-		av.Store(val)
+		av.StoreNoWB(val)
 		if av.Load() != val {
 			t.Errorf("Expected %v, got %v", val, av.Load())
 		}
@@ -157,7 +157,7 @@ func TestAtomicValue_Pointer(t *testing.T) {
 	var av atomicValue[*int]
 
 	// 测试 nil 指针
-	av.Store(nil)
+	av.StoreNoWB(nil)
 	if av.Load() != nil {
 		t.Errorf("Expected nil, got %v", av.Load())
 	}
@@ -165,7 +165,7 @@ func TestAtomicValue_Pointer(t *testing.T) {
 	// 测试非 nil 指针
 	val := 42
 	ptr := &val
-	av.Store(ptr)
+	av.StoreNoWB(ptr)
 	loadedPtr := av.Load()
 	if loadedPtr != ptr {
 		t.Errorf("Expected %p, got %p", ptr, loadedPtr)
@@ -197,7 +197,7 @@ func TestAtomicValue_SmallStruct(t *testing.T) {
 	}
 
 	for _, val := range testValues {
-		av.Store(val)
+		av.StoreNoWB(val)
 		loaded := av.Load()
 		if loaded.A != val.A || loaded.B != val.B {
 			t.Errorf("Expected %+v, got %+v", val, loaded)
@@ -282,7 +282,7 @@ func TestAtomicValue_Concurrent(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		go func(val int64) {
 			for j := 0; j < 1000; j++ {
-				av.Store(val)
+				av.StoreNoWB(val)
 				loaded := av.Load()
 				// 验证加载的值是某个有效值（可能不是刚存储的值，因为并发）
 				if loaded < 0 || loaded >= 10 {

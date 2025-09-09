@@ -231,7 +231,7 @@ findEntry:
 					newEntry.setHash(hash)
 				}
 				newEntry.Key = key
-				storePointer(
+				storePointerNoWB(
 					oldBucket.At(oldIdx),
 					unsafe.Pointer(newEntry),
 				)
@@ -239,12 +239,12 @@ findEntry:
 				return value, status
 			}
 			// Delete
-			storePointer(oldBucket.At(oldIdx), nil)
+			storePointerNoWB(oldBucket.At(oldIdx), nil)
 			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
 			if oldBucket == rootb {
 				rootb.UnlockWithMeta(newmetaw)
 			} else {
-				storeUint64(&oldBucket.meta, newmetaw)
+				storeUint64NoWB(&oldBucket.meta, newmetaw)
 				rootb.Unlock()
 			}
 			table.AddSize(bidx, -1)
@@ -279,11 +279,11 @@ findEntry:
 			// pointer so they won't observe a partially-initialized entry,
 			// and this reduces the window where meta is visible but pointer is
 			// still nil
-			storePointer(emptyBucket.At(emptyIdx), unsafe.Pointer(newEntry))
+			storePointerNoWB(emptyBucket.At(emptyIdx), unsafe.Pointer(newEntry))
 			if emptyBucket == rootb {
 				rootb.UnlockWithMeta(setByte(emptyBucket.meta, h2v, emptyIdx))
 			} else {
-				storeUint64(
+				storeUint64NoWB(
 					&emptyBucket.meta,
 					setByte(emptyBucket.meta, h2v, emptyIdx),
 				)
@@ -294,7 +294,7 @@ findEntry:
 		}
 
 		// No empty slot, create new bucket and insert
-		storePointer(&lastBucket.next, unsafe.Pointer(&bucketOf{
+		storePointerNoWB(&lastBucket.next, unsafe.Pointer(&bucketOf{
 			meta: setByte(emptyMeta, h2v, 0),
 			entries: [entriesPerMapOfBucket]unsafe.Pointer{
 				unsafe.Pointer(newEntry),

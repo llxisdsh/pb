@@ -8,10 +8,16 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 // TestFlatMapOf_BasicOperations tests basic Load and Process operations
 func TestFlatMapOf_BasicOperations(t *testing.T) {
+	var value atomicValue[bool]
+	if unsafe.Sizeof(value) != unsafe.Sizeof(uintptr(0)) {
+		t.Errorf("Expected atomicValue sizeof")
+	}
+
 	m := NewFlatMapOf[string, int]()
 
 	// Test empty map
@@ -615,11 +621,11 @@ func TestFlatMapOf_IsZero(t *testing.T) {
 // reading half old, half new). This detects correctness of the double-buffer
 // protocol under extreme contention.
 func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
-	type pair struct{ X, Y uint32 }
+	type pair struct{ X, Y uint16 }
 	m := NewFlatMapOf[int, pair]()
 
 	// Initialize key 0
-	m.Store(0, pair{X: 0, Y: ^uint32(0)})
+	m.Store(0, pair{X: 0, Y: ^uint16(0)})
 
 	var (
 		wg   sync.WaitGroup
@@ -639,7 +645,7 @@ func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
 					return
 				default:
 					s := atomic.AddUint32(&seq, 1)
-					val := pair{X: s, Y: ^s}
+					val := pair{X: uint16(s), Y: ^uint16(s)}
 					m.Process(
 						0,
 						func(old pair, loaded bool) (pair, ComputeOp, pair, bool) {
@@ -664,10 +670,12 @@ func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
 				default:
 					v, ok := m.Load(0)
 					if !ok {
-						t.Fatalf("key missing while stressed")
+						t.Errorf("key missing while stressed")
+						return
 					}
 					if v.Y != ^v.X {
-						t.Fatalf("torn read detected: %+v", v)
+						t.Errorf("torn read detected: %+v", v)
+						return
 					}
 				}
 			}
@@ -678,6 +686,7 @@ func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	close(stop)
 	wg.Wait()
+
 }
 
 // TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
@@ -708,9 +717,9 @@ func TestFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
 	// to
 	// increase observation probability.
 
-	m := NewFlatMapOf[string, uint64]()
+	m := NewFlatMapOf[string, uint32]()
 	const key = "k"
-	const insertedVal uint64 = 1 // 恒非零，便于区分“被清零”的值
+	const insertedVal uint32 = 1 // 恒非零，便于区分“被清零”的值
 
 	var (
 		anom uint64 // 统计 ok==true 且 value==0 的次数
@@ -783,7 +792,7 @@ func TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 	keys := make([]bigKey, N)
 	for i := 0; i < N; i++ {
 		// Maintain invariant: B == ^A
-		ai := uint64(i*2654435761 + 123456789)
+		ai := uint64(i*2147483647 + 123456789)
 		keys[i] = bigKey{A: ai, B: ^ai}
 		m.Store(keys[i], i)
 	}
