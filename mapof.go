@@ -636,6 +636,12 @@ func (m *MapOf[K, V]) InitWithOptions(
 	for _, o := range options {
 		o(c)
 	}
+	m.init(c)
+}
+
+func (m *MapOf[K, V]) init(
+	c *MapConfig,
+) *mapOfTable {
 
 	// parse interface
 	if c.KeyHash == nil {
@@ -660,12 +666,7 @@ func (m *MapOf[K, V]) InitWithOptions(
 		}
 	}
 
-	m.init(c)
-}
-
-func (m *MapOf[K, V]) init(
-	c *MapConfig,
-) *mapOfTable {
+	// perform initialization
 	m.seed = uintptr(rand.Uint64())
 	m.keyHash, m.valEqual, m.intKey = defaultHasher[K, V]()
 	if c.KeyHash != nil {
