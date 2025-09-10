@@ -36,6 +36,7 @@ type atomicUint64 struct {
 	atomic.Uint64
 }
 
+//go:nosplit
 func makeAtomicUint64(v uint64) atomicUint64 {
 	return *(*atomicUint64)(unsafe.Pointer(&v))
 }
