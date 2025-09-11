@@ -205,39 +205,6 @@ func TestAtomicValue_SmallStruct(t *testing.T) {
 	}
 }
 
-// 测试类型大小验证
-func TestTypeSizes(t *testing.T) {
-	tests := []struct {
-		name string
-		size uintptr
-	}{
-		{"bool", unsafe.Sizeof(bool(false))},
-		{"int8", unsafe.Sizeof(int8(0))},
-		{"uint8", unsafe.Sizeof(uint8(0))},
-		{"int16", unsafe.Sizeof(int16(0))},
-		{"uint16", unsafe.Sizeof(uint16(0))},
-		{"int32", unsafe.Sizeof(int32(0))},
-		{"uint32", unsafe.Sizeof(uint32(0))},
-		{"int64", unsafe.Sizeof(int64(0))},
-		{"uint64", unsafe.Sizeof(uint64(0))},
-		{"float32", unsafe.Sizeof(float32(0))},
-		{"float64", unsafe.Sizeof(float64(0))},
-		{"*int", unsafe.Sizeof((*int)(nil))},
-		{"SmallStruct", unsafe.Sizeof(SmallStruct{})},
-	}
-
-	uint64Size := unsafe.Sizeof(uint64(0))
-	t.Logf("uint64 size: %d bytes", uint64Size)
-
-	for _, test := range tests {
-		t.Logf("%s size: %d bytes", test.name, test.size)
-		if test.size > uint64Size {
-			t.Errorf("Type %s size %d exceeds uint64 size %d",
-				test.name, test.size, uint64Size)
-		}
-	}
-}
-
 func TestAtomicValue_Sizes(t *testing.T) {
 	tests := []struct {
 		name string
@@ -261,14 +228,14 @@ func TestAtomicValue_Sizes(t *testing.T) {
 		},
 	}
 
-	uint64Size := unsafe.Sizeof(uint64(0))
-	t.Logf("uint64 size: %d bytes", uint64Size)
+	uintptrSize := unsafe.Sizeof(uintptr(0))
+	// t.Logf("uint64 size: %d bytes", uintptrSize)
 
 	for _, test := range tests {
-		t.Logf("%s size: %d bytes", test.name, test.size)
-		if test.size > uint64Size {
-			t.Errorf("Type %s size %d exceeds uint64 size %d",
-				test.name, test.size, uint64Size)
+		// t.Logf("%s size: %d bytes", test.name, test.size)
+		if test.size != uintptrSize {
+			t.Errorf("Type %s size %d not equal uintptr size %d",
+				test.name, test.size, uintptrSize)
 		}
 	}
 }
