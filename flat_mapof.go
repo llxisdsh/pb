@@ -59,8 +59,7 @@ import (
 //   - This type shares hashing, constants, and low-level helpers with
 //     MapOf via the same package.
 type FlatMapOf[K comparable, V comparable] struct {
-	//lint:ignore U1000 prevents false sharing
-	pad [(CacheLineSize - unsafe.Sizeof(struct {
+	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_           noCopy
 		table       unsafe.Pointer
 		resizeState unsafe.Pointer
@@ -169,8 +168,7 @@ func NewFlatMapOf[K comparable, V comparable](
 }
 
 type flatTable[K comparable, V comparable] struct {
-	//lint:ignore U1000 prevents false sharing
-	pad [(CacheLineSize - unsafe.Sizeof(struct {
+	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		buckets     unsafeSlice[flatBucket[K, V]]
 		bucketsMask int
 		size        unsafeSlice[counterStripe]
@@ -609,8 +607,7 @@ func (m *FlatMapOf[K, V]) IsZero() bool {
 }
 
 type flatResizeState struct {
-	//lint:ignore U1000 prevents false sharing
-	pad [(CacheLineSize - unsafe.Sizeof(struct {
+	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		wg        sync.WaitGroup
 		table     unsafe.Pointer
 		newTable  unsafe.Pointer

@@ -92,8 +92,7 @@ const (
 // Notes:
 //   - MapOf must not be copied after first use.
 type MapOf[K comparable, V any] struct {
-	//lint:ignore U1000 prevents false sharing
-	pad [(CacheLineSize - unsafe.Sizeof(struct {
+	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_             noCopy
 		table         unsafe.Pointer
 		resizeState   unsafe.Pointer
@@ -386,8 +385,7 @@ type bucketOf struct {
 	meta uint64
 
 	// Cache line padding to prevent false sharing
-	//lint:ignore U1000 prevents false sharing
-	pad [(CacheLineSize - unsafe.Sizeof(struct {
+	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_       [0]int64
 		meta    uint64
 		entries [entriesPerMapOfBucket]unsafe.Pointer
@@ -452,8 +450,7 @@ func (b *bucketOf) At(i int) *unsafe.Pointer {
 
 // resizeState represents the current state of a resizing operation
 type resizeState struct {
-	//lint:ignore U1000 prevents false sharing
-	pad [(CacheLineSize - unsafe.Sizeof(struct {
+	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		wg        sync.WaitGroup
 		table     unsafe.Pointer
 		newTable  unsafe.Pointer
@@ -470,8 +467,7 @@ type resizeState struct {
 
 // mapOfTable represents the internal hash table structure.
 type mapOfTable struct {
-	//lint:ignore U1000 prevents false sharing
-	pad [(CacheLineSize - unsafe.Sizeof(struct {
+	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		buckets     unsafeSlice[bucketOf]
 		bucketsMask uintptr
 		size        unsafeSlice[counterStripe]

@@ -97,6 +97,7 @@ func loadUintptrNoRB(addr *uintptr) uintptr {
 // storeUintptrNoWB stores an uintptr value at the given address.
 // Note: Must be called with lock held to ensure safety.
 //
+//lint:ignore U1000
 //go:nosplit
 func storeUintptrNoWB(addr *uintptr, val uintptr) {
 	//goland:noinspection ALL
@@ -143,6 +144,7 @@ func loadUint32NoRB(addr *uint32) uint32 {
 // storeUint32NoWB stores an uint64 value at the given address.
 // Note: Must be called with lock held to ensure safety.
 //
+//lint:ignore U1000
 //go:nosplit
 func storeUint32NoWB(addr *uint32, val uint32) {
 	//goland:noinspection ALL
