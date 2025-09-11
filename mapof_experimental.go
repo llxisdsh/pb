@@ -97,7 +97,7 @@ func (m *MapOf[K, V]) ProcessEntryOptimistic(
 	key K,
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (V, bool) {
-	table := (*mapOfTable)(loadPointerNoRB(&m.table))
+	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	if table == nil {
 		table = m.initSlow()
 	}
@@ -112,11 +112,11 @@ func (m *MapOf[K, V]) ProcessEntryOptimistic(
 	rootb := table.buckets.At(bidx)
 	var loadedPre *EntryOf[K, V]
 findEntry:
-	for b := rootb; b != nil; b = (*bucketOf)(loadPointerNoRB(&b.next)) {
-		metaw := loadUint64NoRB(&b.meta)
+	for b := rootb; b != nil; b = (*bucketOf)(loadPointerNoMB(&b.next)) {
+		metaw := loadUint64NoMB(&b.meta)
 		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
 			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(loadPointerNoRB(b.At(idx))); e != nil {
+			if e := (*EntryOf[K, V])(loadPointerNoMB(b.At(idx))); e != nil {
 				if embeddedHash {
 					if e.getHash() == hash && e.Key == key {
 						loadedPre = e
@@ -147,13 +147,13 @@ findEntry:
 
 		// This is the first check, checking if there is a resize operation in
 		// progress before acquiring the bucket lock
-		if rs := (*resizeState)(loadPointerNoRB(&m.resizeState)); rs != nil &&
-			loadPointerNoRB(&rs.table) != nil /*skip init*/ &&
-			loadPointerNoRB(&rs.newTable) != nil /*skip if newTable is nil */ {
+		if rs := (*resizeState)(loadPointerNoMB(&m.resizeState)); rs != nil &&
+			loadPointerNoMB(&rs.table) != nil /*skip init*/ &&
+			loadPointerNoMB(&rs.newTable) != nil /*skip if newTable is nil */ {
 			rootb.Unlock()
 			// Wait for the current resize operation to complete
 			m.helpCopyAndWait(rs)
-			table = (*mapOfTable)(loadPointerNoRB(&m.table))
+			table = (*mapOfTable)(loadPointerNoMB(&m.table))
 			bidx = table.bucketsMask & h1v
 			rootb = table.buckets.At(bidx)
 			continue
@@ -162,7 +162,7 @@ findEntry:
 		// Verifies if table was replaced after lock acquisition.
 		// Needed since another goroutine may have resized the table
 		// between initial check and lock acquisition.
-		if newTable := (*mapOfTable)(loadPointerNoRB(&m.table)); table != newTable {
+		if newTable := (*mapOfTable)(loadPointerNoMB(&m.table)); table != newTable {
 			rootb.Unlock()
 			table = newTable
 			bidx = table.bucketsMask & h1v
@@ -231,7 +231,7 @@ findEntry:
 					newEntry.setHash(hash)
 				}
 				newEntry.Key = key
-				storePointerNoWB(
+				storePointerNoMB(
 					oldBucket.At(oldIdx),
 					unsafe.Pointer(newEntry),
 				)
@@ -239,19 +239,19 @@ findEntry:
 				return value, status
 			}
 			// Delete
-			storePointerNoWB(oldBucket.At(oldIdx), nil)
+			storePointerNoMB(oldBucket.At(oldIdx), nil)
 			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
 			if oldBucket == rootb {
 				rootb.UnlockWithMeta(newmetaw)
 			} else {
-				storeUint64NoWB(&oldBucket.meta, newmetaw)
+				storeUint64NoMB(&oldBucket.meta, newmetaw)
 				rootb.Unlock()
 			}
 			table.AddSize(bidx, -1)
 
 			// Check if table shrinking is needed
 			if m.shrinkEnabled && newmetaw&(^opByteMask) == emptyMeta &&
-				loadPointerNoRB(&m.resizeState) == nil {
+				loadPointerNoMB(&m.resizeState) == nil {
 				tableLen := table.bucketsMask + 1
 				if m.minTableLen < tableLen {
 					size := table.SumSize()
@@ -279,11 +279,11 @@ findEntry:
 			// pointer so they won't observe a partially-initialized entry,
 			// and this reduces the window where meta is visible but pointer is
 			// still nil
-			storePointerNoWB(emptyBucket.At(emptyIdx), unsafe.Pointer(newEntry))
+			storePointerNoMB(emptyBucket.At(emptyIdx), unsafe.Pointer(newEntry))
 			if emptyBucket == rootb {
 				rootb.UnlockWithMeta(setByte(emptyBucket.meta, h2v, emptyIdx))
 			} else {
-				storeUint64NoWB(
+				storeUint64NoMB(
 					&emptyBucket.meta,
 					setByte(emptyBucket.meta, h2v, emptyIdx),
 				)
@@ -294,7 +294,7 @@ findEntry:
 		}
 
 		// No empty slot, create new bucket and insert
-		storePointerNoWB(&lastBucket.next, unsafe.Pointer(&bucketOf{
+		storePointerNoMB(&lastBucket.next, unsafe.Pointer(&bucketOf{
 			meta: setByte(emptyMeta, h2v, 0),
 			entries: [entriesPerMapOfBucket]unsafe.Pointer{
 				unsafe.Pointer(newEntry),
@@ -304,7 +304,7 @@ findEntry:
 		table.AddSize(bidx, 1)
 
 		// Check if the table needs to grow
-		if loadPointerNoRB(&m.resizeState) == nil {
+		if loadPointerNoMB(&m.resizeState) == nil {
 			tableLen := table.bucketsMask + 1
 			size := table.SumSize()
 			const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
