@@ -638,7 +638,6 @@ func (m *MapOf[K, V]) InitWithOptions(
 func (m *MapOf[K, V]) init(
 	c *MapConfig,
 ) *mapOfTable {
-
 	// parse interface
 	if c.KeyHash == nil {
 		var zeroK K
@@ -833,7 +832,7 @@ func (m *MapOf[K, V]) processEntry(
 		// progress before acquiring the bucket lock
 		if rs := (*resizeState)(loadPointerNoRB(&m.resizeState)); rs != nil &&
 			loadPointerNoRB(&rs.table) != nil /*skip init*/ &&
-			loadPointerNoRB(&rs.newTable) != nil /*skip if newTable is nil */ {
+			loadPointerNoRB(&rs.newTable) != nil /*skip newTable is nil*/ {
 			rootb.Unlock()
 			// Wait for the current resize operation to complete
 			m.helpCopyAndWait(rs)
@@ -1040,7 +1039,7 @@ func (m *MapOf[K, V]) resize(
 		// Wait resize finish
 		if rs := (*resizeState)(loadPointerNoRB(&m.resizeState)); rs != nil {
 			if loadPointerNoRB(&rs.table) != nil /*skip init*/ &&
-				loadPointerNoRB(&rs.newTable) != nil /*skip if newTable is nil */ {
+				loadPointerNoRB(&rs.newTable) != nil /*skip newTable is nil */ {
 				m.helpCopyAndWait(rs)
 			} else {
 				rs.wg.Wait()
