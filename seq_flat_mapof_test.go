@@ -1,0 +1,432 @@
+package pb
+
+import (
+	"runtime"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestSeqFlatMapOf_BasicOperations(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int]()
+	if _, ok := m.Load(1); ok {
+		t.Fatalf("expected empty")
+	}
+	m.Store(1, 42)
+	if v, ok := m.Load(1); !ok || v != 42 {
+		t.Fatalf("load got %v %v", v, ok)
+	}
+	m.Store(1, 43)
+	if v, ok := m.Load(1); !ok || v != 43 {
+		t.Fatalf("load2 got %v %v", v, ok)
+	}
+	m.Delete(1)
+	if _, ok := m.Load(1); ok {
+		t.Fatalf("expected deleted")
+	}
+}
+
+func TestSeqFlatMapOf_WithZeroAsDeleted(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int](WithZeroAsDeleted())
+	m.Store(1, 1)
+	m.Store(2, 0)
+	if _, ok := m.Load(2); ok {
+		t.Fatalf("zero should be treated as deleted")
+	}
+	if v, ok := m.Load(1); !ok || v != 1 {
+		t.Fatalf("got %v %v", v, ok)
+	}
+}
+
+func TestSeqFlatMapOf_MultipleKeys(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int]()
+	for i := 0; i < 1000; i++ {
+		m.Store(i, i+10)
+	}
+	for i := 0; i < 1000; i++ {
+		if v, ok := m.Load(i); !ok || v != i+10 {
+			t.Fatalf("k=%d got %v %v", i, v, ok)
+		}
+	}
+}
+
+func TestSeqFlatMapOf_Concurrent(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int]()
+	var wg sync.WaitGroup
+	n := runtime.GOMAXPROCS(0)
+	wg.Add(n * 2)
+	for g := 0; g < n; g++ {
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < 2000; i++ {
+				m.Store(base*10000+i, i)
+			}
+		}(g)
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < 2000; i++ {
+				m.Load(base*10000 + i)
+			}
+		}(g)
+	}
+	wg.Wait()
+}
+
+func TestSeqFlatMapOf_Range(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int]()
+	for i := 0; i < 1000; i++ {
+		m.Store(i, i)
+	}
+	seen := 0
+	m.Range(func(k, v int) bool {
+		if v == 0 && k != 0 {
+			t.Fatalf("unexpected zero value published k=%d", k)
+		}
+		seen++
+		return true
+	})
+	if seen == 0 {
+		t.Fatalf("expected some entries")
+	}
+}
+
+func TestSeqFlatMapOf_LoadOrStore(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int]()
+	v, loaded := m.LoadOrStore(1, 10)
+	if loaded || v != 10 {
+		t.Fatalf("first store got %v %v", v, loaded)
+	}
+	v, loaded = m.LoadOrStore(1, 11)
+	if !loaded || v != 10 {
+		t.Fatalf("second los got %v %v", v, loaded)
+	}
+}
+
+func TestSeqFlatMapOf_Size_IsZero(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int]()
+	if !m.IsZero() {
+		t.Fatalf("expected zero")
+	}
+	m.Store(1, 2)
+	if m.Size() != 1 {
+		t.Fatalf("size got %d", m.Size())
+	}
+}
+
+// ---------------- Additional boundary/concurrency tests ----------------
+
+func TestSeqFlatMapOf_LoadOrStoreFn(t *testing.T) {
+	m := NewSeqFlatMapOf[string, int]()
+	var calls int32
+
+	// first: should call fn and store result
+	actual, loaded := m.LoadOrStoreFn("key1", func() int {
+		atomic.AddInt32(&calls, 1)
+		return 100
+	})
+	if loaded || actual != 100 {
+		t.Fatalf("first call: got (%v,%v)", actual, loaded)
+	}
+
+	// second: should not call fn
+	actual, loaded = m.LoadOrStoreFn("key1", func() int {
+		atomic.AddInt32(&calls, 1)
+		return 200
+	})
+	if !loaded || actual != 100 {
+		t.Fatalf("second call: got (%v,%v)", actual, loaded)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("valueFn called %d times, want 1", got)
+	}
+}
+
+func TestSeqFlatMapOf_LoadOrStoreFn_OnceUnderRace(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int]()
+	var called int32
+	var wg sync.WaitGroup
+	workers := max(2, runtime.GOMAXPROCS(0)) // Reduce Concurrency​
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = m.LoadOrStoreFn(999, func() int {
+				// widen race window
+				atomic.AddInt32(&called, 1)
+				time.Sleep(1 * time.Millisecond)
+				return 777
+			})
+		}()
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&called); got != 1 {
+		t.Fatalf("LoadOrStoreFn invoked %d times; want 1", got)
+	}
+	if v, ok := m.Load(999); !ok || v != 777 {
+		t.Fatalf("post state: got (%v,%v), want (777,true)", v, ok)
+	}
+}
+
+// Stress ABA-like rapid flips on the same key and ensure seqlock prevents torn
+// reads.
+func TestSeqFlatMapOf_SeqlockConsistency_StressABA(t *testing.T) {
+	type pair struct{ X, Y uint16 }
+	m := NewSeqFlatMapOf[int, pair]()
+
+	m.Store(0, pair{X: 0, Y: ^uint16(0)})
+
+	var (
+		wg   sync.WaitGroup
+		stop = make(chan struct{})
+		seq  uint32
+	)
+
+	writerN := 2 // Reduce Concurrency​
+	for w := 0; w < writerN; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					s := atomic.AddUint32(&seq, 1)
+					val := pair{X: uint16(s), Y: ^uint16(s)}
+					m.Process(
+						0,
+						func(old pair, loaded bool) (pair, ComputeOp, pair, bool) {
+							return val, UpdateOp, val, true
+						},
+					)
+				}
+			}
+		}()
+	}
+
+	readerN := 4 // Reduce Concurrency​
+	for r := 0; r < readerN; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					v, ok := m.Load(0)
+					if !ok {
+						t.Errorf("key missing while stressed")
+						return
+					}
+					if v.Y != ^v.X {
+						t.Errorf("torn read detected: %+v", v)
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	time.Sleep(150 * time.Millisecond) // Reduce Duration​
+	close(stop)
+	wg.Wait()
+}
+
+// Load/Delete race semantics: under seqlock, readers should not observe
+// ok==true with zero value.
+func TestSeqFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
+	m := NewSeqFlatMapOf[string, uint32]()
+	const key = "k"
+	const insertedVal uint32 = 1
+
+	var (
+		anom uint64
+		stop uint32
+	)
+
+	readers := max(2, runtime.GOMAXPROCS(0)) // Reduce Concurrency​
+	dur := 500 * time.Millisecond            // Reduce Duration​
+
+	var wg sync.WaitGroup
+	wg.Add(readers + 1)
+
+	go func() {
+		defer wg.Done()
+		deadline := time.Now().Add(dur)
+		for time.Now().Before(deadline) {
+			m.Store(key, insertedVal)
+			runtime.Gosched()
+			m.Delete(key)
+			runtime.Gosched()
+		}
+		atomic.StoreUint32(&stop, 1)
+	}()
+
+	for i := 0; i < readers; i++ {
+		go func() {
+			defer wg.Done()
+			for atomic.LoadUint32(&stop) == 0 {
+				v, ok := m.Load(key)
+				if ok && v == 0 {
+					atomic.AddUint64(&anom, 1)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	if anom > 0 {
+		t.Fatalf(
+			"Load/Delete race: observed ok==true && value==0 %d times",
+			anom,
+		)
+	}
+}
+
+// Key torn-read stress: delete/re-insert big keys under load and ensure key
+// invariants hold.
+func TestSeqFlatMapOf_KeyTornRead_Stress(t *testing.T) {
+	type bigKey struct{ A, B uint64 }
+	m := NewSeqFlatMapOf[bigKey, int]()
+
+	const N = 256 // Reduce Scale​
+	keys := make([]bigKey, N)
+	for i := 0; i < N; i++ {
+		ai := uint64(i*2147483647 + 123456789)
+		keys[i] = bigKey{A: ai, B: ^ai}
+		m.Store(keys[i], i)
+	}
+
+	var (
+		wg           sync.WaitGroup
+		stop         = make(chan struct{})
+		foundTornKey atomic.Bool
+	)
+
+	readerN := 4
+	wg.Add(readerN)
+	for r := 0; r < readerN; r++ {
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					m.Range(func(k bigKey, _ int) bool {
+						if k.B != ^k.A {
+							t.Logf("torn key: %v", k)
+							foundTornKey.Store(true)
+							return false
+						}
+						return true
+					})
+				}
+			}
+		}()
+	}
+
+	loadN := 2
+	wg.Add(loadN)
+	for r := 0; r < loadN; r++ {
+		go func(id int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					for i := id; i < N; i += loadN {
+						m.Load(keys[i])
+					}
+				}
+			}
+		}(r)
+	}
+
+	writerN := 1
+	wg.Add(writerN)
+	for w := 0; w < writerN; w++ {
+		go func(offset int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					for i := offset; i < N; i += writerN {
+						k := keys[i]
+						m.Process(
+							k,
+							func(old int, loaded bool) (int, ComputeOp, int, bool) { return 0, DeleteOp, 0, false },
+						)
+						m.Process(
+							k,
+							func(old int, loaded bool) (int, ComputeOp, int, bool) { return i, UpdateOp, i, true },
+						)
+					}
+					runtime.Gosched()
+				}
+			}
+		}(w)
+	}
+
+	dur := 300 * time.Millisecond // Reduce Duration​
+	timer := time.NewTimer(dur)
+	<-timer.C
+	close(stop)
+	wg.Wait()
+
+	if foundTornKey.Load() {
+		t.Fatalf(
+			"detected possible torn read of key: invariant k.B == ^k.A violated under concurrency",
+		)
+	}
+}
+
+// WithZeroAsDeleted + LoadOrStore family semantics
+func TestSeqFlatMapOf_WithZeroAsDeleted_LoadOrStore(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int](WithZeroAsDeleted())
+	m.Store(1, 0)
+	// zero is treated as deleted; LoadOrStore should insert new value
+	v, loaded := m.LoadOrStore(1, 5)
+	if loaded || v != 5 {
+		t.Fatalf("got (%v,%v), want (5,false)", v, loaded)
+	}
+	// next call should see loaded=true with stored value
+	v, loaded = m.LoadOrStore(1, 9)
+	if !loaded || v != 5 {
+		t.Fatalf("got (%v,%v), want (5,true)", v, loaded)
+	}
+
+	// LoadOrStoreFn variant also respects zero-as-deleted
+	calls := int32(0)
+	v, loaded = m.LoadOrStoreFn(
+		2,
+		func() int { atomic.AddInt32(&calls, 1); return 0 },
+	)
+	// valueFn returns zero, which is treated as deleted -> still considered
+	// inserted, but Load should not see it
+	if loaded {
+		t.Fatalf(
+			"expected loaded=false when inserting zero value under zero-as-deleted",
+		)
+	}
+	if _, ok := m.Load(2); ok {
+		t.Fatalf("zero value must be logically deleted")
+	}
+	// now store non-zero via LOSF should compute once
+	v, loaded = m.LoadOrStoreFn(
+		2,
+		func() int { atomic.AddInt32(&calls, 1); return 7 },
+	)
+	if loaded || v != 7 {
+		t.Fatalf("got (%v,%v), want (7,false)", v, loaded)
+	}
+	if got := atomic.LoadInt32(&calls); got != 2 {
+		t.Fatalf("calls=%d, want 2", got)
+	}
+}

@@ -37,3 +37,18 @@ func (e *flatEntry[K, V]) getHash() uintptr {
 func (e *flatEntry[K, V]) setHash(h uintptr) {
 	e.hash = h
 }
+
+// seqFlatEntry is a flat map entry.
+type seqFlatEntry[K comparable, V comparable] struct {
+	key   K
+	value V
+	hash  uintptr
+}
+
+func (e *seqFlatEntry[K, V]) getHash() uintptr {
+	return e.hash
+}
+
+func (e *seqFlatEntry[K, V]) setHash(h uintptr) {
+	e.hash = h
+}

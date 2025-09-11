@@ -16,7 +16,7 @@ func (e *EntryOf[K, V]) getHash() uintptr {
 }
 
 //go:nosplit
-func (e *EntryOf[K, V]) setHash(h uintptr) {
+func (e *EntryOf[K, V]) setHash(uintptr) {
 }
 
 // flatEntry is a flat map entry.
@@ -31,5 +31,20 @@ func (e *flatEntry[K, V]) getHash() uintptr {
 }
 
 //go:nosplit
-func (e *flatEntry[K, V]) setHash(h uintptr) {
+func (e *flatEntry[K, V]) setHash(uintptr) {
+}
+
+// seqFlatEntry is a flat map entry.
+type seqFlatEntry[K comparable, V comparable] struct {
+	key   K
+	value V
+}
+
+// getHash is a no-op for non-embedded-hash build.
+func (e *seqFlatEntry[K, V]) getHash() uintptr {
+	return 0
+}
+
+// setHash is a no-op for non-embedded-hash build.
+func (e *seqFlatEntry[K, V]) setHash(uintptr) {
 }
