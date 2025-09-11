@@ -572,6 +572,24 @@ func (m *FlatMapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 	)
 }
 
+// LoadOrStoreFn loads the value for a key if present.
+// Otherwise, it stores and returns the value returned by valueFn.
+// The loaded result is true if the value was loaded, false if stored.
+func (m *FlatMapOf[K, V]) LoadOrStoreFn(key K, valueFn func() V) (actual V, loaded bool) {
+	if v, ok := m.Load(key); ok {
+		return v, true
+	}
+
+	return m.Process(key,
+		func(old V, loaded bool) (V, ComputeOp, V, bool) {
+			if loaded {
+				return old, CancelOp, old, loaded
+			}
+			return valueFn(), UpdateOp, old, loaded
+		},
+	)
+}
+
 // Delete deletes the value for a key.
 func (m *FlatMapOf[K, V]) Delete(key K) {
 	m.Process(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {

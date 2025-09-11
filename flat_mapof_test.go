@@ -459,6 +459,28 @@ func TestFlatMapOf_LoadOrStore(t *testing.T) {
 	}
 }
 
+// TestFlatMapOf_LoadOrStoreFn tests the LoadOrStoreFn method
+func TestFlatMapOf_LoadOrStoreFn(t *testing.T) {
+	m := NewFlatMapOf[string, int]()
+
+	// Test store new key
+	actual, loaded := m.LoadOrStoreFn("key1", func() int { return 100 })
+	if loaded || actual != 0 {
+		t.Errorf("Expected (0, false), got (%v, %v)", actual, loaded)
+	}
+
+	// Test load existing key
+	actual, loaded = m.LoadOrStoreFn("key1", func() int { return 200 })
+	if !loaded || actual != 100 {
+		t.Errorf("Expected (100, true), got (%v, %v)", actual, loaded)
+	}
+
+	// Verify value wasn't changed
+	if val, ok := m.Load("key1"); !ok || val != 100 {
+		t.Errorf("Expected (100, true), got (%v, %v)", val, ok)
+	}
+}
+
 // TestFlatMapOf_Range tests the Range method
 func TestFlatMapOf_Range(t *testing.T) {
 	m := NewFlatMapOf[int, *string]()
