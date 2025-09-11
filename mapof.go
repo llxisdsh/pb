@@ -2896,7 +2896,7 @@ func firstMarkedByteIndex(w uint64) int {
 
 // markZeroBytes implements SWAR (SIMD Within A Register) byte search.
 // It may produce false positives (e.g., for 0x0100), so results should be
-// verified. Returns a uint64 with the most significant bit of each byte set if
+// verified. Returns an uint64 with the most significant bit of each byte set if
 // that byte is zero.
 //
 // Notes:
@@ -3146,9 +3146,11 @@ func defaultHasher[K comparable, V any]() (
 			if kType.Elem().Kind() == reflect.Uint8 {
 				return hashString, valEqual, false
 			}
+			return keyHash, valEqual, false
+		default:
+			return keyHash, valEqual, false
 		}
 	}
-	return keyHash, valEqual, false
 }
 
 //go:nosplit

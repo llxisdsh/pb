@@ -262,7 +262,6 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					continue
 				}
 				metaw := b.meta.Load()
-				okIter := true
 				for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 					idx := firstMarkedByteIndex(markedw)
 					e := b.At(idx)
@@ -274,7 +273,7 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					}
 				}
 				s2 := b.seq.Load()
-				if s1 == s2 && (s2&1) == 0 && okIter {
+				if s1 == s2 && (s2&1) == 0 {
 					break
 				}
 			}
