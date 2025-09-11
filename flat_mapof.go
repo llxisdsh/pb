@@ -419,20 +419,12 @@ func (m *FlatMapOf[K, V]) Process(
 				if v := e.value.raw; m.valueIsValid(v) {
 					if embeddedHash {
 						if e.getHash() == hash && e.key == key {
-							oldB = b
-							oldIdx = idx
-							oldMeta = metaw
-							oldVal = v
-							loaded = true
+							oldB, oldIdx, oldMeta, oldVal, loaded = b, idx, metaw, v, true
 							break findLoop
 						}
 					} else {
 						if e.key == key {
-							oldB = b
-							oldIdx = idx
-							oldMeta = metaw
-							oldVal = v
-							loaded = true
+							oldB, oldIdx, oldMeta, oldVal, loaded = b, idx, metaw, v, true
 							break findLoop
 						}
 					}

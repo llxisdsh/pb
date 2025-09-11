@@ -867,18 +867,12 @@ func (m *MapOf[K, V]) processEntry(
 				if e := (*EntryOf[K, V])(*b.At(idx)); e != nil {
 					if embeddedHash {
 						if e.getHash() == hash && e.Key == *key {
-							oldEntry = e
-							oldBucket = b
-							oldIdx = idx
-							oldMeta = metaw
+							oldEntry, oldBucket, oldIdx, oldMeta = e, b, idx, metaw
 							break findLoop
 						}
 					} else {
 						if e.Key == *key {
-							oldEntry = e
-							oldBucket = b
-							oldIdx = idx
-							oldMeta = metaw
+							oldEntry, oldBucket, oldIdx, oldMeta = e, b, idx, metaw
 							break findLoop
 						}
 					}
