@@ -5,6 +5,7 @@ import (
 	"math/rand"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -166,7 +167,7 @@ func BenchmarkFlatMapOf_Resize(b *testing.B) {
 				}
 				// capture initial table length
 				getLen := func() int {
-					table := (*flatTable[int, int])(loadPointer(&m.table))
+					table := (*flatTable[int, int])(atomic.LoadPointer(&m.table))
 					if table == nil {
 						return 0
 					}
@@ -267,7 +268,7 @@ func BenchmarkFlatMapOf_ConcurrentResize(b *testing.B) {
 		}
 
 		getLen := func() int {
-			table := (*flatTable[int, int])(loadPointer(&m.table))
+			table := (*flatTable[int, int])(atomic.LoadPointer(&m.table))
 			if table == nil {
 				return 0
 			}

@@ -816,6 +816,7 @@ func TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 				default:
 					m.Range(func(k bigKey, _ int) bool {
 						if k.B != ^k.A {
+							t.Logf("torn key: %v", k)
 							foundTornKey.Store(true)
 							return false
 						}

@@ -13,6 +13,7 @@ mapof_opt_cachelinesize.go ^
 mapof_opt_atomiclevel.go ^
 mapof_opt_enablepadding_off.go ^
 mapof_opt_embeddedhash_off.go ^
+atomic_utils.go ^
  -c -o "%OUTPUT%"
  
 if %ERRORLEVEL% neq 0 (
