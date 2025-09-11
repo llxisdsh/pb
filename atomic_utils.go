@@ -2,8 +2,6 @@ package pb
 
 import (
 	"fmt"
-	"math/bits"
-	"runtime"
 	"sync/atomic"
 	"unsafe"
 )
@@ -54,103 +52,4 @@ func makeAtomicUint64(v uint64) atomicUint64 {
 //go:nosplit
 func (a *atomicUint64) Raw() *uint64 {
 	return (*uint64)(unsafe.Pointer(a))
-}
-
-//goland:noinspection ALL
-const useAutoDetectedTSO = atomicLevel == -1 &&
-	(runtime.GOARCH == "amd64" || runtime.GOARCH == "386" ||
-		runtime.GOARCH == "s390x" || runtime.GOARCH == "s390")
-
-//go:nosplit
-func loadPointerNoRB(addr *unsafe.Pointer) unsafe.Pointer {
-	//goland:noinspection ALL
-	if useAutoDetectedTSO || atomicLevel >= 1 {
-		return *addr
-	} else {
-		return atomic.LoadPointer(addr)
-	}
-}
-
-// storePointerNoWB stores a pointer value at the given address.
-// Note: Must be called with lock held to ensure safety.
-//
-//go:nosplit
-func storePointerNoWB(addr *unsafe.Pointer, val unsafe.Pointer) {
-	//goland:noinspection ALL
-	if useAutoDetectedTSO || atomicLevel >= 2 {
-		*addr = val
-	} else {
-		atomic.StorePointer(addr, val)
-	}
-}
-
-//go:nosplit
-func loadUintptrNoRB(addr *uintptr) uintptr {
-	//goland:noinspection ALL
-	if useAutoDetectedTSO || atomicLevel >= 1 {
-		return *addr
-	} else {
-		return atomic.LoadUintptr(addr)
-	}
-}
-
-// storeUintptrNoWB stores an uintptr value at the given address.
-// Note: Must be called with lock held to ensure safety.
-//
-//lint:ignore U1000
-//go:nosplit
-func storeUintptrNoWB(addr *uintptr, val uintptr) {
-	//goland:noinspection ALL
-	if useAutoDetectedTSO || atomicLevel >= 2 {
-		*addr = val
-	} else {
-		atomic.StoreUintptr(addr, val)
-	}
-}
-
-//go:nosplit
-func loadUint64NoRB(addr *uint64) uint64 {
-	//goland:noinspection ALL
-	if (useAutoDetectedTSO || atomicLevel >= 1) && bits.UintSize >= 64 {
-		return *addr
-	} else {
-		return atomic.LoadUint64(addr)
-	}
-}
-
-// storeUint64NoWB stores an uint64 value at the given address.
-// Note: Must be called with lock held to ensure safety.
-//
-//go:nosplit
-func storeUint64NoWB(addr *uint64, val uint64) {
-	//goland:noinspection ALL
-	if (useAutoDetectedTSO || atomicLevel >= 2) && bits.UintSize >= 64 {
-		*addr = val
-	} else {
-		atomic.StoreUint64(addr, val)
-	}
-}
-
-//go:nosplit
-func loadUint32NoRB(addr *uint32) uint32 {
-	//goland:noinspection ALL
-	if (useAutoDetectedTSO || atomicLevel >= 1) && bits.UintSize >= 64 {
-		return *addr
-	} else {
-		return atomic.LoadUint32(addr)
-	}
-}
-
-// storeUint32NoWB stores an uint64 value at the given address.
-// Note: Must be called with lock held to ensure safety.
-//
-//lint:ignore U1000
-//go:nosplit
-func storeUint32NoWB(addr *uint32, val uint32) {
-	//goland:noinspection ALL
-	if (useAutoDetectedTSO || atomicLevel >= 2) && bits.UintSize >= 64 {
-		*addr = val
-	} else {
-		atomic.StoreUint32(addr, val)
-	}
 }
