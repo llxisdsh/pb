@@ -172,10 +172,10 @@ func TestSeqFlatMapOf_LoadOrStoreFn_OnceUnderRace(t *testing.T) {
 // Stress ABA-like rapid flips on the same key and ensure seqlock prevents torn
 // reads.
 func TestSeqFlatMapOf_SeqlockConsistency_StressABA(t *testing.T) {
-	type pair struct{ X, Y uint16 }
+	type pair struct{ X, Y uint64 }
 	m := NewSeqFlatMapOf[int, pair]()
 
-	m.Store(0, pair{X: 0, Y: ^uint16(0)})
+	m.Store(0, pair{X: 0, Y: ^uint64(0)})
 
 	var (
 		wg   sync.WaitGroup
@@ -183,7 +183,7 @@ func TestSeqFlatMapOf_SeqlockConsistency_StressABA(t *testing.T) {
 		seq  uint32
 	)
 
-	writerN := 2 // Reduce Concurrency​
+	writerN := 4 // Reduce Concurrency​
 	for w := 0; w < writerN; w++ {
 		wg.Add(1)
 		go func() {
@@ -194,7 +194,7 @@ func TestSeqFlatMapOf_SeqlockConsistency_StressABA(t *testing.T) {
 					return
 				default:
 					s := atomic.AddUint32(&seq, 1)
-					val := pair{X: uint16(s), Y: ^uint16(s)}
+					val := pair{X: uint64(s), Y: ^uint64(s)}
 					m.Process(
 						0,
 						func(old pair, loaded bool) (pair, ComputeOp, pair, bool) {
@@ -347,7 +347,7 @@ func TestSeqFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 		}(r)
 	}
 
-	writerN := 1
+	writerN := 4
 	wg.Add(writerN)
 	for w := 0; w < writerN; w++ {
 		go func(offset int) {

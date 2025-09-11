@@ -257,6 +257,7 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	return
 
 fallback:
+	// fallback: find entry under lock
 	rootB.Lock()
 	for b := rootB; b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
 		metaw := *b.meta.Raw()
@@ -289,32 +290,33 @@ fallback:
 
 // Range iterates all entries using per-bucket seqlock reads.
 func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
+	var s1, s2 uint64
+	var metaw uint64
+	// Buffer only indices first; yield after s2 verification to avoid duplicates and extra copies
+	var tmpIdx [entriesPerMapOfBucket]uint8
+	var idxs []uint8
+	// Reusable cache for fallback scenarios to avoid yield calls under lock
+	type kvEntry struct {
+		k K
+		v V
+	}
+	var fallbackCache [entriesPerMapOfBucket]kvEntry
+	var cacheCount int
 	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
 	for i := 0; i <= table.bucketsMask; i++ {
 		rootB := table.buckets.At(i)
 		for b := rootB; b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
 			spins := 0
 			for {
-				s1 := b.seq.Load()
+				s1 = b.seq.Load()
 				if (s1 & 1) != 0 {
 					if trySpin(&spins) {
 						continue
 					}
-					// fallback snapshot for this bucket (consistent, no duplicates)
-					rootB.Lock()
-					spairs := m.snapshotBucketLocked(b)
-					rootB.Unlock()
-					for _, p := range spairs {
-						if !yield(p.k, p.v) {
-							return
-						}
-					}
-					break
+					goto fallback
 				}
-				metaw := b.meta.Load()
-				// Buffer only indices first; yield after s2 verification to avoid duplicates and extra copies
-				var tmpIdx [entriesPerMapOfBucket]uint8
-				idxs := tmpIdx[:0]
+				metaw = b.meta.Load()
+				idxs = tmpIdx[:0]
 				for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 					idx := firstMarkedByteIndex(markedw)
 					e := b.At(idx)
@@ -323,7 +325,7 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 						idxs = append(idxs, uint8(idx))
 					}
 				}
-				s2 := b.seq.Load()
+				s2 = b.seq.Load()
 				if s1 == s2 && (s2&1) == 0 {
 					for _, bi := range idxs {
 						ei := int(bi)
@@ -340,12 +342,26 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 				if trySpin(&spins) {
 					continue
 				}
-				// fallback snapshot for this bucket (consistent, no duplicates)
+
+			fallback:
+				// fallback: collect entries under lock, yield outside lock
+				cacheCount = 0
 				rootB.Lock()
-				spairs := m.snapshotBucketLocked(b)
+				metaw = *b.meta.Raw()
+				for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
+					idx := firstMarkedByteIndex(markedw)
+					e := b.At(idx)
+					v := e.value
+					if m.valueIsValid(v) {
+						fallbackCache[cacheCount] = kvEntry{k: e.key, v: v}
+						cacheCount++
+					}
+				}
 				rootB.Unlock()
-				for _, p := range spairs {
-					if !yield(p.k, p.v) {
+				// yield outside lock
+				for j := 0; j < cacheCount; j++ {
+					e := &fallbackCache[j]
+					if !yield(e.k, e.v) {
 						return
 					}
 				}
@@ -763,28 +779,6 @@ func (m *SeqFlatMapOf[K, V]) copySeqFlatBucketRange(
 	if copied != 0 {
 		newTable.AddSize(start, copied)
 	}
-}
-
-type kvPair[K comparable, V comparable] struct {
-	k K
-	v V
-}
-
-// Assumes caller holds the root bucket lock protecting this bucket
-func (m *SeqFlatMapOf[K, V]) snapshotBucketLocked(
-	b *seqFlatBucket[K, V],
-) []kvPair[K, V] {
-	pairs := make([]kvPair[K, V], 0, entriesPerMapOfBucket)
-	metaw := *b.meta.Raw()
-	for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-		idx := firstMarkedByteIndex(markedw)
-		e := b.At(idx)
-		v := e.value
-		if m.valueIsValid(v) {
-			pairs = append(pairs, kvPair[K, V]{k: e.key, v: v})
-		}
-	}
-	return pairs
 }
 
 //go:nosplit
