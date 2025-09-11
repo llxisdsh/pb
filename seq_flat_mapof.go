@@ -24,6 +24,9 @@ import (
 //   - Resize: same approach as FlatMapOf; copy under root bucket lock.
 //
 // WithZeroAsDeleted is supported like FlatMapOf.
+//
+// EXPERIMENTAL: this implementation is experimental; APIs and
+// concurrency semantics may evolve.
 type SeqFlatMapOf[K comparable, V comparable] struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_             noCopy
@@ -784,7 +787,7 @@ func (m *SeqFlatMapOf[K, V]) copySeqFlatBucketRange(
 //go:nosplit
 func trySpin(spins *int) bool {
 	if runtime_canSpin(*spins) {
-		*spins += 1
+		*spins++
 		runtime_doSpin()
 		return true
 	}

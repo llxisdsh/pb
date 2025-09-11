@@ -862,6 +862,43 @@ When to use which
 
 ---
 
+# pb.SeqFlatMapOf
+
+**pb.SeqFlatMapOf** is a seqlock-based flat hash map that provides **optimistic lock-free reads** with excellent Range performance. It combines the flat storage benefits of FlatMapOf with per-bucket seqlock for enhanced read concurrency.
+
+## 🎯 Key Features
+
+- **Bucket-level Seqlock**: Optimistic reads with minimal overhead
+- **Optimistic Read Path**: Lock-free reads with automatic retry on conflicts
+- **Fallback Locking**: Graceful degradation to per-bucket locking under write contention or spin failures
+- **Stack-cached Range**: Collects data on stack, yields outside locks for better Range experience
+- **Consistent API**: Full compatibility with FlatMapOf interface
+
+## ⚖️ Trade-offs
+
+**Advantages**
+- Lower read path overhead compared to traditional locking
+- Excellent Range iteration performance with reduced lock contention
+- Consistent API with other pb map implementations
+
+**Limitations**
+- No automatic shrinking support (similar to FlatMapOf)
+- Slightly larger bucket structure due to seqlock metadata
+- Range provides per-bucket consistency, not global snapshot
+
+Behavior notes
+- Seqlock prevents torn reads; readers retry on write conflicts.
+- Optional zero-as-deleted read semantics via `WithZeroAsDeleted`.
+  Default is disabled; zero values are treated as normal values.
+
+When to use which
+- Pick `SeqFlatMapOf` for read-heavy workloads with frequent Range operations
+  where optimistic concurrency benefits outweigh the overhead.
+- Pick `FlatMapOf` for write-heavy workloads or when global consistency is required.
+- Pick `MapOf` when memory efficiency and shrinking support are priorities.
+
+---
+
 # pb.HashTrieMap
 
 

@@ -10,9 +10,6 @@ import (
 
 // FlatMapOf implements a flat hash map optimized for small K/V.
 //
-// EXPERIMENTAL: this implementation is experimental; APIs and
-// concurrency semantics may evolve.
-//
 // Design highlights:
 //   - Read path is lock-free: readers locate slots via meta (h2 byte)
 //     and read values through atomicValue[V] (<= 8B) for non-torn loads.
@@ -58,6 +55,9 @@ import (
 // Notes:
 //   - This type shares hashing, constants, and low-level helpers with
 //     MapOf via the same package.
+//
+// EXPERIMENTAL: this implementation is experimental; APIs and
+// concurrency semantics may evolve.
 type FlatMapOf[K comparable, V comparable] struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_           noCopy
