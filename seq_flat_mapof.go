@@ -206,11 +206,15 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 	bidx := table.bucketsMask & h1(hash, m.intKey)
-	for b := table.buckets.At(bidx); b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
+	rootB := table.buckets.At(bidx)
+	for b := rootB; b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
+		spins := 0
 		for {
 			s1 := b.seq.Load()
 			if (s1 & 1) != 0 { // writer in progress
-				continue
+				if !trySpin(&spins) {
+					goto fallback
+				}
 			}
 			metaw := b.meta.Load()
 			for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
@@ -226,8 +230,7 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 							}
 							return value, false
 						}
-						// else retry bucket
-						break
+						break // retry bucket
 					}
 				} else {
 					if e.key == key {
@@ -238,7 +241,7 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 							}
 							return value, false
 						}
-						break
+						break // retry bucket
 					}
 				}
 			}
@@ -246,8 +249,41 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 			if s1 == s2 && (s2&1) == 0 {
 				break
 			}
+			if !trySpin(&spins) {
+				goto fallback
+			}
 		}
 	}
+	return
+
+fallback:
+	rootB.Lock()
+	for b := rootB; b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
+		metaw := *b.meta.Raw()
+		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
+			idx := firstMarkedByteIndex(markedw)
+			e := b.At(idx)
+			v := e.value
+			if embeddedHash {
+				if e.getHash() == hash && e.key == key {
+					rootB.Unlock()
+					if m.valueIsValid(v) {
+						return v, true
+					}
+					return
+				}
+			} else {
+				if e.key == key {
+					rootB.Unlock()
+					if m.valueIsValid(v) {
+						return v, true
+					}
+					return
+				}
+			}
+		}
+	}
+	rootB.Unlock()
 	return
 }
 
@@ -255,27 +291,65 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
 	for i := 0; i <= table.bucketsMask; i++ {
-		for b := table.buckets.At(i); b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
+		rootB := table.buckets.At(i)
+		for b := rootB; b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
+			spins := 0
 			for {
 				s1 := b.seq.Load()
 				if (s1 & 1) != 0 {
-					continue
+					if trySpin(&spins) {
+						continue
+					}
+					// fallback snapshot for this bucket (consistent, no duplicates)
+					rootB.Lock()
+					spairs := m.snapshotBucketLocked(b)
+					rootB.Unlock()
+					for _, p := range spairs {
+						if !yield(p.k, p.v) {
+							return
+						}
+					}
+					break
 				}
 				metaw := b.meta.Load()
+				// Buffer only indices first; yield after s2 verification to avoid duplicates and extra copies
+				var tmpIdx [entriesPerMapOfBucket]uint8
+				idxs := tmpIdx[:0]
 				for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 					idx := firstMarkedByteIndex(markedw)
 					e := b.At(idx)
 					v := e.value
 					if m.valueIsValid(v) {
-						if !yield(e.key, v) {
-							return
-						}
+						idxs = append(idxs, uint8(idx))
 					}
 				}
 				s2 := b.seq.Load()
 				if s1 == s2 && (s2&1) == 0 {
+					for _, bi := range idxs {
+						ei := int(bi)
+						e := b.At(ei)
+						v := e.value
+						if m.valueIsValid(v) {
+							if !yield(e.key, v) {
+								return
+							}
+						}
+					}
 					break
 				}
+				if trySpin(&spins) {
+					continue
+				}
+				// fallback snapshot for this bucket (consistent, no duplicates)
+				rootB.Lock()
+				spairs := m.snapshotBucketLocked(b)
+				rootB.Unlock()
+				for _, p := range spairs {
+					if !yield(p.k, p.v) {
+						return
+					}
+				}
+				break
 			}
 		}
 	}
@@ -689,4 +763,36 @@ func (m *SeqFlatMapOf[K, V]) copySeqFlatBucketRange(
 	if copied != 0 {
 		newTable.AddSize(start, copied)
 	}
+}
+
+type kvPair[K comparable, V comparable] struct {
+	k K
+	v V
+}
+
+// Assumes caller holds the root bucket lock protecting this bucket
+func (m *SeqFlatMapOf[K, V]) snapshotBucketLocked(
+	b *seqFlatBucket[K, V],
+) []kvPair[K, V] {
+	pairs := make([]kvPair[K, V], 0, entriesPerMapOfBucket)
+	metaw := *b.meta.Raw()
+	for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
+		idx := firstMarkedByteIndex(markedw)
+		e := b.At(idx)
+		v := e.value
+		if m.valueIsValid(v) {
+			pairs = append(pairs, kvPair[K, V]{k: e.key, v: v})
+		}
+	}
+	return pairs
+}
+
+//go:nosplit
+func trySpin(spins *int) bool {
+	if runtime_canSpin(*spins) {
+		*spins += 1
+		runtime_doSpin()
+		return true
+	}
+	return false
 }

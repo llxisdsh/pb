@@ -430,3 +430,48 @@ func TestSeqFlatMapOf_WithZeroAsDeleted_LoadOrStore(t *testing.T) {
 		t.Fatalf("calls=%d, want 2", got)
 	}
 }
+
+// New test: verify a single Range call never yields duplicate keys, even under
+// concurrent writers causing seqlock retries.
+func TestSeqFlatMapOf_Range_NoDuplicateVisit(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int]()
+	const N = 2048 * 100 // cover multiple buckets and chains
+	for i := 0; i < N; i++ {
+		m.Store(i, i)
+	}
+
+	var stop uint32
+	writerN := max(2, runtime.GOMAXPROCS(0)/2) // Reduce Concurrency​
+	var wg sync.WaitGroup
+	wg.Add(writerN)
+	for w := 0; w < writerN; w++ {
+		go func(offset int) {
+			defer wg.Done()
+			for atomic.LoadUint32(&stop) == 0 {
+				for i := offset; i < N; i += writerN {
+					// mutate value to force seq changes
+					m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+						return old + 1, UpdateOp, old + 1, true
+					})
+				}
+				runtime.Gosched()
+			}
+		}(w)
+	}
+
+	// Run several Range passes under writer churn; each pass must not see duplicates
+	rounds := 10
+	for r := 0; r < rounds; r++ {
+		seen := make(map[int]struct{}, N)
+		m.Range(func(k, v int) bool {
+			if _, dup := seen[k]; dup {
+				t.Fatalf("Range yielded duplicate key within a single pass: %d", k)
+			}
+			seen[k] = struct{}{}
+			return true
+		})
+	}
+
+	atomic.StoreUint32(&stop, 1)
+	wg.Wait()
+}
