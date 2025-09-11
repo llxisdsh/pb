@@ -108,7 +108,6 @@ func WithZeroAsDeleted() func(*MapConfig) {
 func NewFlatMapOf[K comparable, V comparable](
 	options ...func(*MapConfig),
 ) *FlatMapOf[K, V] {
-
 	checkAtomicValueSize[V]()
 
 	var cfg MapConfig
@@ -307,8 +306,9 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 			idx := firstMarkedByteIndex(markedw)
 			e := b.At(idx)
 			if v := e.value.Load(); m.valueIsValid(v) {
-				// Pre-read revalidation: ensure the slot is currently published with the same h2
-				// before touching the key to avoid torn key reads when the slot is temporarily unpublished.
+				// Pre-read revalidation: ensure the slot is currently published
+				// with the same h2 before touching the key to avoid torn key
+				// reads when the slot is temporarily unpublished.
 				curMeta := b.meta.Load()
 				if uint8(curMeta>>(uint(idx)*8)) != (h2v | metaSlotMask) {
 					continue
@@ -340,8 +340,9 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 				idx := firstMarkedByteIndex(markedw)
 				e := b.At(idx)
 				if v := e.value.Load(); m.valueIsValid(v) {
-					// Pre-read revalidation: ensure the slot is currently published
-					// (MSB set) before reading the key to avoid torn key reads.
+					// Pre-read revalidation: ensure the slot is currently
+					// published (MSB set) before reading the key to avoid torn
+					// key reads.
 					curMeta := b.meta.Load()
 					if (uint8(curMeta>>(uint(idx)*8)) & metaSlotMask) == 0 {
 						continue
@@ -383,7 +384,8 @@ func (m *FlatMapOf[K, V]) Process(
 		// If a growth/shrink is in progress with both tables set,
 		// help finish it
 		if rs := (*flatResizeState)(atomic.LoadPointer(&m.resizeState)); rs != nil &&
-			atomic.LoadPointer(&rs.table) != nil && atomic.LoadPointer(&rs.newTable) != nil {
+			atomic.LoadPointer(&rs.table) != nil &&
+			atomic.LoadPointer(&rs.newTable) != nil {
 			rootB.Unlock()
 			m.helpCopyAndWait(rs)
 			table = (*flatTable[K, V])(atomic.LoadPointer(&m.table))
@@ -500,7 +502,8 @@ func (m *FlatMapOf[K, V]) Process(
 				table.AddSize(bidx, 1)
 				// Early grow: only consider when the bucket just became full
 				// to reduce overhead in single-thread case
-				if (bidx&1023) == 0 && atomic.LoadPointer(&m.resizeState) == nil {
+				if (bidx&1023) == 0 &&
+					atomic.LoadPointer(&m.resizeState) == nil {
 					tableLen := table.bucketsMask + 1
 					size := table.SumSize()
 					const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
@@ -562,32 +565,32 @@ func (m *FlatMapOf[K, V]) LoadOrStore(key K, value V) (actual V, loaded bool) {
 		return v, true
 	}
 
-	return m.Process(key,
-		func(old V, loaded bool) (V, ComputeOp, V, bool) {
-			if loaded {
-				return old, CancelOp, old, loaded
-			}
-			return value, UpdateOp, old, loaded
-		},
-	)
+	return m.Process(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {
+		if loaded {
+			return old, CancelOp, old, loaded
+		}
+		return value, UpdateOp, value, loaded
+	})
 }
 
 // LoadOrStoreFn loads the value for a key if present.
 // Otherwise, it stores and returns the value returned by valueFn.
 // The loaded result is true if the value was loaded, false if stored.
-func (m *FlatMapOf[K, V]) LoadOrStoreFn(key K, valueFn func() V) (actual V, loaded bool) {
+func (m *FlatMapOf[K, V]) LoadOrStoreFn(
+	key K,
+	valueFn func() V,
+) (actual V, loaded bool) {
 	if v, ok := m.Load(key); ok {
 		return v, true
 	}
 
-	return m.Process(key,
-		func(old V, loaded bool) (V, ComputeOp, V, bool) {
-			if loaded {
-				return old, CancelOp, old, loaded
-			}
-			return valueFn(), UpdateOp, old, loaded
-		},
-	)
+	return m.Process(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {
+		if loaded {
+			return old, CancelOp, old, loaded
+		}
+		value := valueFn()
+		return value, UpdateOp, value, loaded
+	})
 }
 
 // Delete deletes the value for a key.

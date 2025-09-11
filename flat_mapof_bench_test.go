@@ -167,7 +167,9 @@ func BenchmarkFlatMapOf_Resize(b *testing.B) {
 				}
 				// capture initial table length
 				getLen := func() int {
-					table := (*flatTable[int, int])(atomic.LoadPointer(&m.table))
+					table := (*flatTable[int, int])(
+						atomic.LoadPointer(&m.table),
+					)
 					if table == nil {
 						return 0
 					}

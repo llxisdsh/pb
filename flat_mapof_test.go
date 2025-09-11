@@ -443,7 +443,7 @@ func TestFlatMapOf_LoadOrStore(t *testing.T) {
 
 	// Test store new key
 	actual, loaded := m.LoadOrStore("key1", 100)
-	if loaded || actual != 0 {
+	if loaded || actual != 100 {
 		t.Errorf("Expected (0, false), got (%v, %v)", actual, loaded)
 	}
 
@@ -465,7 +465,7 @@ func TestFlatMapOf_LoadOrStoreFn(t *testing.T) {
 
 	// Test store new key
 	actual, loaded := m.LoadOrStoreFn("key1", func() int { return 100 })
-	if loaded || actual != 0 {
+	if loaded || actual != 100 {
 		t.Errorf("Expected (0, false), got (%v, %v)", actual, loaded)
 	}
 
@@ -708,7 +708,6 @@ func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	close(stop)
 	wg.Wait()
-
 }
 
 // TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
