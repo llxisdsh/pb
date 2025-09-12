@@ -199,7 +199,7 @@ func (b *seqFlatBucket[K, V]) UnlockWithMeta(
 
 //go:nosplit
 func (m *SeqFlatMapOf[K, V]) valueIsValid(v V) bool {
-	return v != *new(V) || !m.zeroAsDeleted
+	return !m.zeroAsDeleted || v != *new(V)
 }
 
 // Load with per-bucket seqlock read
