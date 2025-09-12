@@ -281,11 +281,11 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := (*flatTable[K, V])(atomic.LoadPointer(&m.table))
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h2v := h2(hash)
-	h2 := broadcast(h2v)
+	h2w := broadcast(h2v)
 	idx := table.mask & h1(hash, m.intKey)
 	for b := table.buckets.At(idx); b != nil; b = (*flatBucket[K, V])(atomic.LoadPointer(&b.next)) {
 		meta := b.meta.Load()
-		for marked := markZeroBytes(meta ^ h2); marked != 0; marked &= marked - 1 {
+		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
 			e := b.At(j)
 			if v := e.value.Load(); m.valueIsValid(v) {

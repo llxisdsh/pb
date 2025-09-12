@@ -208,7 +208,7 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h2v := h2(hash)
-	h2 := broadcast(h2v)
+	h2w := broadcast(h2v)
 	idx := table.mask & h1(hash, m.intKey)
 	root := table.buckets.At(idx)
 	for b := root; b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
@@ -221,7 +221,7 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 				}
 			}
 			meta := b.meta.Load()
-			for marked := markZeroBytes(meta ^ h2); marked != 0; marked &= marked - 1 {
+			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j)
 				v := e.value
@@ -265,7 +265,7 @@ fallback:
 	root.Lock()
 	for b := root; b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
 		meta := *b.meta.Raw()
-		for marked := markZeroBytes(meta ^ h2); marked != 0; marked &= marked - 1 {
+		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
 			e := b.At(j)
 			v := e.value

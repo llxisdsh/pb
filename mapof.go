@@ -467,12 +467,12 @@ type resizeState struct {
 // mapOfTable represents the internal hash table structure.
 type mapOfTable struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
-		buckets   unsafeSlice[bucketOf]
-		mask      uintptr
-		size      unsafeSlice[counterStripe]
-		sizeMask  uintptr
-		chunks    int
-		chunkSize int
+		buckets  unsafeSlice[bucketOf]
+		mask     uintptr
+		size     unsafeSlice[counterStripe]
+		sizeMask uintptr
+		chunks   int
+		chunkSz  int
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	buckets unsafeSlice[bucketOf]
