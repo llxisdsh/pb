@@ -288,14 +288,18 @@ func TestSeqFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
 
 // Key torn-read stress: delete/re-insert big keys under load and ensure key
 // invariants hold.
-func TestSeqFlatMapOf_KeyTornRead_Stress(t *testing.T) {
+func TestSeqFlatMapOf_KeyTornRead_Stress_Heavy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping heavy stress in -short mode")
+	}
+
 	type bigKey struct{ A, B uint64 }
 	m := NewSeqFlatMapOf[bigKey, int]()
 
-	const N = 256 // Reduce Scale​
+	const N = 4096
 	keys := make([]bigKey, N)
 	for i := 0; i < N; i++ {
-		ai := uint64(i*2147483647 + 123456789)
+		ai := uint64(i*2147483647 + 987654321)
 		keys[i] = bigKey{A: ai, B: ^ai}
 		m.Store(keys[i], i)
 	}
@@ -306,7 +310,7 @@ func TestSeqFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 		foundTornKey atomic.Bool
 	)
 
-	readerN := 4
+	readerN := max(8, runtime.GOMAXPROCS(0)*2)
 	wg.Add(readerN)
 	for r := 0; r < readerN; r++ {
 		go func() {
@@ -318,7 +322,6 @@ func TestSeqFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 				default:
 					m.Range(func(k bigKey, _ int) bool {
 						if k.B != ^k.A {
-							t.Logf("torn key: %v", k)
 							foundTornKey.Store(true)
 							return false
 						}
@@ -329,7 +332,7 @@ func TestSeqFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 		}()
 	}
 
-	loadN := 2
+	loadN := max(4, runtime.GOMAXPROCS(0))
 	wg.Add(loadN)
 	for r := 0; r < loadN; r++ {
 		go func(id int) {
@@ -347,7 +350,7 @@ func TestSeqFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 		}(r)
 	}
 
-	writerN := 4
+	writerN := max(8, runtime.GOMAXPROCS(0)*2)
 	wg.Add(writerN)
 	for w := 0; w < writerN; w++ {
 		go func(offset int) {
@@ -359,14 +362,8 @@ func TestSeqFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 				default:
 					for i := offset; i < N; i += writerN {
 						k := keys[i]
-						m.Process(
-							k,
-							func(old int, loaded bool) (int, ComputeOp, int, bool) { return 0, DeleteOp, 0, false },
-						)
-						m.Process(
-							k,
-							func(old int, loaded bool) (int, ComputeOp, int, bool) { return i, UpdateOp, i, true },
-						)
+						m.Process(k, func(old int, loaded bool) (int, ComputeOp, int, bool) { return 0, DeleteOp, 0, false })
+						m.Process(k, func(old int, loaded bool) (int, ComputeOp, int, bool) { return i, UpdateOp, i, true })
 					}
 					runtime.Gosched()
 				}
@@ -374,17 +371,63 @@ func TestSeqFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 		}(w)
 	}
 
-	dur := 300 * time.Millisecond // Reduce Duration​
+	dur := 2 * time.Second
 	timer := time.NewTimer(dur)
 	<-timer.C
 	close(stop)
 	wg.Wait()
 
 	if foundTornKey.Load() {
-		t.Fatalf(
-			"detected possible torn read of key: invariant k.B == ^k.A violated under concurrency",
-		)
+		t.Fatalf("detected possible torn read of key: invariant k.B == ^k.A violated under concurrency (heavy)")
 	}
+}
+
+func TestSeqFlatMapOf_Range_NoDuplicateVisit_Heavy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping heavy stress in -short mode")
+	}
+
+	m := NewSeqFlatMapOf[int, int]()
+	const N = 2048 * 50 // ~100K keys to cover chains
+	for i := 0; i < N; i++ {
+		m.Store(i, i)
+	}
+
+	var stop uint32
+	writerN := max(4, runtime.GOMAXPROCS(0))
+	var wg sync.WaitGroup
+	wg.Add(writerN)
+	for w := 0; w < writerN; w++ {
+		go func(offset int) {
+			defer wg.Done()
+			for atomic.LoadUint32(&stop) == 0 {
+				for i := offset; i < N; i += writerN {
+					m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+						return old + 1, UpdateOp, old + 1, true
+					})
+				}
+				runtime.Gosched()
+			}
+		}(w)
+	}
+
+	// Multiple Range passes; each pass must not yield duplicates
+	rounds := 20
+	for r := 0; r < rounds; r++ {
+		seen := make([]uint8, N) // compact bitset
+		m.Range(func(k, v int) bool {
+			if k >= 0 && k < N {
+				if seen[k] != 0 {
+					t.Fatalf("Range yielded duplicate key within a single pass (heavy): %d", k)
+				}
+				seen[k] = 1
+			}
+			return true
+		})
+	}
+
+	atomic.StoreUint32(&stop, 1)
+	wg.Wait()
 }
 
 // WithZeroAsDeleted + LoadOrStore family semantics

@@ -295,15 +295,12 @@ fallback:
 func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	var s1, s2 uint64
 	var metaw uint64
-	// Buffer only indices first; yield after s2 verification to avoid duplicates and extra copies
-	var tmpIdx [entriesPerMapOfBucket]uint8
-	var idxs []uint8
-	// Reusable cache for fallback scenarios to avoid yield calls under lock
+	// Reusable cache, to avoid reading entry fields after s2 check
 	type kvEntry struct {
 		k K
 		v V
 	}
-	var fallbackCache [entriesPerMapOfBucket]kvEntry
+	var cache [entriesPerMapOfBucket]kvEntry
 	var cacheCount int
 	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
 	for i := 0; i <= table.bucketsMask; i++ {
@@ -319,25 +316,22 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					goto fallback
 				}
 				metaw = b.meta.Load()
-				idxs = tmpIdx[:0]
+				cacheCount = 0
 				for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
 					idx := firstMarkedByteIndex(markedw)
 					e := b.At(idx)
 					v := e.value
 					if m.valueIsValid(v) {
-						idxs = append(idxs, uint8(idx))
+						cache[cacheCount] = kvEntry{k: e.key, v: v}
+						cacheCount++
 					}
 				}
 				s2 = b.seq.Load()
 				if s1 == s2 && (s2&1) == 0 {
-					for _, bi := range idxs {
-						ei := int(bi)
-						e := b.At(ei)
-						v := e.value
-						if m.valueIsValid(v) {
-							if !yield(e.key, v) {
-								return
-							}
+					for j := 0; j < cacheCount; j++ {
+						kv := &cache[j]
+						if !yield(kv.k, kv.v) {
+							return
 						}
 					}
 					break
@@ -356,15 +350,15 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					e := b.At(idx)
 					v := e.value
 					if m.valueIsValid(v) {
-						fallbackCache[cacheCount] = kvEntry{k: e.key, v: v}
+						cache[cacheCount] = kvEntry{k: e.key, v: v}
 						cacheCount++
 					}
 				}
 				rootB.Unlock()
 				// yield outside lock
 				for j := 0; j < cacheCount; j++ {
-					e := &fallbackCache[j]
-					if !yield(e.k, e.v) {
+					kv := &cache[j]
+					if !yield(kv.k, kv.v) {
 						return
 					}
 				}
@@ -454,15 +448,17 @@ func (m *SeqFlatMapOf[K, V]) Process(
 				rootB.Unlock()
 				return value, status
 			}
-			// start seqlock for the bucket we modify
+			// Precompute new meta and minimize odd window
+			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
 			s := oldB.seq.Load()
 			oldB.seq.Store(s + 1)
-			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
 			oldB.meta.Store(newmetaw)
+			oldB.seq.Store(s + 2)
+			// Zero value after publishing even, but before releasing root lock
+			// to avoid races
 			if m.zeroAsDeleted {
 				oldB.At(oldIdx).value = *new(V)
 			}
-			oldB.seq.Store(s + 2)
 			rootB.Unlock()
 			table.AddSize(bidx, -1)
 			return value, status
@@ -477,8 +473,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 			}
 			// insert new
 			if emptyB != nil {
-				s := emptyB.seq.Load()
-				emptyB.seq.Store(s + 1)
+				// Prefill entry data before odd to shorten odd window
 				emptyEntry := emptyB.At(emptyIdx)
 				if embeddedHash {
 					emptyEntry.setHash(hash)
@@ -486,13 +481,14 @@ func (m *SeqFlatMapOf[K, V]) Process(
 				emptyEntry.key = key
 				emptyEntry.value = newV
 				newMeta := setByte(*emptyB.meta.Raw(), h2v, emptyIdx)
-				if emptyB == rootB {
-					rootB.UnlockWithMeta(newMeta)
-				} else {
-					emptyB.meta.Store(newMeta)
-					rootB.Unlock()
-				}
+				s := emptyB.seq.Load()
+				emptyB.seq.Store(s + 1)
+				// Publish meta while still holding the root lock to ensure
+				// no other writer starts while this bucket is in odd state
+				emptyB.meta.Store(newMeta)
+				// Complete seqlock write (make it even) before releasing root lock
 				emptyB.seq.Store(s + 2)
+				rootB.Unlock()
 				table.AddSize(bidx, 1)
 				// Early grow: only consider when the bucket just became full
 				// to reduce overhead in single-thread case
