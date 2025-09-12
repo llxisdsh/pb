@@ -347,29 +347,30 @@ type LargeValue struct {
 	Name string
 }
 
-func BenchmarkFlatMapOf_LargeValues(b *testing.B) {
-	m := NewFlatMapOf[int, LargeValue]()
-	const size = 1000
-
-	// Pre-populate
-	for i := 0; i < size; i++ {
-		m.Process(
-			i,
-			func(old LargeValue, loaded bool) (LargeValue, ComputeOp, LargeValue, bool) {
-				newV := LargeValue{
-					ID:   int64(i),
-					Name: fmt.Sprintf("item_%d", i),
-				}
-				return newV, UpdateOp, newV, false
-			},
-		)
-	}
-
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		for pb.Next() {
-			key := rand.Intn(size)
-			m.Load(key)
-		}
-	})
-}
+//
+//func BenchmarkFlatMapOf_LargeValues(b *testing.B) {
+//	m := NewFlatMapOf[int, LargeValue]()
+//	const size = 1000
+//
+//	// Pre-populate
+//	for i := 0; i < size; i++ {
+//		m.Process(
+//			i,
+//			func(old LargeValue, loaded bool) (LargeValue, ComputeOp, LargeValue, bool) {
+//				newV := LargeValue{
+//					ID:   int64(i),
+//					Name: fmt.Sprintf("item_%d", i),
+//				}
+//				return newV, UpdateOp, newV, false
+//			},
+//		)
+//	}
+//
+//	b.ResetTimer()
+//	b.RunParallel(func(pb *testing.PB) {
+//		for pb.Next() {
+//			key := rand.Intn(size)
+//			m.Load(key)
+//		}
+//	})
+//}
