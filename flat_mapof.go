@@ -173,7 +173,7 @@ func newFlatTable[K comparable, V comparable](
 	tableLen, cpus int,
 ) *flatTable[K, V] {
 	b := make([]flatBucket[K, V], tableLen)
-	chunkSz, chunks := calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
+	chunkSz, chunks := calcParallelism(tableLen, minBucketsPerCPU, cpus)
 	sizeLen := calcSizeLen(tableLen, cpus)
 	return &flatTable[K, V]{
 		buckets:  makeUnsafeSlice(b),
@@ -214,9 +214,8 @@ func (t *flatTable[K, V]) SumSizeExceeds(limit int) bool {
 // flatBucket stores inline keys and atomic values for each slot.
 // Uses atomicValue for lock-free value access instead of double buffering.
 type flatBucket[K comparable, V comparable] struct {
-	_       [0]int64 // keep same alignment trick
 	meta    atomicUint64
-	entries [entriesPerMapOfBucket]flatEntry[K, V]
+	entries [entriesPerBucket]flatEntry[K, V]
 	next    unsafe.Pointer // *flatBucket[K,V]
 }
 
@@ -265,7 +264,7 @@ func (b *flatBucket[K, V]) Unlock() {
 
 //go:nosplit
 func (b *flatBucket[K, V]) UnlockWithMeta(meta uint64) {
-	b.meta.Store(meta & (^opLockMask))
+	b.meta.Store(meta &^ opLockMask)
 }
 
 //go:nosplit
@@ -287,14 +286,14 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	for b := table.buckets.At(idx); b != nil; b = (*flatBucket[K, V])(atomic.LoadPointer(&b.next)) {
 		meta := b.meta.Load()
 		for marked := markZeroBytes(meta ^ h2); marked != 0; marked &= marked - 1 {
-			i := firstMarkedByteIndex(marked)
-			e := b.At(i)
+			j := firstMarkedByteIndex(marked)
+			e := b.At(j)
 			if v := e.value.Load(); m.valueIsValid(v) {
 				// Pre-read revalidation: ensure the slot is currently published
 				// with the same h2 before touching the key to avoid torn key
 				// reads when the slot is temporarily unpublished.
 				cur := b.meta.Load()
-				if uint8(cur>>(uint(i)*8)) != (h2v | metaSlotMask) {
+				if uint8(cur>>(uint(j)*8)) != (h2v | slotMask) {
 					continue
 				}
 				if embeddedHash {
@@ -328,7 +327,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					// published (MSB set) before reading the key to avoid torn
 					// key reads.
 					cur := b.meta.Load()
-					if (uint8(cur>>(uint(j)*8)) & metaSlotMask) == 0 {
+					if (uint8(cur>>(uint(j)*8)) & slotMask) == 0 {
 						continue
 					}
 					if !yield(e.key, v) {
@@ -358,7 +357,7 @@ func (m *FlatMapOf[K, V]) Process(
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h1v := h1(hash, m.intKey)
 	h2v := h2(hash)
-	h2 := broadcast(h2v)
+	h2w := broadcast(h2v)
 
 	for {
 		idx := table.mask & h1v
@@ -397,18 +396,18 @@ func (m *FlatMapOf[K, V]) Process(
 	findLoop:
 		for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
 			meta := *b.meta.Raw()
-			for marked := markZeroBytes(meta ^ h2); marked != 0; marked &= marked - 1 {
-				i := firstMarkedByteIndex(marked)
-				e := b.At(i)
+			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
+				j := firstMarkedByteIndex(marked)
+				e := b.At(j)
 				if v := e.value.raw; m.valueIsValid(v) {
 					if embeddedHash {
 						if e.getHash() == hash && e.key == key {
-							oldB, oldIdx, oldMeta, oldVal, loaded = b, i, meta, v, true
+							oldB, oldIdx, oldMeta, oldVal, loaded = b, j, meta, v, true
 							break findLoop
 						}
 					} else {
 						if e.key == key {
-							oldB, oldIdx, oldMeta, oldVal, loaded = b, i, meta, v, true
+							oldB, oldIdx, oldMeta, oldVal, loaded = b, j, meta, v, true
 							break findLoop
 						}
 					}
@@ -434,7 +433,7 @@ func (m *FlatMapOf[K, V]) Process(
 			// barrier): readers that still observe the old meta may only ever
 			// see the old key; we never clear the key on delete to avoid torn
 			// key reads under concurrency.
-			newMeta := setByte(oldMeta, emptyMetaSlot, oldIdx)
+			newMeta := setByte(oldMeta, emptySlot, oldIdx)
 			oldB.meta.Store(newMeta)
 
 			// Clear references: only clear the value to aid GC; keep the old
@@ -482,7 +481,7 @@ func (m *FlatMapOf[K, V]) Process(
 					atomic.LoadPointer(&m.resize) == nil {
 					tableLen := table.mask + 1
 					size := table.SumSize()
-					const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
+					const sizeHintFactor = float64(entriesPerBucket) * loadFactor
 					if size >= int(float64(tableLen)*sizeHintFactor) {
 						m.tryResize(mapGrowHint, size, 0)
 					}
@@ -493,7 +492,7 @@ func (m *FlatMapOf[K, V]) Process(
 			// append new bucket
 			bucket := &flatBucket[K, V]{
 				meta: makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
-				entries: [entriesPerMapOfBucket]flatEntry[K, V]{
+				entries: [entriesPerBucket]flatEntry[K, V]{
 					{
 						value: atomicValue[V]{raw: newV},
 						key:   key,
@@ -512,7 +511,7 @@ func (m *FlatMapOf[K, V]) Process(
 			if atomic.LoadPointer(&m.resize) == nil {
 				tableLen := table.mask + 1
 				size := table.SumSize()
-				const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
+				const sizeHintFactor = float64(entriesPerBucket) * loadFactor
 				if size >= int(float64(tableLen)*sizeHintFactor) {
 					m.tryResize(mapGrowHint, size, 0)
 				}
@@ -662,7 +661,7 @@ func (m *FlatMapOf[K, V]) tryResize(hint mapResizeHint, size, sizeAdd int) {
 		}
 	}
 
-	if newLen*int(unsafe.Sizeof(flatBucket[K, V]{})) >= asyncResizeThreshold && cpus > 1 {
+	if newLen*int(unsafe.Sizeof(flatBucket[K, V]{})) >= asyncThreshold && cpus > 1 {
 		go m.finalizeResize(table, newLen, rs, cpus)
 	} else {
 		m.finalizeResize(table, newLen, rs, cpus)
@@ -757,7 +756,7 @@ func (m *FlatMapOf[K, V]) copyFlatBucketRange(
 						if next == nil {
 							bucket := &flatBucket[K, V]{
 								meta: makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
-								entries: [entriesPerMapOfBucket]flatEntry[K, V]{
+								entries: [entriesPerBucket]flatEntry[K, V]{
 									{
 										value: atomicValue[V]{raw: v},
 										key:   e.key,

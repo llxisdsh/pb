@@ -16,7 +16,7 @@ func (e *EntryOf[K, V]) getHash() uintptr {
 }
 
 //go:nosplit
-func (e *EntryOf[K, V]) setHash(uintptr) {
+func (e *EntryOf[K, V]) setHash(_ uintptr) {
 }
 
 // flatEntry is a flat map entry.
@@ -31,7 +31,7 @@ func (e *flatEntry[K, V]) getHash() uintptr {
 }
 
 //go:nosplit
-func (e *flatEntry[K, V]) setHash(uintptr) {
+func (e *flatEntry[K, V]) setHash(_ uintptr) {
 }
 
 // seqFlatEntry is a flat map entry.
@@ -46,5 +46,5 @@ func (e *seqFlatEntry[K, V]) getHash() uintptr {
 }
 
 // setHash is a no-op for non-embedded-hash build.
-func (e *seqFlatEntry[K, V]) setHash(uintptr) {
+func (e *seqFlatEntry[K, V]) setHash(_ uintptr) {
 }

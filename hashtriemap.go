@@ -95,7 +95,7 @@ func (ht *HashTrieMap[K, V]) LoadOrStore(key K, value V) (result V, loaded bool)
 func (ht *HashTrieMap[K, V]) LoadOrStoreFn(key K, valueFn func() V) (result V, loaded bool) {
 	i := ht.init()
 	hash := ht.keyHash(noescape(unsafe.Pointer(&key)), ht.seed)
-	var hashShift uint
+	var hashShift uintptr
 	var slot *atomic.Pointer[node[K, V]]
 	var n *node[K, V]
 	for ; ; i = ht.root.Load() {
@@ -173,7 +173,7 @@ func (ht *HashTrieMap[K, V]) LoadOrStoreFn(key K, valueFn func() V) (result V, l
 
 // expand takes oldEntry and newEntry whose hashes conflict from bit 64 down to hashShift and
 // produces a subtree of indirect nodes to hold the two new entries.
-func (ht *HashTrieMap[K, V]) expand(oldEntry, newEntry *entry[K, V], newHash uintptr, hashShift uint, parent *indirect[K, V]) *node[K, V] {
+func (ht *HashTrieMap[K, V]) expand(oldEntry, newEntry *entry[K, V], newHash uintptr, hashShift uintptr, parent *indirect[K, V]) *node[K, V] {
 	// Check for a hash collision.
 	oldHash := oldEntry.hash
 	if oldHash == newHash {
@@ -215,7 +215,7 @@ func (ht *HashTrieMap[K, V]) Swap(key K, new V) (previous V, loaded bool) {
 	i := ht.init()
 
 	hash := ht.keyHash(noescape(unsafe.Pointer(&key)), ht.seed)
-	var hashShift uint
+	var hashShift uintptr
 	var slot *atomic.Pointer[node[K, V]]
 	var n *node[K, V]
 	for ; ; i = ht.root.Load() {
@@ -445,7 +445,7 @@ func (ht *HashTrieMap[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 // Returns a non-nil node, which will always be an entry, if found.
 //
 // If i != nil then i.mu is locked, and it is the caller's responsibility to unlock it.
-func (ht *HashTrieMap[K, V]) find(i0 *indirect[K, V], key K, hash uintptr, valEqual EqualFunc, value V) (i *indirect[K, V], hashShift uint, slot *atomic.Pointer[node[K, V]], n *node[K, V]) {
+func (ht *HashTrieMap[K, V]) find(i0 *indirect[K, V], key K, hash uintptr, valEqual EqualFunc, value V) (i *indirect[K, V], hashShift uintptr, slot *atomic.Pointer[node[K, V]], n *node[K, V]) {
 	for i = i0; ; i = ht.root.Load() {
 		// Find the key or return if it's not there.
 		// i = ht.root.Load()
@@ -608,9 +608,6 @@ const (
 	nChildrenLog2 = 4
 	nChildren     = 1 << nChildrenLog2
 	nChildrenMask = nChildren - 1
-
-	// ref: goarch.PtrSize
-	ptrSize = 4 << (^uintptr(0) >> 63)
 )
 
 // indirect is an internal node in the hash-trie.

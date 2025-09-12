@@ -17,46 +17,45 @@ import (
 
 const (
 	// opByteIdx reserves the highest byte of meta for extended status flags
-	opByteIdx         = 7
-	opByteMask uint64 = 0xff00000000000000
-	opLockMask uint64 = 1 << (opByteIdx*8 + 7)
+	opByteIdx  = 7
+	opByteMask = 0xff00000000000000
+	opLockMask = uint64(1) << (opByteIdx*8 + 7)
+	ptrSize    = unsafe.Sizeof(unsafe.Pointer(nil))
 
-	sizeofPointer = unsafe.Sizeof(unsafe.Pointer(nil))
-
-	// entriesPerMapOfBucket defines the number of entries per bucket.
+	// entriesPerBucket defines the number of entries per bucket.
 	// Calculated to fit within a cache line, with a maximum of 8 entries
 	// (upper limit supported by the meta-field).
-	entriesPerMapOfBucket = min(
+	entriesPerBucket = min(
 		opByteIdx,
 		(int(CacheLineSize)-int(unsafe.Sizeof(struct {
 			meta uint64
-			// entries [entriesPerMapOfBucket]unsafe.Pointer
+			// entries [entriesPerBucket]unsafe.Pointer
 			next unsafe.Pointer
-		}{})))/int(sizeofPointer),
+		}{})))/int(ptrSize),
 	)
 
 	// Metadata constants for bucket entry management
-	emptyMeta     uint64 = 0
-	emptyMetaSlot uint8  = 0
-	metaMask      uint64 = 0x8080808080808080 >>
-		(64 - min(entriesPerMapOfBucket*8, 64))
-	metaSlotMask uint8 = 0x80
+	emptyMeta uint64 = 0
+	emptySlot uint8  = 0
+	metaMask  uint64 = 0x8080808080808080 >>
+		(64 - min(entriesPerBucket*8, 64))
+	slotMask uint8 = 0x80
 )
 
 // Performance and resizing configuration
 const (
-	// mapShrinkFraction: shrink table when occupancy < 1/mapShrinkFraction
-	mapShrinkFraction = 8
-	// mapLoadFactor: resize table when occupancy > mapLoadFactor
-	mapLoadFactor = 0.75
-	// defaultMinMapTableLen: minimum number of buckets
-	defaultMinMapTableLen = 32
-	// minBucketsPerGoroutine: threshold for parallel resizing
-	minBucketsPerGoroutine = 4
-	// minParallelBatchItems: threshold for parallel batch processing
-	minParallelBatchItems = 256
-	// asyncResizeThreshold: threshold for asynchronous resize
-	asyncResizeThreshold = 128 * 1024
+	// shrinkFraction: shrink table when occupancy < 1/shrinkFraction
+	shrinkFraction = 8
+	// loadFactor: resize table when occupancy > loadFactor
+	loadFactor = 0.75
+	// minTableLen: minimum number of buckets
+	minTableLen = 32
+	// minBucketsPerCPU: threshold for parallel resizing
+	minBucketsPerCPU = 4
+	// minBatchItems: threshold for parallel batch processing
+	minBatchItems = 256
+	// asyncThreshold: threshold for asynchronous resize
+	asyncThreshold = 128 * 1024
 )
 
 // Feature flags for performance optimization
@@ -93,30 +92,30 @@ const (
 //   - MapOf must not be copied after first use.
 type MapOf[K comparable, V any] struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
-		_             noCopy
-		table         unsafe.Pointer
-		resizeState   unsafe.Pointer
-		totalGrowths  uint32
-		totalShrinks  uint32
-		seed          uintptr
-		keyHash       HashFunc
-		valEqual      EqualFunc
-		minTableLen   int
-		shrinkEnabled bool
-		intKey        bool
+		_        noCopy
+		table    unsafe.Pointer
+		resize   unsafe.Pointer
+		growths  uint32
+		shrinks  uint32
+		seed     uintptr
+		keyHash  HashFunc
+		valEqual EqualFunc
+		minLen   int
+		shrinkOn bool
+		intKey   bool
 	}{})%CacheLineSize) % CacheLineSize]byte
 
-	_             noCopy
-	table         unsafe.Pointer // *mapOfTable
-	resizeState   unsafe.Pointer // *resizeState
-	totalGrowths  uint32
-	totalShrinks  uint32
-	seed          uintptr
-	keyHash       HashFunc  // WithKeyHasher
-	valEqual      EqualFunc // WithValueEqual
-	minTableLen   int       // WithPresize
-	shrinkEnabled bool      // WithShrinkEnabled
-	intKey        bool
+	_        noCopy
+	table    unsafe.Pointer // *mapOfTable
+	resize   unsafe.Pointer // *resizeState
+	growths  uint32
+	shrinks  uint32
+	seed     uintptr
+	keyHash  HashFunc  // WithKeyHasher
+	valEqual EqualFunc // WithValueEqual
+	minLen   int       // WithPresize
+	shrinkOn bool      // WithShrinkEnabled
+	intKey   bool
 }
 
 // NewMapOf creates a new MapOf instance. Direct initialization is also
@@ -168,7 +167,7 @@ type MapConfig struct {
 	// when the load factor falls below the shrink threshold.
 	// When false (default), the map will only grow and never shrink,
 	// which provides better performance but may use more memory.
-	// When true, the map will shrink when occupancy < 1/mapShrinkFraction.
+	// When true, the map will shrink when occupancy < 1/shrinkFraction.
 	ShrinkEnabled bool
 
 	// Treat zero value as logically deleted.
@@ -189,7 +188,7 @@ func WithPresize(sizeHint int) func(*MapConfig) {
 }
 
 // WithShrinkEnabled configures automatic map shrinking when the load factor
-// falls below the threshold (default: 1/mapShrinkFraction).
+// falls below the threshold (default: 1/shrinkFraction).
 // Disabled by default to prioritize performance.
 func WithShrinkEnabled() func(*MapConfig) {
 	return func(c *MapConfig) {
@@ -211,7 +210,7 @@ const (
 	AutoDistribution HashOptimization = iota
 
 	// LinearDistribution uses division-based bucket index calculation.
-	// Formula: h / entriesPerMapOfBucket
+	// Formula: h / entriesPerBucket
 	// Optimal for: sequential integer keys (1,2,3,4...), ordered data,
 	// auto-incrementing IDs, or any pattern with continuous key values.
 	// Provides better cache locality and reduces hash collisions for such
@@ -388,12 +387,12 @@ type bucketOf struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_       [0]int64
 		meta    uint64
-		entries [entriesPerMapOfBucket]unsafe.Pointer
+		entries [entriesPerBucket]unsafe.Pointer
 		next    unsafe.Pointer
 	}{})%CacheLineSize) % CacheLineSize]byte
 
-	entries [entriesPerMapOfBucket]unsafe.Pointer // *EntryOf
-	next    unsafe.Pointer                        // *bucketOf
+	entries [entriesPerBucket]unsafe.Pointer // *EntryOf
+	next    unsafe.Pointer                   // *bucketOf
 }
 
 // Lock acquires a spinlock for the bucket using embedded metadata.
@@ -432,19 +431,19 @@ func (b *bucketOf) tryLock() bool {
 
 //go:nosplit
 func (b *bucketOf) Unlock() {
-	atomic.StoreUint64(&b.meta, b.meta&(^opLockMask))
+	atomic.StoreUint64(&b.meta, b.meta&^opLockMask)
 }
 
 //go:nosplit
 func (b *bucketOf) UnlockWithMeta(meta uint64) {
-	atomic.StoreUint64(&b.meta, meta&(^opLockMask))
+	atomic.StoreUint64(&b.meta, meta&^opLockMask)
 }
 
 //go:nosplit
 func (b *bucketOf) At(i int) *unsafe.Pointer {
 	return (*unsafe.Pointer)(unsafe.Add(
 		unsafe.Pointer(&b.entries),
-		uintptr(i)*sizeofPointer),
+		uintptr(i)*ptrSize),
 	)
 }
 
@@ -468,16 +467,16 @@ type resizeState struct {
 // mapOfTable represents the internal hash table structure.
 type mapOfTable struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
-		buckets     unsafeSlice[bucketOf]
-		bucketsMask uintptr
-		size        unsafeSlice[counterStripe]
-		sizeMask    uintptr
-		chunks      int
-		chunkSize   int
+		buckets   unsafeSlice[bucketOf]
+		mask      uintptr
+		size      unsafeSlice[counterStripe]
+		sizeMask  uintptr
+		chunks    int
+		chunkSize int
 	}{})%CacheLineSize) % CacheLineSize]byte
 
-	buckets     unsafeSlice[bucketOf]
-	bucketsMask int
+	buckets unsafeSlice[bucketOf]
+	mask    int
 	// striped counter for number of table entries;
 	// used to determine if a table shrinking is needed
 	// occupies min(buckets_memory/1024, 64KB) of memory
@@ -485,28 +484,28 @@ type mapOfTable struct {
 	size     unsafeSlice[counterStripe]
 	sizeMask int
 	// number of chunks and chunks size for resizing
-	chunks    int
-	chunkSize int
+	chunks  int
+	chunkSz int
 }
 
 func newMapOfTable(tableLen, cpus int) *mapOfTable {
-	chunkSize, chunks := calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
+	chunkSize, chunks := calcParallelism(tableLen, minBucketsPerCPU, cpus)
 	sizeLen := calcSizeLen(tableLen, cpus)
 	return &mapOfTable{
-		buckets:     makeUnsafeSlice(make([]bucketOf, tableLen)),
-		bucketsMask: tableLen - 1,
-		size:        makeUnsafeSlice(make([]counterStripe, sizeLen)),
-		sizeMask:    sizeLen - 1,
-		chunks:      chunks,
-		chunkSize:   chunkSize,
+		buckets:  makeUnsafeSlice(make([]bucketOf, tableLen)),
+		mask:     tableLen - 1,
+		size:     makeUnsafeSlice(make([]counterStripe, sizeLen)),
+		sizeMask: sizeLen - 1,
+		chunks:   chunks,
+		chunkSz:  chunkSize,
 	}
 }
 
 // AddSize atomically adds delta to the size counter for the given bucket index.
 //
 //go:nosplit
-func (table *mapOfTable) AddSize(bidx, delta int) {
-	atomic.AddUintptr(&table.size.At(table.sizeMask&bidx).c, uintptr(delta))
+func (table *mapOfTable) AddSize(idx, delta int) {
+	atomic.AddUintptr(&table.size.At(table.sizeMask&idx).c, uintptr(delta))
 }
 
 // SumSize calculates the total number of entries in the table
@@ -680,10 +679,10 @@ func (m *MapOf[K, V]) init(
 	if c.ValEqual != nil {
 		m.valEqual = c.ValEqual
 	}
-	m.minTableLen = calcTableLen(c.SizeHint)
-	m.shrinkEnabled = c.ShrinkEnabled
+	m.minLen = calcTableLen(c.SizeHint)
+	m.shrinkOn = c.ShrinkEnabled
 
-	table := newMapOfTable(m.minTableLen, runtime.GOMAXPROCS(0))
+	table := newMapOfTable(m.minLen, runtime.GOMAXPROCS(0))
 	atomic.StorePointer(&m.table, unsafe.Pointer(table))
 	return table
 }
@@ -693,7 +692,7 @@ func (m *MapOf[K, V]) init(
 //
 //go:noinline
 func (m *MapOf[K, V]) initSlow() *mapOfTable {
-	rs := (*resizeState)(loadPointerNoMB(&m.resizeState))
+	rs := (*resizeState)(loadPointerNoMB(&m.resize))
 	if rs != nil {
 		rs.wg.Wait()
 		// Now the table should be initialized
@@ -705,9 +704,9 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	rs.wg.Add(1)
 
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
-	if !atomic.CompareAndSwapPointer(&m.resizeState, nil, unsafe.Pointer(rs)) {
+	if !atomic.CompareAndSwapPointer(&m.resize, nil, unsafe.Pointer(rs)) {
 		// Another goroutine is initializing, wait for it to complete
-		rs = (*resizeState)(loadPointerNoMB(&m.resizeState))
+		rs = (*resizeState)(loadPointerNoMB(&m.resize))
 		if rs != nil {
 			rs.wg.Wait()
 		}
@@ -719,7 +718,7 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	// it might have been changed before that.
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	if table != nil {
-		atomic.StorePointer(&m.resizeState, nil)
+		atomic.StorePointer(&m.resize, nil)
 		rs.wg.Done()
 		return table
 	}
@@ -727,7 +726,7 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	// Perform initialization
 	c := &MapConfig{}
 	table = m.init(c)
-	atomic.StorePointer(&m.resizeState, nil)
+	atomic.StorePointer(&m.resize, nil)
 	rs.wg.Done()
 	return table
 }
@@ -745,12 +744,12 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
-	bidx := table.bucketsMask & h1(hash, m.intKey)
-	for b := table.buckets.At(bidx); b != nil; b = (*bucketOf)(loadPointerNoMB(&b.next)) {
-		metaw := loadUint64NoMB(&b.meta)
-		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
-			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(loadPointerNoMB(b.At(idx))); e != nil {
+	idx := table.mask & h1(hash, m.intKey)
+	for b := table.buckets.At(idx); b != nil; b = (*bucketOf)(loadPointerNoMB(&b.next)) {
+		meta := loadUint64NoMB(&b.meta)
+		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
+			j := firstMarkedByteIndex(marked)
+			if e := (*EntryOf[K, V])(loadPointerNoMB(b.At(j))); e != nil {
 				if embeddedHash {
 					if e.getHash() == hash && e.Key == key {
 						return e.Value, true
@@ -791,12 +790,12 @@ func (m *MapOf[K, V]) findEntry(
 ) *EntryOf[K, V] {
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
-	bidx := table.bucketsMask & h1(hash, m.intKey)
-	for b := table.buckets.At(bidx); b != nil; b = (*bucketOf)(loadPointerNoMB(&b.next)) {
-		metaw := loadUint64NoMB(&b.meta)
-		for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
-			idx := firstMarkedByteIndex(markedw)
-			if e := (*EntryOf[K, V])(loadPointerNoMB(b.At(idx))); e != nil {
+	idx := table.mask & h1(hash, m.intKey)
+	for b := table.buckets.At(idx); b != nil; b = (*bucketOf)(loadPointerNoMB(&b.next)) {
+		meta := loadUint64NoMB(&b.meta)
+		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
+			j := firstMarkedByteIndex(marked)
+			if e := (*EntryOf[K, V])(loadPointerNoMB(b.At(j))); e != nil {
 				if embeddedHash {
 					if e.getHash() == hash && e.Key == *key {
 						return e
@@ -823,17 +822,17 @@ func (m *MapOf[K, V]) processEntry(
 	h2w := broadcast(h2v)
 
 	for {
-		bidx := table.bucketsMask & h1v
-		rootb := table.buckets.At(bidx)
+		idx := table.mask & h1v
+		root := table.buckets.At(idx)
 
-		rootb.Lock()
+		root.Lock()
 
 		// This is the first check, checking if there is a resize operation in
 		// progress before acquiring the bucket lock
-		if rs := (*resizeState)(loadPointerNoMB(&m.resizeState)); rs != nil &&
+		if rs := (*resizeState)(loadPointerNoMB(&m.resize)); rs != nil &&
 			loadPointerNoMB(&rs.table) != nil /*skip init*/ &&
 			loadPointerNoMB(&rs.newTable) != nil /*skip newTable is nil*/ {
-			rootb.Unlock()
+			root.Unlock()
 			// Wait for the current resize operation to complete
 			m.helpCopyAndWait(rs)
 			table = (*mapOfTable)(loadPointerNoMB(&m.table))
@@ -844,47 +843,47 @@ func (m *MapOf[K, V]) processEntry(
 		// Needed since another goroutine may have resized the table
 		// between initial check and lock acquisition.
 		if newTable := (*mapOfTable)(loadPointerNoMB(&m.table)); table != newTable {
-			rootb.Unlock()
+			root.Unlock()
 			table = newTable
 			continue
 		}
 
 		var (
-			oldEntry    *EntryOf[K, V]
-			oldBucket   *bucketOf
-			oldIdx      int
-			oldMeta     uint64
-			emptyBucket *bucketOf
-			emptyIdx    int
-			lastBucket  *bucketOf
+			oldEntry *EntryOf[K, V]
+			oldB     *bucketOf
+			oldIdx   int
+			oldMeta  uint64
+			emptyB   *bucketOf
+			emptyIdx int
+			lastB    *bucketOf
 		)
 
 	findLoop:
-		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
-			metaw := b.meta
-			for markedw := markZeroBytes(metaw ^ h2w); markedw != 0; markedw &= markedw - 1 {
-				idx := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(*b.At(idx)); e != nil {
+		for b := root; b != nil; b = (*bucketOf)(b.next) {
+			meta := b.meta
+			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
+				j := firstMarkedByteIndex(marked)
+				if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
 					if embeddedHash {
 						if e.getHash() == hash && e.Key == *key {
-							oldEntry, oldBucket, oldIdx, oldMeta = e, b, idx, metaw
+							oldEntry, oldB, oldIdx, oldMeta = e, b, j, meta
 							break findLoop
 						}
 					} else {
 						if e.Key == *key {
-							oldEntry, oldBucket, oldIdx, oldMeta = e, b, idx, metaw
+							oldEntry, oldB, oldIdx, oldMeta = e, b, j, meta
 							break findLoop
 						}
 					}
 				}
 			}
-			if emptyBucket == nil {
-				if emptyw := (^metaw) & metaMask; emptyw != 0 {
-					emptyBucket = b
-					emptyIdx = firstMarkedByteIndex(emptyw)
+			if emptyB == nil {
+				if empty := (^meta) & metaMask; empty != 0 {
+					emptyB = b
+					emptyIdx = firstMarkedByteIndex(empty)
 				}
 			}
-			lastBucket = b
+			lastB = b
 		}
 
 		// --- Processing Logic ---
@@ -893,7 +892,7 @@ func (m *MapOf[K, V]) processEntry(
 		if oldEntry != nil {
 			if newEntry == oldEntry {
 				// No entry to update or delete
-				rootb.Unlock()
+				root.Unlock()
 				return value, status
 			}
 			if newEntry != nil {
@@ -903,30 +902,30 @@ func (m *MapOf[K, V]) processEntry(
 				}
 				newEntry.Key = *key
 				storePointerNoMB(
-					oldBucket.At(oldIdx),
+					oldB.At(oldIdx),
 					unsafe.Pointer(newEntry),
 				)
-				rootb.Unlock()
+				root.Unlock()
 				return value, status
 			}
 			// Delete
-			storePointerNoMB(oldBucket.At(oldIdx), nil)
-			newmetaw := setByte(oldMeta, emptyMetaSlot, oldIdx)
-			if oldBucket == rootb {
-				rootb.UnlockWithMeta(newmetaw)
+			storePointerNoMB(oldB.At(oldIdx), nil)
+			newMeta := setByte(oldMeta, emptySlot, oldIdx)
+			if oldB == root {
+				root.UnlockWithMeta(newMeta)
 			} else {
-				storeUint64NoMB(&oldBucket.meta, newmetaw)
-				rootb.Unlock()
+				storeUint64NoMB(&oldB.meta, newMeta)
+				root.Unlock()
 			}
-			table.AddSize(bidx, -1)
+			table.AddSize(idx, -1)
 
 			// Check if table shrinking is needed
-			if m.shrinkEnabled && newmetaw&(^opByteMask) == emptyMeta &&
-				loadPointerNoMB(&m.resizeState) == nil {
-				tableLen := table.bucketsMask + 1
-				if m.minTableLen < tableLen {
+			if m.shrinkOn && newMeta&(^uint64(opByteMask)) == emptyMeta &&
+				loadPointerNoMB(&m.resize) == nil {
+				tableLen := table.mask + 1
+				if m.minLen < tableLen {
 					size := table.SumSize()
-					if size < tableLen*entriesPerMapOfBucket/mapShrinkFraction {
+					if size < tableLen*entriesPerBucket/shrinkFraction {
 						m.tryResize(mapShrinkHint, size, 0)
 					}
 				}
@@ -936,7 +935,7 @@ func (m *MapOf[K, V]) processEntry(
 
 		if newEntry == nil {
 			// No entry to insert or delete
-			rootb.Unlock()
+			root.Unlock()
 			return value, status
 		}
 
@@ -945,40 +944,40 @@ func (m *MapOf[K, V]) processEntry(
 			newEntry.setHash(hash)
 		}
 		newEntry.Key = *key
-		if emptyBucket != nil {
+		if emptyB != nil {
 			// publish pointer first, then meta; readers check meta before
 			// pointer so they won't observe a partially-initialized entry,
 			// and this reduces the window where meta is visible but pointer is
 			// still nil
-			storePointerNoMB(emptyBucket.At(emptyIdx), unsafe.Pointer(newEntry))
-			if emptyBucket == rootb {
-				rootb.UnlockWithMeta(setByte(emptyBucket.meta, h2v, emptyIdx))
+			storePointerNoMB(emptyB.At(emptyIdx), unsafe.Pointer(newEntry))
+			if emptyB == root {
+				root.UnlockWithMeta(setByte(emptyB.meta, h2v, emptyIdx))
 			} else {
 				storeUint64NoMB(
-					&emptyBucket.meta,
-					setByte(emptyBucket.meta, h2v, emptyIdx),
+					&emptyB.meta,
+					setByte(emptyB.meta, h2v, emptyIdx),
 				)
-				rootb.Unlock()
+				root.Unlock()
 			}
-			table.AddSize(bidx, 1)
+			table.AddSize(idx, 1)
 			return value, status
 		}
 
 		// No empty slot, create new bucket and insert
-		storePointerNoMB(&lastBucket.next, unsafe.Pointer(&bucketOf{
+		storePointerNoMB(&lastB.next, unsafe.Pointer(&bucketOf{
 			meta: setByte(emptyMeta, h2v, 0),
-			entries: [entriesPerMapOfBucket]unsafe.Pointer{
+			entries: [entriesPerBucket]unsafe.Pointer{
 				unsafe.Pointer(newEntry),
 			},
 		}))
-		rootb.Unlock()
-		table.AddSize(bidx, 1)
+		root.Unlock()
+		table.AddSize(idx, 1)
 
 		// Check if the table needs to grow
-		if loadPointerNoMB(&m.resizeState) == nil {
-			tableLen := table.bucketsMask + 1
+		if loadPointerNoMB(&m.resize) == nil {
+			tableLen := table.mask + 1
 			size := table.SumSize()
-			const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
+			const sizeHintFactor = float64(entriesPerBucket) * loadFactor
 			if size >= int(float64(tableLen)*sizeHintFactor) {
 				m.tryResize(mapGrowHint, size, 0)
 			}
@@ -996,7 +995,7 @@ const (
 	mapClearHint  mapResizeHint = 2
 )
 
-func (m *MapOf[K, V]) resize(
+func (m *MapOf[K, V]) doResize(
 	hint mapResizeHint,
 	sizeAdd int,
 ) {
@@ -1004,7 +1003,7 @@ func (m *MapOf[K, V]) resize(
 	for {
 		// Resize check
 		table := (*mapOfTable)(loadPointerNoMB(&m.table))
-		tableLen := table.bucketsMask + 1
+		tableLen := table.mask + 1
 		switch hint {
 		case mapGrowHint:
 			if sizeAdd <= 0 {
@@ -1016,7 +1015,7 @@ func (m *MapOf[K, V]) resize(
 				return
 			}
 		case mapShrinkHint:
-			if tableLen <= m.minTableLen {
+			if tableLen <= m.minLen {
 				return
 			}
 			// Recalculate the shrink size to avoid over-shrinking
@@ -1026,12 +1025,12 @@ func (m *MapOf[K, V]) resize(
 				return
 			}
 		default:
-			if tableLen == m.minTableLen && table.IsZero() {
+			if tableLen == m.minLen && table.IsZero() {
 				return
 			}
 		}
 		// Wait resize finish
-		if rs := (*resizeState)(loadPointerNoMB(&m.resizeState)); rs != nil {
+		if rs := (*resizeState)(loadPointerNoMB(&m.resize)); rs != nil {
 			if loadPointerNoMB(&rs.table) != nil /*skip init*/ &&
 				loadPointerNoMB(&rs.newTable) != nil /*skip newTable is nil */ {
 				m.helpCopyAndWait(rs)
@@ -1055,65 +1054,65 @@ func (m *MapOf[K, V]) tryResize(
 	rs.wg.Add(1)
 
 	// Try to set resizeWg, if successful it means we've acquired the "lock"
-	if !atomic.CompareAndSwapPointer(&m.resizeState, nil, unsafe.Pointer(rs)) {
+	if !atomic.CompareAndSwapPointer(&m.resize, nil, unsafe.Pointer(rs)) {
 		return
 	}
 
 	// Resize start
 	cpus := runtime.GOMAXPROCS(0)
 	if hint == mapClearHint {
-		newTable := newMapOfTable(m.minTableLen, cpus)
+		newTable := newMapOfTable(m.minLen, cpus)
 		atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
-		atomic.StorePointer(&m.resizeState, nil)
+		atomic.StorePointer(&m.resize, nil)
 		rs.wg.Done()
 		return
 	}
 
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
-	tableLen := table.bucketsMask + 1
-	var newTableLen int
+	tableLen := table.mask + 1
+	var newLen int
 	if hint == mapGrowHint {
 		if sizeAdd == 0 {
-			newTableLen = max(calcTableLen(size), tableLen<<1)
+			newLen = max(calcTableLen(size), tableLen<<1)
 		} else {
-			newTableLen = calcTableLen(size + sizeAdd)
-			if newTableLen <= tableLen {
-				atomic.StorePointer(&m.resizeState, nil)
+			newLen = calcTableLen(size + sizeAdd)
+			if newLen <= tableLen {
+				atomic.StorePointer(&m.resize, nil)
 				rs.wg.Done()
 				return
 			}
 		}
-		atomic.AddUint32(&m.totalGrowths, 1)
+		atomic.AddUint32(&m.growths, 1)
 	} else {
 		if sizeAdd == 0 {
-			newTableLen = tableLen >> 1
+			newLen = tableLen >> 1
 		} else {
-			newTableLen = calcTableLen(size)
+			newLen = calcTableLen(size)
 		}
-		if newTableLen < m.minTableLen {
-			atomic.StorePointer(&m.resizeState, nil)
+		if newLen < m.minLen {
+			atomic.StorePointer(&m.resize, nil)
 			rs.wg.Done()
 			return
 		}
-		atomic.AddUint32(&m.totalShrinks, 1)
+		atomic.AddUint32(&m.shrinks, 1)
 	}
 
-	if newTableLen*int(unsafe.Sizeof(bucketOf{})) >= asyncResizeThreshold && cpus > 1 {
+	if newLen*int(unsafe.Sizeof(bucketOf{})) >= asyncThreshold && cpus > 1 {
 		// The big table, use goroutines to create new table and copy entries
-		go m.finalizeResize(table, newTableLen, rs, cpus)
+		go m.finalizeResize(table, newLen, rs, cpus)
 	} else {
-		m.finalizeResize(table, newTableLen, rs, cpus)
+		m.finalizeResize(table, newLen, rs, cpus)
 	}
 }
 
 func (m *MapOf[K, V]) finalizeResize(
 	table *mapOfTable,
-	newTableLen int,
+	newLen int,
 	rs *resizeState,
 	cpus int,
 ) {
 	atomic.StorePointer(&rs.table, unsafe.Pointer(table))
-	newTable := newMapOfTable(newTableLen, cpus)
+	newTable := newMapOfTable(newLen, cpus)
 	atomic.StorePointer(&rs.newTable, unsafe.Pointer(newTable))
 	m.helpCopyAndWait(rs)
 }
@@ -1121,11 +1120,11 @@ func (m *MapOf[K, V]) finalizeResize(
 //go:noinline
 func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 	table := (*mapOfTable)(loadPointerNoMB(&rs.table))
-	tableLen := table.bucketsMask + 1
+	tableLen := table.mask + 1
 	chunks := int32(table.chunks)
-	chunkSize := table.chunkSize
+	chunkSz := table.chunkSz
 	newTable := (*mapOfTable)(loadPointerNoMB(&rs.newTable))
-	isGrowth := (newTable.bucketsMask + 1) > tableLen
+	isGrowth := (newTable.mask + 1) > tableLen
 	for {
 		process := atomic.AddInt32(&rs.process, 1)
 		if process > chunks {
@@ -1134,8 +1133,8 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 			return
 		}
 		process--
-		start := int(process) * chunkSize
-		end := min(start+chunkSize, tableLen)
+		start := int(process) * chunkSz
+		end := min(start+chunkSz, tableLen)
 		if isGrowth {
 			m.copyBucketOf(table, start, end, newTable)
 		} else {
@@ -1144,7 +1143,7 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 		if atomic.AddInt32(&rs.completed, 1) == chunks {
 			// Copying completed
 			atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
-			atomic.StorePointer(&m.resizeState, nil)
+			atomic.StorePointer(&m.resize, nil)
 			rs.wg.Done()
 			return
 		}
@@ -1156,7 +1155,7 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 func (m *MapOf[K, V]) copyBucketOfLock(
 	table *mapOfTable,
 	start, end int,
-	destTable *mapOfTable,
+	mewTable *mapOfTable,
 ) {
 	seed := m.seed
 	keyHash := m.keyHash
@@ -1166,29 +1165,29 @@ func (m *MapOf[K, V]) copyBucketOfLock(
 		srcBucket := table.buckets.At(i)
 		srcBucket.Lock()
 		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
-			metaw := b.meta
-			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				idx := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(*b.At(idx)); e != nil {
+			meta := b.meta
+			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
+				j := firstMarkedByteIndex(marked)
+				if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
 					var hash uintptr
 					if embeddedHash {
 						hash = e.getHash()
 					} else {
 						hash = keyHash(noescape(unsafe.Pointer(&e.Key)), seed)
 					}
-					bidx := destTable.bucketsMask & h1(hash, intKey)
-					destb := destTable.buckets.At(bidx)
+					idx := mewTable.mask & h1(hash, intKey)
+					destBucket := mewTable.buckets.At(idx)
 					h2v := h2(hash)
 
-					destb.Lock()
-					b := destb
+					destBucket.Lock()
+					b := destBucket
 				appendToBucket:
 					for {
-						metaw := b.meta
-						emptyw := (^metaw) & metaMask
-						if emptyw != 0 {
-							emptyIdx := firstMarkedByteIndex(emptyw)
-							b.meta = setByte(metaw, h2v, emptyIdx)
+						meta := b.meta
+						empty := (^meta) & metaMask
+						if empty != 0 {
+							emptyIdx := firstMarkedByteIndex(empty)
+							b.meta = setByte(meta, h2v, emptyIdx)
 							*b.At(emptyIdx) = unsafe.Pointer(e)
 							break appendToBucket
 						}
@@ -1196,13 +1195,13 @@ func (m *MapOf[K, V]) copyBucketOfLock(
 						if next == nil {
 							b.next = unsafe.Pointer(&bucketOf{
 								meta:    setByte(emptyMeta, h2v, 0),
-								entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(e)},
+								entries: [entriesPerBucket]unsafe.Pointer{unsafe.Pointer(e)},
 							})
 							break appendToBucket
 						}
 						b = next
 					}
-					destb.Unlock()
+					destBucket.Unlock()
 
 					copied++
 				}
@@ -1211,14 +1210,14 @@ func (m *MapOf[K, V]) copyBucketOfLock(
 		srcBucket.Unlock()
 	}
 	if copied != 0 {
-		destTable.AddSize(start, copied)
+		mewTable.AddSize(start, copied)
 	}
 }
 
 func (m *MapOf[K, V]) copyBucketOf(
 	table *mapOfTable,
 	start, end int,
-	destTable *mapOfTable,
+	newTable *mapOfTable,
 ) {
 	seed := m.seed
 	keyHash := m.keyHash
@@ -1228,28 +1227,28 @@ func (m *MapOf[K, V]) copyBucketOf(
 		srcBucket := table.buckets.At(i)
 		srcBucket.Lock()
 		for b := srcBucket; b != nil; b = (*bucketOf)(b.next) {
-			metaw := b.meta
-			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				idx := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(*b.At(idx)); e != nil {
+			meta := b.meta
+			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
+				j := firstMarkedByteIndex(marked)
+				if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
 					var hash uintptr
 					if embeddedHash {
 						hash = e.getHash()
 					} else {
 						hash = keyHash(noescape(unsafe.Pointer(&e.Key)), seed)
 					}
-					bidx := destTable.bucketsMask & h1(hash, intKey)
-					destb := destTable.buckets.At(bidx)
+					idx := newTable.mask & h1(hash, intKey)
+					destBucket := newTable.buckets.At(idx)
 					h2v := h2(hash)
 
-					b := destb
+					b := destBucket
 				appendToBucket:
 					for {
-						metaw := b.meta
-						emptyw := (^metaw) & metaMask
-						if emptyw != 0 {
-							emptyIdx := firstMarkedByteIndex(emptyw)
-							b.meta = setByte(metaw, h2v, emptyIdx)
+						meta := b.meta
+						empty := (^meta) & metaMask
+						if empty != 0 {
+							emptyIdx := firstMarkedByteIndex(empty)
+							b.meta = setByte(meta, h2v, emptyIdx)
 							*b.At(emptyIdx) = unsafe.Pointer(e)
 							break appendToBucket
 						}
@@ -1257,7 +1256,7 @@ func (m *MapOf[K, V]) copyBucketOf(
 						if next == nil {
 							b.next = unsafe.Pointer(&bucketOf{
 								meta:    setByte(emptyMeta, h2v, 0),
-								entries: [entriesPerMapOfBucket]unsafe.Pointer{unsafe.Pointer(e)},
+								entries: [entriesPerBucket]unsafe.Pointer{unsafe.Pointer(e)},
 							})
 							break appendToBucket
 						}
@@ -1273,7 +1272,7 @@ func (m *MapOf[K, V]) copyBucketOf(
 	if copied != 0 {
 		// copyBucketOf is used during multithreaded growth, requiring a
 		// thread-safe AddSize.
-		destTable.AddSize(start, copied)
+		newTable.AddSize(start, copied)
 	}
 }
 
@@ -1309,14 +1308,14 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 		return
 	}
 
-	for i := 0; i <= table.bucketsMask; i++ {
-		rootb := table.buckets.At(i)
-		rootb.Lock()
-		for b := rootb; b != nil; b = (*bucketOf)(b.next) {
-			metaw := b.meta
-			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				idx := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(*b.At(idx)); e != nil {
+	for i := 0; i <= table.mask; i++ {
+		root := table.buckets.At(i)
+		root.Lock()
+		for b := root; b != nil; b = (*bucketOf)(b.next) {
+			meta := b.meta
+			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
+				j := firstMarkedByteIndex(marked)
+				if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
 
 					newEntry := fn(e)
 
@@ -1325,18 +1324,18 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 					} else if newEntry != nil {
 						// Update
 						newEntry.Key = e.Key
-						storePointerNoMB(b.At(idx), unsafe.Pointer(newEntry))
+						storePointerNoMB(b.At(j), unsafe.Pointer(newEntry))
 					} else {
 						// Delete
-						storePointerNoMB(b.At(idx), nil)
-						newmetaw := setByte(metaw, emptyMetaSlot, idx)
-						storeUint64NoMB(&b.meta, newmetaw)
+						storePointerNoMB(b.At(j), nil)
+						newMeta := setByte(meta, emptySlot, j)
+						storeUint64NoMB(&b.meta, newMeta)
 						table.AddSize(i, -1)
 					}
 				}
 			}
 		}
-		rootb.Unlock()
+		root.Unlock()
 	}
 }
 
@@ -1929,7 +1928,7 @@ func (m *MapOf[K, V]) Clear() {
 	if table == nil {
 		return
 	}
-	m.resize(mapClearHint, 0)
+	m.doResize(mapClearHint, 0)
 }
 
 // Grow increases the map's capacity by sizeAdd entries to accommodate future
@@ -1950,7 +1949,7 @@ func (m *MapOf[K, V]) Grow(sizeAdd int) {
 	if loadPointerNoMB(&m.table) == nil {
 		m.initSlow()
 	}
-	m.resize(mapGrowHint, sizeAdd)
+	m.doResize(mapGrowHint, sizeAdd)
 }
 
 // Shrink reduces the capacity to fit the current size,
@@ -1960,7 +1959,7 @@ func (m *MapOf[K, V]) Shrink() {
 	if table == nil {
 		return
 	}
-	m.resize(mapShrinkHint, -1)
+	m.doResize(mapShrinkHint, -1)
 }
 
 // RangeEntry iterates over all entries in the map.
@@ -1978,12 +1977,12 @@ func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
 	if table == nil {
 		return
 	}
-	for i := 0; i <= table.bucketsMask; i++ {
+	for i := 0; i <= table.mask; i++ {
 		for b := table.buckets.At(i); b != nil; b = (*bucketOf)(loadPointerNoMB(&b.next)) {
-			metaw := loadUint64NoMB(&b.meta)
-			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				idx := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(loadPointerNoMB(b.At(idx))); e != nil {
+			meta := loadUint64NoMB(&b.meta)
+			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
+				j := firstMarkedByteIndex(marked)
+				if e := (*EntryOf[K, V])(loadPointerNoMB(b.At(j))); e != nil {
 					if !yield(e) {
 						return
 					}
@@ -2125,6 +2124,7 @@ var (
 
 // SetDefaultJSONMarshal sets the default JSON serialization and deserialization
 // functions. If not set, the standard library is used by default.
+//lint:ignore U1000
 func SetDefaultJSONMarshal(
 	marshal func(v any) ([]byte, error),
 	unmarshal func(data []byte, v any) error,
@@ -2592,11 +2592,11 @@ func (m *MapOf[K, V]) CloneTo(clone *MapOf[K, V]) {
 	clone.seed = m.seed
 	clone.keyHash = m.keyHash
 	clone.valEqual = m.valEqual
-	clone.minTableLen = m.minTableLen
-	clone.shrinkEnabled = m.shrinkEnabled
+	clone.minLen = m.minLen
+	clone.shrinkOn = m.shrinkOn
 	clone.intKey = m.intKey
 	atomic.StorePointer(&clone.table,
-		unsafe.Pointer(newMapOfTable(clone.minTableLen, runtime.GOMAXPROCS(0))),
+		unsafe.Pointer(newMapOfTable(clone.minLen, runtime.GOMAXPROCS(0))),
 	)
 
 	// Pre-fetch size to optimize initial capacity
@@ -2616,43 +2616,43 @@ func (m *MapOf[K, V]) CloneTo(clone *MapOf[K, V]) {
 // so it should be used only for diagnostics or debugging purposes.
 func (m *MapOf[K, V]) Stats() *MapStats {
 	stats := &MapStats{
-		TotalGrowths: loadUint32NoMB(&m.totalGrowths),
-		TotalShrinks: loadUint32NoMB(&m.totalShrinks),
+		TotalGrowths: loadUint32NoMB(&m.growths),
+		TotalShrinks: loadUint32NoMB(&m.shrinks),
 		MinEntries:   math.MaxInt,
 	}
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	if table == nil {
 		return stats
 	}
-	stats.RootBuckets = table.bucketsMask + 1
+	stats.RootBuckets = table.mask + 1
 	stats.Counter = table.SumSize()
 	stats.CounterLen = table.sizeMask + 1
-	for i := 0; i <= table.bucketsMask; i++ {
-		nentries := 0
+	for i := 0; i <= table.mask; i++ {
+		entries := 0
 		for b := table.buckets.At(i); b != nil; b = (*bucketOf)(loadPointerNoMB(&b.next)) {
 			stats.TotalBuckets++
-			nentriesLocal := 0
-			stats.Capacity += entriesPerMapOfBucket
+			entriesLocal := 0
+			stats.Capacity += entriesPerBucket
 
-			metaw := loadUint64NoMB(&b.meta)
-			for markedw := metaw & metaMask; markedw != 0; markedw &= markedw - 1 {
-				idx := firstMarkedByteIndex(markedw)
-				if e := (*EntryOf[K, V])(loadPointerNoMB(b.At(idx))); e != nil {
+			meta := loadUint64NoMB(&b.meta)
+			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
+				j := firstMarkedByteIndex(marked)
+				if e := (*EntryOf[K, V])(loadPointerNoMB(b.At(j))); e != nil {
 					stats.Size++
-					nentriesLocal++
+					entriesLocal++
 				}
 			}
-			nentries += nentriesLocal
-			if nentriesLocal == 0 {
+			entries += entriesLocal
+			if entriesLocal == 0 {
 				stats.EmptyBuckets++
 			}
 		}
 
-		if nentries < stats.MinEntries {
-			stats.MinEntries = nentries
+		if entries < stats.MinEntries {
+			stats.MinEntries = entries
 		}
-		if nentries > stats.MaxEntries {
-			stats.MaxEntries = nentries
+		if entries > stats.MaxEntries {
+			stats.MaxEntries = entries
 		}
 	}
 	return stats
@@ -2736,7 +2736,7 @@ func parallelProcess(
 ) {
 	chunkSize, chunks := calcParallelism(
 		itemCount,
-		minParallelBatchItems,
+		minBatchItems,
 		runtime.GOMAXPROCS(0),
 	)
 	if chunks > 1 {
@@ -2788,14 +2788,14 @@ func calcParallelism(items, threshold, cpus int) (chunkSize, chunks int) {
 //
 //go:nosplit
 func calcTableLen(sizeHint int) int {
-	tableLen := defaultMinMapTableLen
-	const minSizeHintThreshold = int(float64(defaultMinMapTableLen*entriesPerMapOfBucket) * mapLoadFactor)
+	tableLen := minTableLen
+	const minSizeHintThreshold = int(float64(minTableLen*entriesPerBucket) * loadFactor)
 	if sizeHint >= minSizeHintThreshold {
-		const invSizeHintFactor = 1.0 / (float64(entriesPerMapOfBucket) * mapLoadFactor)
-		// +entriesPerMapOfBucket-1 is used to compensate for calculation
+		const invSizeHintFactor = 1.0 / (float64(entriesPerBucket) * loadFactor)
+		// +entriesPerBucket-1 is used to compensate for calculation
 		// inaccuracies
 		tableLen = nextPowOf2(
-			int(float64(sizeHint+entriesPerMapOfBucket-1) * invSizeHintFactor),
+			int(float64(sizeHint+entriesPerBucket-1) * invSizeHintFactor),
 		)
 	}
 	return tableLen
@@ -2847,8 +2847,8 @@ func spread(h uintptr) uintptr {
 //go:nosplit
 func h1(h uintptr, intKey bool) int {
 	if intKey {
-		// Possible values: [1,2,3,4,...entriesPerMapOfBucket].
-		return int(h) / entriesPerMapOfBucket
+		// Possible values: [1,2,3,4,...entriesPerBucket].
+		return int(h) / entriesPerBucket
 	}
 	if enableHashSpread {
 		return int(spread(h)) >> 7
@@ -2861,9 +2861,9 @@ func h1(h uintptr, intKey bool) int {
 //go:nosplit
 func h2(h uintptr) uint8 {
 	if enableHashSpread {
-		return uint8(spread(h)) | metaSlotMask
+		return uint8(spread(h)) | slotMask
 	}
-	return uint8(h) | metaSlotMask
+	return uint8(h) | slotMask
 }
 
 // broadcast replicates a byte value across all bytes of an uint64.
@@ -3071,19 +3071,15 @@ func delay(spins *int) {
 //
 //go:linkname runtime_canSpin sync.runtime_canSpin
 //go:nosplit
+//goland:noinspection ALL
 func runtime_canSpin(i int) bool
 
 // nolint:all
 //
 //go:linkname runtime_doSpin sync.runtime_doSpin
 //go:nosplit
+//goland:noinspection ALL
 func runtime_doSpin()
-
-//// nolint:all
-////
-////go:linkname runtime_nanotime runtime.nanotime
-////go:nosplit
-//func runtime_nanotime() int64
 
 type (
 	HashFunc  func(ptr unsafe.Pointer, seed uintptr) uintptr

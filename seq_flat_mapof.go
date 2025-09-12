@@ -103,7 +103,7 @@ func newSeqFlatTable[K comparable, V comparable](
 	tableLen, cpus int,
 ) *seqFlatTable[K, V] {
 	b := make([]seqFlatBucket[K, V], tableLen)
-	chunkSz, chunks := calcParallelism(tableLen, minBucketsPerGoroutine, cpus)
+	chunkSz, chunks := calcParallelism(tableLen, minBucketsPerCPU, cpus)
 	sizeLen := calcSizeLen(tableLen, cpus)
 	return &seqFlatTable[K, V]{
 		buckets:  makeUnsafeSlice(b),
@@ -142,10 +142,9 @@ func (t *seqFlatTable[K, V]) SumSizeExceeds(limit int) bool {
 }
 
 type seqFlatBucket[K comparable, V comparable] struct {
-	_       [0]int64
 	meta    atomicUint64 // occupancy + h2 bytes + op lock bit
 	seq     atomicUint64 // seqlock sequence (even=stable, odd=write)
-	entries [entriesPerMapOfBucket]seqFlatEntry[K, V]
+	entries [entriesPerBucket]seqFlatEntry[K, V]
 	next    unsafe.Pointer // *seqFlatBucket[K,V]
 }
 
@@ -196,7 +195,7 @@ func (b *seqFlatBucket[K, V]) Unlock() {
 func (b *seqFlatBucket[K, V]) UnlockWithMeta(
 	meta uint64,
 ) {
-	b.meta.Store(meta & (^opLockMask))
+	b.meta.Store(meta &^ opLockMask)
 }
 
 //go:nosplit
@@ -223,8 +222,8 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 			}
 			meta := b.meta.Load()
 			for marked := markZeroBytes(meta ^ h2); marked != 0; marked &= marked - 1 {
-				i := firstMarkedByteIndex(marked)
-				e := b.At(i)
+				j := firstMarkedByteIndex(marked)
+				e := b.At(j)
 				v := e.value
 				if embeddedHash {
 					if e.getHash() == hash && e.key == key {
@@ -267,8 +266,8 @@ fallback:
 	for b := root; b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
 		meta := *b.meta.Raw()
 		for marked := markZeroBytes(meta ^ h2); marked != 0; marked &= marked - 1 {
-			i := firstMarkedByteIndex(marked)
-			e := b.At(i)
+			j := firstMarkedByteIndex(marked)
+			e := b.At(j)
 			v := e.value
 			if embeddedHash {
 				if e.getHash() == hash && e.key == key {
@@ -302,7 +301,7 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 		k K
 		v V
 	}
-	var cache [entriesPerMapOfBucket]kvEntry
+	var cache [entriesPerBucket]kvEntry
 	var cacheCount int
 	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
 	for i := 0; i <= table.mask; i++ {
@@ -320,8 +319,8 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 				meta = b.meta.Load()
 				cacheCount = 0
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
-					i := firstMarkedByteIndex(marked)
-					e := b.At(i)
+					j := firstMarkedByteIndex(marked)
+					e := b.At(j)
 					v := e.value
 					if m.valueIsValid(v) {
 						cache[cacheCount] = kvEntry{k: e.key, v: v}
@@ -348,8 +347,8 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 				root.Lock()
 				meta = *b.meta.Raw()
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
-					i := firstMarkedByteIndex(marked)
-					e := b.At(i)
+					j := firstMarkedByteIndex(marked)
+					e := b.At(j)
 					v := e.value
 					if m.valueIsValid(v) {
 						cache[cacheCount] = kvEntry{k: e.key, v: v}
@@ -380,7 +379,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h1v := h1(hash, m.intKey)
 	h2v := h2(hash)
-	h2 := broadcast(h2v)
+	h2w := broadcast(h2v)
 
 	for {
 		idx := table.mask & h1v
@@ -403,32 +402,32 @@ func (m *SeqFlatMapOf[K, V]) Process(
 		}
 
 		var (
-			oldB    *seqFlatBucket[K, V]
-			oldIdx  int
-			oldMeta uint64
-			oldVal  V
-			loaded  bool
-			emptyB  *seqFlatBucket[K, V]
-			emptyI  int
-			lastB   *seqFlatBucket[K, V]
+			oldB     *seqFlatBucket[K, V]
+			oldIdx   int
+			oldMeta  uint64
+			oldVal   V
+			loaded   bool
+			emptyB   *seqFlatBucket[K, V]
+			emptyIdx int
+			lastB    *seqFlatBucket[K, V]
 		)
 
 	findLoop:
 		for b := root; b != nil; b = (*seqFlatBucket[K, V])(b.next) {
 			meta := *b.meta.Raw()
-			for marked := markZeroBytes(meta ^ h2); marked != 0; marked &= marked - 1 {
-				i := firstMarkedByteIndex(marked)
-				e := b.At(i)
+			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
+				j := firstMarkedByteIndex(marked)
+				e := b.At(j)
 				v := e.value
 				if m.valueIsValid(v) {
 					if embeddedHash {
 						if e.getHash() == hash && e.key == key {
-							oldB, oldIdx, oldMeta, oldVal, loaded = b, i, meta, v, true
+							oldB, oldIdx, oldMeta, oldVal, loaded = b, j, meta, v, true
 							break findLoop
 						}
 					} else {
 						if e.key == key {
-							oldB, oldIdx, oldMeta, oldVal, loaded = b, i, meta, v, true
+							oldB, oldIdx, oldMeta, oldVal, loaded = b, j, meta, v, true
 							break findLoop
 						}
 					}
@@ -437,7 +436,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 			if emptyB == nil {
 				if empty := (^meta) & metaMask; empty != 0 {
 					emptyB = b
-					emptyI = firstMarkedByteIndex(empty)
+					emptyIdx = firstMarkedByteIndex(empty)
 				}
 			}
 			lastB = b
@@ -451,7 +450,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 				return value, status
 			}
 			// Precompute new meta and minimize odd window
-			newMeta := setByte(oldMeta, emptyMetaSlot, oldIdx)
+			newMeta := setByte(oldMeta, emptySlot, oldIdx)
 			s := oldB.seq.Load()
 			oldB.seq.Store(s + 1)
 			oldB.meta.Store(newMeta)
@@ -476,13 +475,13 @@ func (m *SeqFlatMapOf[K, V]) Process(
 			// insert new
 			if emptyB != nil {
 				// Prefill entry data before odd to shorten odd window
-				entry := emptyB.At(emptyI)
+				entry := emptyB.At(emptyIdx)
 				if embeddedHash {
 					entry.setHash(hash)
 				}
 				entry.key = key
 				entry.value = newV
-				newMeta := setByte(*emptyB.meta.Raw(), h2v, emptyI)
+				newMeta := setByte(*emptyB.meta.Raw(), h2v, emptyIdx)
 				s := emptyB.seq.Load()
 				emptyB.seq.Store(s + 1)
 				// Publish meta while still holding the root lock to ensure
@@ -498,7 +497,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 					atomic.LoadPointer(&m.resize) == nil {
 					tableLen := table.mask + 1
 					size := table.SumSize()
-					const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
+					const sizeHintFactor = float64(entriesPerBucket) * loadFactor
 					if size >= int(float64(tableLen)*sizeHintFactor) {
 						m.tryResize(mapGrowHint, size, 0)
 					}
@@ -508,7 +507,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 			// append new bucket
 			bucket := &seqFlatBucket[K, V]{
 				meta: makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
-				entries: [entriesPerMapOfBucket]seqFlatEntry[K, V]{
+				entries: [entriesPerBucket]seqFlatEntry[K, V]{
 					{key: key, value: newV},
 				},
 			}
@@ -522,7 +521,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 			if atomic.LoadPointer(&m.resize) == nil {
 				tableLen := table.mask + 1
 				size := table.SumSize()
-				const sizeHintFactor = float64(entriesPerMapOfBucket) * mapLoadFactor
+				const sizeHintFactor = float64(entriesPerBucket) * loadFactor
 				if size >= int(float64(tableLen)*sizeHintFactor) {
 					m.tryResize(mapGrowHint, size, 0)
 				}
@@ -672,7 +671,7 @@ func (m *SeqFlatMapOf[K, V]) tryResize(hint mapResizeHint, size, sizeAdd int) {
 		}
 	}
 
-	if newLen*int(unsafe.Sizeof(seqFlatBucket[K, V]{})) >= asyncResizeThreshold && cpus > 1 {
+	if newLen*int(unsafe.Sizeof(seqFlatBucket[K, V]{})) >= asyncThreshold && cpus > 1 {
 		go m.finalizeResize(table, newLen, rs, cpus)
 	} else {
 		m.finalizeResize(table, newLen, rs, cpus)
@@ -730,7 +729,8 @@ func (m *SeqFlatMapOf[K, V]) copySeqFlatBucketRange(
 		for b := srcBucket; b != nil; b = (*seqFlatBucket[K, V])(b.next) {
 			meta := *b.meta.Raw()
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
-				e := b.At(firstMarkedByteIndex(marked))
+				j := firstMarkedByteIndex(marked)
+				e := b.At(j)
 				v := e.value
 				if m.valueIsValid(v) {
 					if embeddedHash {
@@ -748,9 +748,9 @@ func (m *SeqFlatMapOf[K, V]) copySeqFlatBucketRange(
 						meta := *b.meta.Raw()
 						empty := (^meta) & metaMask
 						if empty != 0 {
-							emptyI := firstMarkedByteIndex(empty)
-							*b.meta.Raw() = setByte(meta, h2v, emptyI)
-							entry := b.At(emptyI)
+							emptyIdx := firstMarkedByteIndex(empty)
+							*b.meta.Raw() = setByte(meta, h2v, emptyIdx)
+							entry := b.At(emptyIdx)
 							entry.value = v
 							if embeddedHash {
 								entry.setHash(hash)
@@ -762,7 +762,7 @@ func (m *SeqFlatMapOf[K, V]) copySeqFlatBucketRange(
 						if next == nil {
 							bucket := &seqFlatBucket[K, V]{
 								meta:    makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
-								entries: [entriesPerMapOfBucket]seqFlatEntry[K, V]{{value: v, key: e.key}},
+								entries: [entriesPerBucket]seqFlatEntry[K, V]{{value: v, key: e.key}},
 							}
 							if embeddedHash {
 								bucket.At(0).setHash(hash)
