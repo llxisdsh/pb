@@ -216,9 +216,10 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 		for {
 			s1 := b.seq.Load()
 			if (s1 & 1) != 0 { // writer in progress
-				if !trySpin(&spins) {
-					goto fallback
+				if trySpin(&spins) {
+					continue
 				}
+				goto fallback
 			}
 			meta := b.meta.Load()
 			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
@@ -253,9 +254,10 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 			if s1 == s2 && (s2&1) == 0 {
 				break
 			}
-			if !trySpin(&spins) {
-				goto fallback
+			if trySpin(&spins) {
+				continue
 			}
+			goto fallback
 		}
 	}
 	return
