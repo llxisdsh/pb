@@ -173,7 +173,7 @@ func BenchmarkFlatMapOf_Resize(b *testing.B) {
 					if table == nil {
 						return 0
 					}
-					return table.bucketsMask + 1
+					return table.mask + 1
 				}
 				initialLen := getLen()
 
@@ -274,7 +274,7 @@ func BenchmarkFlatMapOf_ConcurrentResize(b *testing.B) {
 			if table == nil {
 				return 0
 			}
-			return table.bucketsMask + 1
+			return table.mask + 1
 		}
 
 		b.ResetTimer()
