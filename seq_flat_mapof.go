@@ -58,6 +58,20 @@ func NewSeqFlatMapOf[K comparable, V comparable](
 		opt(&cfg)
 	}
 
+	// parse interface
+	if cfg.KeyHash == nil {
+		var zeroK K
+		ak := any(&zeroK)
+		if _, ok := ak.(IHashCode); ok {
+			cfg.KeyHash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
+				return any((*K)(ptr)).(IHashCode).HashCode(seed)
+			}
+			if i, ok := ak.(IHashOpts); ok {
+				cfg.HashOpts = i.HashOpts()
+			}
+		}
+	}
+
 	m := &SeqFlatMapOf[K, V]{}
 	m.seed = uintptr(rand.Uint64())
 	m.keyHash, _, m.intKey = defaultHasher[K, V]()
