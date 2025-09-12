@@ -56,7 +56,7 @@ const (
 	// minParallelBatchItems: threshold for parallel batch processing
 	minParallelBatchItems = 256
 	// asyncResizeThreshold: threshold for asynchronous resize
-	asyncResizeThreshold = 128 * 1024 / CacheLineSize
+	asyncResizeThreshold = 128 * 1024
 )
 
 // Feature flags for performance optimization
@@ -1098,7 +1098,7 @@ func (m *MapOf[K, V]) tryResize(
 		atomic.AddUint32(&m.totalShrinks, 1)
 	}
 
-	if newTableLen >= int(asyncResizeThreshold) && cpus > 1 {
+	if newTableLen*int(unsafe.Sizeof(bucketOf{})) >= asyncResizeThreshold && cpus > 1 {
 		// The big table, use goroutines to create new table and copy entries
 		go m.finalizeResize(table, newTableLen, rs, cpus)
 	} else {

@@ -678,7 +678,7 @@ func (m *FlatMapOf[K, V]) tryResize(hint mapResizeHint, size, sizeAdd int) {
 		}
 	}
 
-	if newTableLen >= int(asyncResizeThreshold) && cpus > 1 {
+	if newTableLen*int(unsafe.Sizeof(flatBucket[K, V]{})) >= asyncResizeThreshold && cpus > 1 {
 		go m.finalizeResize(table, newTableLen, rs, cpus)
 	} else {
 		m.finalizeResize(table, newTableLen, rs, cpus)
