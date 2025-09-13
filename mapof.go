@@ -1324,7 +1324,7 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 					} else if newEntry != nil {
 						// Update
 						if embeddedHash {
-							newEntry.setHash(e.hash)
+							newEntry.setHash(e.getHash())
 						}
 						newEntry.Key = e.Key
 						storePointerNoMB(b.At(j), unsafe.Pointer(newEntry))
