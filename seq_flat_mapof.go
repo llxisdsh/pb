@@ -247,7 +247,7 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 							if m.valueIsValid(v) {
 								return v, true
 							}
-							return value, false
+							return
 						}
 						break // retry bucket
 					}
@@ -258,7 +258,7 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 							if m.valueIsValid(v) {
 								return v, true
 							}
-							return value, false
+							return
 						}
 						break // retry bucket
 					}
