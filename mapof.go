@@ -1323,6 +1323,9 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 						// No entry to update or delete
 					} else if newEntry != nil {
 						// Update
+						if embeddedHash {
+							newEntry.setHash(e.hash)
+						}
 						newEntry.Key = e.Key
 						storePointerNoMB(b.At(j), unsafe.Pointer(newEntry))
 					} else {
@@ -2124,6 +2127,7 @@ var (
 
 // SetDefaultJSONMarshal sets the default JSON serialization and deserialization
 // functions. If not set, the standard library is used by default.
+//
 //lint:ignore U1000
 func SetDefaultJSONMarshal(
 	marshal func(v any) ([]byte, error),
