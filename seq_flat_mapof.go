@@ -434,12 +434,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 			oldB.meta.Store(newMeta)
 			oldB.seq.Store(s + 2)
 			// After publishing even, clear entry fields before releasing root lock
-			entry := oldB.At(oldIdx)
-			if embeddedHash {
-				entry.setHash(0)
-			}
-			entry.key = *new(K)
-			entry.value = *new(V)
+			*oldB.At(oldIdx) = seqFlatEntry[K, V]{}
 			root.Unlock()
 			table.AddSize(idx, -1)
 			return value, status
