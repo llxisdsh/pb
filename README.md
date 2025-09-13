@@ -886,20 +886,20 @@ Limitations
 
 ## Differences from Other Implementations
 - Versus `FlatMapOf`
-  - Read performance: `FlatMapOf` uses true lock-free reads via atomicValue and is usually faster on pure read workloads; `SeqFlatMapOf` incurs seqlock validation and occasional fallback, so it is typically a bit slower.
-  - Value type constraints: `FlatMapOf`’s read path favors V ≤ 8 bytes (or pointer indirection); `SeqFlatMapOf` has no value size limitation.
-  - Delete behavior: `FlatMapOf` by default only “unpublishes” the slot and retains the key (optionally zeroing the value with `WithZeroAsDeleted`); `SeqFlatMapOf`, after publishing an even sequence, actively clears both key and value without any additional option.
+  - Read performance: FlatMapOf uses true lock-free reads via atomicValue and is usually faster on pure read workloads; SeqFlatMapOf incurs seqlock validation and occasional fallback, so it is typically a bit slower.
+  - Value type constraints: FlatMapOf’s read path favors V ≤ 8 bytes (or pointer indirection); SeqFlatMapOf has no value size limitation.
+  - Delete behavior: FlatMapOf by default only “unpublishes” the slot and retains the key (optionally zeroing the value with `WithZeroAsDeleted`); SeqFlatMapOf, after publishing an even sequence, actively clears both key and value without any additional option.
   - Shrinking: neither supports automatic shrinking.
 - Versus `MapOf`
-  - Performance direction: `SeqFlatMapOf` is generally faster than `MapOf` on read-heavy and mixed workloads; `FlatMapOf` remains the top choice for peak read throughput.
-  - Memory and features: `MapOf` typically achieves better memory efficiency and supports automatic shrinking; `SeqFlatMapOf` trades a larger per-bucket footprint and seqlock for predictable read latency.
-  - Consistency model: `MapOf` provides a global snapshot view; `SeqFlatMapOf` offers bucket-local consistency but may experience “stale reads” in some scenarios.
-  - Access path: `MapOf` uses pointer indirection without sequence checks; `SeqFlatMapOf` uses a flat layout with seqlock validation, often providing more stable hit latency.
+  - Performance direction: SeqFlatMapOf is generally faster than MapOf on read-heavy and mixed workloads; FlatMapOf remains the top choice for peak read throughput.
+  - Memory and features: MapOf typically achieves better memory efficiency and supports automatic shrinking; SeqFlatMapOf trades a larger per-bucket footprint and seqlock for predictable read latency.
+  - Consistency model: MapOf provides a global snapshot view; SeqFlatMapOf offers bucket-local consistency but may experience “stale reads” in some scenarios.
+  - Access path: MapOf uses pointer indirection without sequence checks; SeqFlatMapOf uses a flat layout with seqlock validation, often providing more stable hit latency.
 
 ## When to Choose What
-- Choose SeqFlatMapOf: read-heavy workloads with frequent Range; values larger than a machine word (>8B) where you want inline storage; you want deletes to physically clear both K and V without feature switches.
-- Choose FlatMapOf: very small K/V with the highest possible read throughput, and you can accept “no shrinking” and V size constraints.
-- Choose MapOf: best memory utilization, supports shrinking, and offers the most general-purpose feature set.
+- Choose `SeqFlatMapOf`: read-heavy workloads with frequent Range; values larger than a machine word (>8B) where you want inline storage; you want deletes to physically clear both K and V without feature switches.
+- Choose `FlatMapOf`: very small K/V with the highest possible read throughput, and you can accept “no shrinking” and V size constraints.
+- Choose `MapOf`: best memory utilization, supports shrinking, and offers the most general-purpose feature set.
 
 ---
 
