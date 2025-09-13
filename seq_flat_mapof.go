@@ -23,11 +23,9 @@ import (
 //     root lock.
 //   - Resize: same approach as FlatMapOf; copy under root bucket lock.
 //
-// WithZeroAsDeleted is supported like FlatMapOf.
-//
 // EXPERIMENTAL: this implementation is experimental; APIs and
 // concurrency semantics may evolve.
-type SeqFlatMapOf[K comparable, V comparable] struct {
+type SeqFlatMapOf[K comparable, V any] struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_       noCopy
 		table   unsafe.Pointer
@@ -36,7 +34,6 @@ type SeqFlatMapOf[K comparable, V comparable] struct {
 		keyHash HashFunc
 		minLen  int
 		intKey  bool
-		zeroDel bool
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	_       noCopy
@@ -46,11 +43,10 @@ type SeqFlatMapOf[K comparable, V comparable] struct {
 	keyHash HashFunc
 	minLen  int
 	intKey  bool
-	zeroDel bool
 }
 
 // NewSeqFlatMapOf creates a new seqlock-based flat map.
-func NewSeqFlatMapOf[K comparable, V comparable](
+func NewSeqFlatMapOf[K comparable, V any](
 	options ...func(*MapConfig),
 ) *SeqFlatMapOf[K, V] {
 	var cfg MapConfig
@@ -88,14 +84,13 @@ func NewSeqFlatMapOf[K comparable, V comparable](
 		}
 	}
 	m.minLen = calcTableLen(cfg.SizeHint)
-	m.zeroDel = cfg.zeroAsDeleted
 
 	t := newSeqFlatTable[K, V](m.minLen, runtime.GOMAXPROCS(0))
 	atomic.StorePointer(&m.table, unsafe.Pointer(t))
 	return m
 }
 
-type seqFlatTable[K comparable, V comparable] struct {
+type seqFlatTable[K comparable, V any] struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		buckets  unsafeSlice[seqFlatBucket[K, V]]
 		mask     int
@@ -113,7 +108,7 @@ type seqFlatTable[K comparable, V comparable] struct {
 	chunkSz  int
 }
 
-func newSeqFlatTable[K comparable, V comparable](
+func newSeqFlatTable[K comparable, V any](
 	tableLen, cpus int,
 ) *seqFlatTable[K, V] {
 	b := make([]seqFlatBucket[K, V], tableLen)
@@ -155,7 +150,7 @@ func (t *seqFlatTable[K, V]) SumSizeExceeds(limit int) bool {
 	return false
 }
 
-type seqFlatBucket[K comparable, V comparable] struct {
+type seqFlatBucket[K comparable, V any] struct {
 	meta    atomicUint64 // occupancy + h2 bytes + op lock bit
 	seq     atomicUint64 // seqlock sequence (even=stable, odd=write)
 	entries [entriesPerBucket]seqFlatEntry[K, V]
@@ -212,11 +207,6 @@ func (b *seqFlatBucket[K, V]) UnlockWithMeta(
 	b.meta.Store(meta &^ opLockMask)
 }
 
-//go:nosplit
-func (m *SeqFlatMapOf[K, V]) valueIsValid(v V) bool {
-	return !m.zeroDel || v != *new(V)
-}
-
 // Load with per-bucket seqlock read
 func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
@@ -227,49 +217,35 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	root := table.buckets.At(idx)
 	for b := root; b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
 		spins := 0
-		for {
-			s1 := b.seq.Load()
-			if (s1 & 1) != 0 { // writer in progress
-				if trySpin(&spins) {
-					continue
-				}
-				goto fallback
-			}
+	retry:
+		s1 := b.seq.Load()
+		if (s1 & 1) == 0 {
 			meta := b.meta.Load()
 			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
-				e := b.At(j)
-				v := e.value
-				if embeddedHash {
-					if e.getHash() == hash && e.key == key {
-						s2 := b.seq.Load()
-						if s1 == s2 && (s2&1) == 0 {
-							if m.valueIsValid(v) {
-								return v, true
-							}
-							return
+				e := *b.At(j) // copy entry after seq check
+				s2 := b.seq.Load()
+				if s1 == s2 {
+					if embeddedHash {
+						if e.getHash() == hash && e.key == key {
+							return e.value, true
 						}
-						break // retry bucket
+					} else {
+						if e.key == key {
+							return e.value, true
+						}
 					}
 				} else {
-					if e.key == key {
-						s2 := b.seq.Load()
-						if s1 == s2 && (s2&1) == 0 {
-							if m.valueIsValid(v) {
-								return v, true
-							}
-							return
-						}
-						break // retry bucket
+					if trySpin(&spins) {
+						goto retry
 					}
+					goto fallback
 				}
 			}
-			s2 := b.seq.Load()
-			if s1 == s2 && (s2&1) == 0 {
-				break
-			}
+		} else {
+			// writer in progress
 			if trySpin(&spins) {
-				continue
+				goto retry
 			}
 			goto fallback
 		}
@@ -279,7 +255,7 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 fallback:
 	// fallback: find entry under lock
 	root.Lock()
-	for b := root; b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
+	for b := root; b != nil; b = (*seqFlatBucket[K, V])(b.next) {
 		meta := *b.meta.Raw()
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
@@ -288,18 +264,12 @@ fallback:
 			if embeddedHash {
 				if e.getHash() == hash && e.key == key {
 					root.Unlock()
-					if m.valueIsValid(v) {
-						return v, true
-					}
-					return
+					return v, true
 				}
 			} else {
 				if e.key == key {
 					root.Unlock()
-					if m.valueIsValid(v) {
-						return v, true
-					}
-					return
+					return v, true
 				}
 			}
 		}
@@ -332,19 +302,17 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					}
 					goto fallback
 				}
+				// copy entries after seq check
 				meta = b.meta.Load()
 				cacheCount = 0
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 					j := firstMarkedByteIndex(marked)
 					e := b.At(j)
-					v := e.value
-					if m.valueIsValid(v) {
-						cache[cacheCount] = kvEntry{k: e.key, v: v}
-						cacheCount++
-					}
+					cache[cacheCount] = kvEntry{k: e.key, v: e.value}
+					cacheCount++
 				}
 				s2 = b.seq.Load()
-				if s1 == s2 && (s2&1) == 0 {
+				if s1 == s2 {
 					for j := 0; j < cacheCount; j++ {
 						kv := &cache[j]
 						if !yield(kv.k, kv.v) {
@@ -365,11 +333,8 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 					j := firstMarkedByteIndex(marked)
 					e := b.At(j)
-					v := e.value
-					if m.valueIsValid(v) {
-						cache[cacheCount] = kvEntry{k: e.key, v: v}
-						cacheCount++
-					}
+					cache[cacheCount] = kvEntry{k: e.key, v: e.value}
+					cacheCount++
 				}
 				root.Unlock()
 				// yield outside lock
@@ -434,18 +399,15 @@ func (m *SeqFlatMapOf[K, V]) Process(
 			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j)
-				v := e.value
-				if m.valueIsValid(v) {
-					if embeddedHash {
-						if e.getHash() == hash && e.key == key {
-							oldB, oldIdx, oldMeta, oldVal, loaded = b, j, meta, v, true
-							break findLoop
-						}
-					} else {
-						if e.key == key {
-							oldB, oldIdx, oldMeta, oldVal, loaded = b, j, meta, v, true
-							break findLoop
-						}
+				if embeddedHash {
+					if e.getHash() == hash && e.key == key {
+						oldB, oldIdx, oldMeta, oldVal, loaded = b, j, meta, e.value, true
+						break findLoop
+					}
+				} else {
+					if e.key == key {
+						oldB, oldIdx, oldMeta, oldVal, loaded = b, j, meta, e.value, true
+						break findLoop
 					}
 				}
 			}
@@ -471,11 +433,13 @@ func (m *SeqFlatMapOf[K, V]) Process(
 			oldB.seq.Store(s + 1)
 			oldB.meta.Store(newMeta)
 			oldB.seq.Store(s + 2)
-			// Zero value after publishing even, but before releasing root lock
-			// to avoid races
-			if m.zeroDel {
-				oldB.At(oldIdx).value = *new(V)
+			// After publishing even, clear entry fields before releasing root lock
+			entry := oldB.At(oldIdx)
+			if embeddedHash {
+				entry.setHash(0)
 			}
+			entry.key = *new(K)
+			entry.value = *new(V)
 			root.Unlock()
 			table.AddSize(idx, -1)
 			return value, status
@@ -747,49 +711,46 @@ func (m *SeqFlatMapOf[K, V]) copySeqFlatBucketRange(
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j)
-				v := e.value
-				if m.valueIsValid(v) {
-					if embeddedHash {
-						hash = e.getHash()
-					} else {
-						hash = m.keyHash(noescape(unsafe.Pointer(&e.key)), m.seed)
-					}
-					idx := newTable.mask & h1(hash, m.intKey)
-					destBucket := newTable.buckets.At(idx)
-					h2v := h2(hash)
-
-					b := destBucket
-				appendTo:
-					for {
-						meta := *b.meta.Raw()
-						empty := (^meta) & metaMask
-						if empty != 0 {
-							emptyIdx := firstMarkedByteIndex(empty)
-							*b.meta.Raw() = setByte(meta, h2v, emptyIdx)
-							entry := b.At(emptyIdx)
-							entry.value = v
-							if embeddedHash {
-								entry.setHash(hash)
-							}
-							entry.key = e.key
-							break appendTo
-						}
-						next := (*seqFlatBucket[K, V])(b.next)
-						if next == nil {
-							bucket := &seqFlatBucket[K, V]{
-								meta:    makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
-								entries: [entriesPerBucket]seqFlatEntry[K, V]{{value: v, key: e.key}},
-							}
-							if embeddedHash {
-								bucket.At(0).setHash(hash)
-							}
-							b.next = unsafe.Pointer(bucket)
-							break appendTo
-						}
-						b = next
-					}
-					copied++
+				if embeddedHash {
+					hash = e.getHash()
+				} else {
+					hash = m.keyHash(noescape(unsafe.Pointer(&e.key)), m.seed)
 				}
+				idx := newTable.mask & h1(hash, m.intKey)
+				destBucket := newTable.buckets.At(idx)
+				h2v := h2(hash)
+
+				b := destBucket
+			appendTo:
+				for {
+					meta := *b.meta.Raw()
+					empty := (^meta) & metaMask
+					if empty != 0 {
+						emptyIdx := firstMarkedByteIndex(empty)
+						*b.meta.Raw() = setByte(meta, h2v, emptyIdx)
+						entry := b.At(emptyIdx)
+						entry.value = e.value
+						if embeddedHash {
+							entry.setHash(hash)
+						}
+						entry.key = e.key
+						break appendTo
+					}
+					next := (*seqFlatBucket[K, V])(b.next)
+					if next == nil {
+						bucket := &seqFlatBucket[K, V]{
+							meta:    makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
+							entries: [entriesPerBucket]seqFlatEntry[K, V]{{value: e.value, key: e.key}},
+						}
+						if embeddedHash {
+							bucket.At(0).setHash(hash)
+						}
+						b.next = unsafe.Pointer(bucket)
+						break appendTo
+					}
+					b = next
+				}
+				copied++
 			}
 		}
 		srcBucket.Unlock()

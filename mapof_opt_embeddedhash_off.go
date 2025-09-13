@@ -20,7 +20,7 @@ func (e *EntryOf[K, V]) setHash(_ uintptr) {
 }
 
 // flatEntry is a flat map entry.
-type flatEntry[K comparable, V comparable] struct {
+type flatEntry[K comparable, V any] struct {
 	value atomicValue[V]
 	key   K
 }
@@ -35,7 +35,7 @@ func (e *flatEntry[K, V]) setHash(_ uintptr) {
 }
 
 // seqFlatEntry is a flat map entry.
-type seqFlatEntry[K comparable, V comparable] struct {
+type seqFlatEntry[K comparable, V any] struct {
 	key   K
 	value V
 }

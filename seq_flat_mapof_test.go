@@ -27,18 +27,6 @@ func TestSeqFlatMapOf_BasicOperations(t *testing.T) {
 	}
 }
 
-func TestSeqFlatMapOf_WithZeroAsDeleted(t *testing.T) {
-	m := NewSeqFlatMapOf[int, int](WithZeroAsDeleted())
-	m.Store(1, 1)
-	m.Store(2, 0)
-	if _, ok := m.Load(2); ok {
-		t.Fatalf("zero should be treated as deleted")
-	}
-	if v, ok := m.Load(1); !ok || v != 1 {
-		t.Fatalf("got %v %v", v, ok)
-	}
-}
-
 func TestSeqFlatMapOf_MultipleKeys(t *testing.T) {
 	m := NewSeqFlatMapOf[int, int]()
 	for i := 0; i < 1000; i++ {
@@ -428,50 +416,6 @@ func TestSeqFlatMapOf_Range_NoDuplicateVisit_Heavy(t *testing.T) {
 
 	atomic.StoreUint32(&stop, 1)
 	wg.Wait()
-}
-
-// WithZeroAsDeleted + LoadOrStore family semantics
-func TestSeqFlatMapOf_WithZeroAsDeleted_LoadOrStore(t *testing.T) {
-	m := NewSeqFlatMapOf[int, int](WithZeroAsDeleted())
-	m.Store(1, 0)
-	// zero is treated as deleted; LoadOrStore should insert new value
-	v, loaded := m.LoadOrStore(1, 5)
-	if loaded || v != 5 {
-		t.Fatalf("got (%v,%v), want (5,false)", v, loaded)
-	}
-	// next call should see loaded=true with stored value
-	v, loaded = m.LoadOrStore(1, 9)
-	if !loaded || v != 5 {
-		t.Fatalf("got (%v,%v), want (5,true)", v, loaded)
-	}
-
-	// LoadOrStoreFn variant also respects zero-as-deleted
-	calls := int32(0)
-	v, loaded = m.LoadOrStoreFn(
-		2,
-		func() int { atomic.AddInt32(&calls, 1); return 0 },
-	)
-	// valueFn returns zero, which is treated as deleted -> still considered
-	// inserted, but Load should not see it
-	if loaded {
-		t.Fatalf(
-			"expected loaded=false when inserting zero value under zero-as-deleted",
-		)
-	}
-	if _, ok := m.Load(2); ok {
-		t.Fatalf("zero value must be logically deleted")
-	}
-	// now store non-zero via LOSF should compute once
-	v, loaded = m.LoadOrStoreFn(
-		2,
-		func() int { atomic.AddInt32(&calls, 1); return 7 },
-	)
-	if loaded || v != 7 {
-		t.Fatalf("got (%v,%v), want (7,false)", v, loaded)
-	}
-	if got := atomic.LoadInt32(&calls); got != 2 {
-		t.Fatalf("calls=%d, want 2", got)
-	}
 }
 
 // New test: verify a single Range call never yields duplicate keys, even under
