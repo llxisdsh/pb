@@ -424,6 +424,10 @@ func (m *FlatMapOf[K, V]) Process(
 		}
 
 		newV, op, value, status := fn(oldVal, loaded)
+		// If WithZeroAsDeleted && newV == zero, mark for deletion
+		if !m.valueIsValid(newV) {
+			op = DeleteOp
+		}
 		switch op {
 		case DeleteOp:
 			if !loaded {

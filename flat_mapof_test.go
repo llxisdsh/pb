@@ -915,3 +915,394 @@ func TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 		)
 	}
 }
+
+// TestFlatMapOf_WithZeroAsDeleted_BasicOperations tests basic functionality
+// of WithZeroAsDeleted option
+func TestFlatMapOf_WithZeroAsDeleted_BasicOperations(t *testing.T) {
+	// Test with WithZeroAsDeleted enabled
+	m := NewFlatMapOf[string, int](WithZeroAsDeleted())
+
+	// Test storing non-zero value
+	m.Store("key1", 42)
+	if val, ok := m.Load("key1"); !ok || val != 42 {
+		t.Errorf("Expected (42, true), got (%v, %v)", val, ok)
+	}
+
+	// Test storing zero value - should be treated as deleted
+	m.Store("key1", 0)
+	if val, ok := m.Load("key1"); ok {
+		t.Errorf("Expected zero value to be treated as deleted, got (%v, %v)", val, ok)
+	}
+
+	// Test storing zero value on new key - should not be visible
+	m.Store("key2", 0)
+	if val, ok := m.Load("key2"); ok {
+		t.Errorf("Expected zero value on new key to be invisible, got (%v, %v)", val, ok)
+	}
+
+	// Test without WithZeroAsDeleted (default behavior)
+	m2 := NewFlatMapOf[string, int]()
+
+	// Store zero value - should be visible
+	m2.Store("key1", 0)
+	if val, ok := m2.Load("key1"); !ok || val != 0 {
+		t.Errorf("Expected zero value to be visible without WithZeroAsDeleted, got (%v, %v)", val, ok)
+	}
+
+	// Store non-zero then zero - zero should be visible
+	m2.Store("key2", 42)
+	m2.Store("key2", 0)
+	if val, ok := m2.Load("key2"); !ok || val != 0 {
+		t.Errorf("Expected zero value to be visible without WithZeroAsDeleted, got (%v, %v)", val, ok)
+	}
+}
+
+// TestFlatMapOf_WithZeroAsDeleted_ZeroValueHandling tests zero value handling
+// with Process method and various operations
+func TestFlatMapOf_WithZeroAsDeleted_ZeroValueHandling(t *testing.T) {
+	m := NewFlatMapOf[string, int](WithZeroAsDeleted())
+
+	// Test Process with zero value update
+	actual, ok := m.Process("key1", func(old int, loaded bool) (int, ComputeOp, int, bool) {
+		if loaded {
+			t.Error("Expected not loaded for new key")
+		}
+		return 0, UpdateOp, 0, true
+	})
+	if !ok || actual != 0 {
+		t.Errorf("Expected Process with zero value to return (0, false), got (%v, %v)", actual, ok)
+	}
+
+	// Verify key is not visible after zero value insert
+	if val, ok := m.Load("key1"); ok {
+		t.Errorf("Expected key to be invisible after zero value insert, got (%v, %v)", val, ok)
+	}
+
+	// Test LoadOrStore with zero value
+	actual, loaded := m.LoadOrStore("key2", 0)
+	if loaded || actual != 0 {
+		t.Errorf("Expected LoadOrStore with zero value to return (0, false), got (%v, %v)", actual, loaded)
+	}
+
+	// Verify key is not visible
+	if val, ok := m.Load("key2"); ok {
+		t.Errorf("Expected key to be invisible after LoadOrStore with zero, got (%v, %v)", val, ok)
+	}
+
+	// Test LoadOrStoreFn with zero value
+	actual, loaded = m.LoadOrStoreFn("key3", func() int { return 0 })
+	if loaded || actual != 0 {
+		t.Errorf("Expected LoadOrStoreFn with zero value to return (0, false), got (%v, %v)", actual, loaded)
+	}
+
+	// Test updating existing non-zero value to zero
+	m.Store("key4", 42)
+	if val, ok := m.Load("key4"); !ok || val != 42 {
+		t.Errorf("Expected (42, true), got (%v, %v)", val, ok)
+	}
+
+	// Update to zero value
+	actual, ok = m.Process("key4", func(old int, loaded bool) (int, ComputeOp, int, bool) {
+		if !loaded || old != 42 {
+			t.Errorf("Expected loaded=true, old=42, got loaded=%v, old=%v", loaded, old)
+		}
+		return 0, UpdateOp, 0, false
+	})
+	if ok {
+		t.Errorf("Expected Process update to zero to return ok=false, got ok=%v", ok)
+	}
+
+	// Verify key is now invisible
+	if val, ok := m.Load("key4"); ok {
+		t.Errorf("Expected key to be invisible after update to zero, got (%v, %v)", val, ok)
+	}
+
+	// Test delete operation on zero value
+	m.Delete("key4") // Should be safe even if already "deleted" by zero value
+	if val, ok := m.Load("key4"); ok {
+		t.Errorf("Expected key to remain invisible after delete, got (%v, %v)", val, ok)
+	}
+}
+
+// TestFlatMapOf_WithZeroAsDeleted_RangeFiltering tests that Range method
+// properly filters out zero values when WithZeroAsDeleted is enabled
+func TestFlatMapOf_WithZeroAsDeleted_RangeFiltering(t *testing.T) {
+	m := NewFlatMapOf[string, int](WithZeroAsDeleted())
+
+	// Add mix of zero and non-zero values
+	m.Store("key1", 10)
+	m.Store("key2", 0) // Should be filtered out
+	m.Store("key3", 20)
+	m.Store("key4", 0) // Should be filtered out
+	m.Store("key5", 30)
+
+	// Test Range filtering
+	found := make(map[string]int)
+	m.Range(func(k string, v int) bool {
+		if v == 0 {
+			t.Errorf("Range should not yield zero values, got key=%s, value=%d", k, v)
+		}
+		found[k] = v
+		return true
+	})
+
+	// Verify only non-zero values are found
+	expected := map[string]int{
+		"key1": 10,
+		"key3": 20,
+		"key5": 30,
+	}
+
+	if len(found) != len(expected) {
+		t.Errorf("Expected %d items in Range, got %d", len(expected), len(found))
+	}
+
+	for k, v := range expected {
+		if foundV, ok := found[k]; !ok || foundV != v {
+			t.Errorf("Key %s: expected %d, got %d (ok=%v)", k, v, foundV, ok)
+		}
+	}
+
+	// Test early termination in Range
+	count := 0
+	m.Range(func(k string, v int) bool {
+		count++
+		return count < 2 // Stop after 2 iterations
+	})
+	if count != 2 {
+		t.Errorf("Expected 2 iterations with early termination, got %d", count)
+	}
+
+	// Compare with map without WithZeroAsDeleted
+	m2 := NewFlatMapOf[string, int]()
+	m2.Store("key1", 10)
+	m2.Store("key2", 0) // Should be visible
+	m2.Store("key3", 20)
+
+	found2 := make(map[string]int)
+	m2.Range(func(k string, v int) bool {
+		found2[k] = v
+		return true
+	})
+
+	// Should include zero value
+	expected2 := map[string]int{
+		"key1": 10,
+		"key2": 0,
+		"key3": 20,
+	}
+
+	if len(found2) != len(expected2) {
+		t.Errorf("Expected %d items in Range without WithZeroAsDeleted, got %d", len(expected2), len(found2))
+	}
+
+	for k, v := range expected2 {
+		if foundV, ok := found2[k]; !ok || foundV != v {
+			t.Errorf("Key %s: expected %d, got %d (ok=%v)", k, v, foundV, ok)
+		}
+	}
+}
+
+// TestFlatMapOf_WithZeroAsDeleted_SizeAccuracy tests that Size and IsZero
+// methods accurately reflect the logical state when WithZeroAsDeleted is enabled
+func TestFlatMapOf_WithZeroAsDeleted_SizeAccuracy(t *testing.T) {
+	m := NewFlatMapOf[string, int](WithZeroAsDeleted())
+
+	// Test empty map
+	if !m.IsZero() {
+		t.Error("Expected IsZero() to return true for empty map")
+	}
+	if size := m.Size(); size != 0 {
+		t.Errorf("Expected Size() to return 0 for empty map, got %d", size)
+	}
+
+	// Add non-zero values
+	m.Store("key1", 10)
+	m.Store("key2", 20)
+	if m.IsZero() {
+		t.Error("Expected IsZero() to return false after adding non-zero values")
+	}
+	if size := m.Size(); size != 2 {
+		t.Errorf("Expected Size() to return 2, got %d", size)
+	}
+
+	// Add zero values - should not affect logical size
+	m.Store("key3", 0)
+	m.Store("key4", 0)
+	if m.IsZero() {
+		t.Error("Expected IsZero() to return false (zero values should not affect logical state)")
+	}
+	if size := m.Size(); size != 2 {
+		t.Errorf("Expected Size() to remain 2 after adding zero values, got %d", size)
+	}
+
+	// Update existing non-zero value to zero
+	m.Store("key1", 0)
+	if m.IsZero() {
+		t.Error("Expected IsZero() to return false (still has key2)")
+	}
+	if size := m.Size(); size != 1 {
+		t.Errorf("Expected Size() to return 1 after updating key1 to zero, got %d", size)
+	}
+
+	// Update remaining non-zero value to zero
+	m.Store("key2", 0)
+	if !m.IsZero() {
+		t.Error("Expected IsZero() to return true after all values become zero")
+	}
+	if size := m.Size(); size != 0 {
+		t.Errorf("Expected Size() to return 0 after all values become zero, got %d", size)
+	}
+
+	// Add non-zero value again
+	m.Store("key5", 50)
+	if m.IsZero() {
+		t.Error("Expected IsZero() to return false after adding non-zero value")
+	}
+	if size := m.Size(); size != 1 {
+		t.Errorf("Expected Size() to return 1, got %d", size)
+	}
+
+	// Test explicit delete
+	m.Delete("key5")
+	if !m.IsZero() {
+		t.Error("Expected IsZero() to return true after deleting last key")
+	}
+	if size := m.Size(); size != 0 {
+		t.Errorf("Expected Size() to return 0 after deleting last key, got %d", size)
+	}
+
+	// Compare with map without WithZeroAsDeleted
+	m2 := NewFlatMapOf[string, int]()
+	m2.Store("key1", 10)
+	m2.Store("key2", 0) // Should count towards size
+	m2.Store("key3", 20)
+
+	if m2.IsZero() {
+		t.Error("Expected IsZero() to return false for map with values (including zero)")
+	}
+	if size := m2.Size(); size != 3 {
+		t.Errorf("Expected Size() to return 3 without WithZeroAsDeleted, got %d", size)
+	}
+}
+
+// TestFlatMapOf_WithZeroAsDeleted_ConcurrentOperations tests zero value handling
+// under concurrent operations to ensure thread safety and consistency
+func TestFlatMapOf_WithZeroAsDeleted_ConcurrentOperations(t *testing.T) {
+	m := NewFlatMapOf[int, int](WithZeroAsDeleted())
+	const numGoroutines = 10
+	const numOperations = 100
+
+	var wg sync.WaitGroup
+	wg.Add(numGoroutines * 3) // writers, readers, and zero-writers
+
+	// Concurrent writers (non-zero values)
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < numOperations; j++ {
+				key := id*numOperations + j
+				value := key + 1 // Ensure non-zero
+				m.Store(key, value)
+			}
+		}(i)
+	}
+
+	// Concurrent readers
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < numOperations; j++ {
+				key := id*numOperations + j
+				if val, ok := m.Load(key); ok {
+					if val == 0 {
+						t.Errorf("Load should not return zero values, got key=%d, value=%d", key, val)
+					}
+					if val != key+1 {
+						// This might happen due to timing, but value should never be 0
+						if val == 0 {
+							t.Errorf("Unexpected zero value for key=%d", key)
+						}
+					}
+				}
+			}
+		}(i)
+	}
+
+	// Concurrent zero-value writers
+	for i := 0; i < numGoroutines; i++ {
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < numOperations; j++ {
+				key := (id+numGoroutines)*numOperations + j // Different key range
+				m.Store(key, 0)                             // Store zero values
+				// Verify zero values are not visible
+				if val, ok := m.Load(key); ok {
+					t.Errorf("Zero value should not be visible, got key=%d, value=%d", key, val)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Verify final state
+	count := 0
+	m.Range(func(k, v int) bool {
+		if v == 0 {
+			t.Errorf("Range should not yield zero values, got key=%d, value=%d", k, v)
+		}
+		count++
+		return true
+	})
+
+	// Should only have non-zero values from the first set of goroutines
+	expectedCount := numGoroutines * numOperations
+	if count != expectedCount {
+		t.Errorf("Expected %d non-zero values in final state, got %d", expectedCount, count)
+	}
+
+	// Test concurrent updates from non-zero to zero
+	m2 := NewFlatMapOf[int, int](WithZeroAsDeleted())
+
+	// First, populate with non-zero values
+	for i := 0; i < 100; i++ {
+		m2.Store(i, i+1)
+	}
+
+	var wg2 sync.WaitGroup
+	wg2.Add(2)
+
+	// Concurrent updater (non-zero to zero)
+	go func() {
+		defer wg2.Done()
+		for i := 0; i < 100; i++ {
+			m2.Store(i, 0) // Update to zero
+		}
+	}()
+
+	// Concurrent reader
+	zeroObserved := int32(0)
+	go func() {
+		defer wg2.Done()
+		for i := 0; i < 1000; i++ {
+			for j := 0; j < 100; j++ {
+				if val, ok := m2.Load(j); ok && val == 0 {
+					atomic.AddInt32(&zeroObserved, 1)
+				}
+			}
+		}
+	}()
+
+	wg2.Wait()
+
+	// Zero values should not be observed
+	if observed := atomic.LoadInt32(&zeroObserved); observed > 0 {
+		t.Errorf("Observed %d zero values during concurrent updates, expected 0", observed)
+	}
+
+	// Final state should be empty (all values updated to zero)
+	if !m2.IsZero() {
+		t.Error("Expected map to be logically empty after all values updated to zero")
+	}
+}
