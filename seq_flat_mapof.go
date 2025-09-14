@@ -493,6 +493,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 			}
 			return value, status
 		default:
+			// CancelOp
 			root.Unlock()
 			return value, status
 		}
