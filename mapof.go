@@ -2130,8 +2130,6 @@ var (
 
 // SetDefaultJSONMarshal sets the default JSON serialization and deserialization
 // functions. If not set, the standard library is used by default.
-//
-//lint:ignore U1000
 func SetDefaultJSONMarshal(
 	marshal func(v any) ([]byte, error),
 	unmarshal func(data []byte, v any) error,
@@ -2962,16 +2960,15 @@ func loadUintptrNoMB(addr *uintptr) uintptr {
 	}
 }
 
-//lint:ignore U1000
-//go:nosplit
-func storeUintptrNoMB(addr *uintptr, val uintptr) {
-	//goland:noinspection ALL
-	if useAutoDetectedTSO || atomicLevel >= 2 {
-		*addr = val
-	} else {
-		atomic.StoreUintptr(addr, val)
-	}
-}
+// //go:nosplit
+// func storeUintptrNoMB(addr *uintptr, val uintptr) {
+// 	//goland:noinspection ALL
+// 	if useAutoDetectedTSO || atomicLevel >= 2 {
+// 		*addr = val
+// 	} else {
+// 		atomic.StoreUintptr(addr, val)
+// 	}
+// }
 
 //go:nosplit
 func loadUint64NoMB(addr *uint64) uint64 {
@@ -3003,16 +3000,15 @@ func loadUint32NoMB(addr *uint32) uint32 {
 	}
 }
 
-//lint:ignore U1000
-//go:nosplit
-func storeUint32NoMB(addr *uint32, val uint32) {
-	//goland:noinspection ALL
-	if (useAutoDetectedTSO || atomicLevel >= 2) && bits.UintSize >= 64 {
-		*addr = val
-	} else {
-		atomic.StoreUint32(addr, val)
-	}
-}
+// //go:nosplit
+// func storeUint32NoMB(addr *uint32, val uint32) {
+// 	//goland:noinspection ALL
+// 	if (useAutoDetectedTSO || atomicLevel >= 2) && bits.UintSize >= 64 {
+// 		*addr = val
+// 	} else {
+// 		atomic.StoreUint32(addr, val)
+// 	}
+// }
 
 // noescape hides a pointer from escape analysis. noescape is
 // the identity function, but escape analysis doesn't think the
