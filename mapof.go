@@ -52,10 +52,12 @@ const (
 	minTableLen = 32
 	// minBucketsPerCPU: threshold for parallel resizing
 	minBucketsPerCPU = 4
-	// minBatchItems: threshold for parallel batch processing
-	minBatchItems = 256
 	// asyncThreshold: threshold for asynchronous resize
 	asyncThreshold = 128 * 1024
+	// resizeOverPartition: over-partition factor to reduce resize tail latency
+	resizeOverPartition = 8
+	// minBatchItems: threshold for parallel batch processing
+	minBatchItems = 256
 )
 
 // Feature flags for performance optimization
@@ -489,7 +491,8 @@ type mapOfTable struct {
 }
 
 func newMapOfTable(tableLen, cpus int) *mapOfTable {
-	chunkSize, chunks := calcParallelism(tableLen, minBucketsPerCPU, cpus)
+	overCpus := cpus * resizeOverPartition
+	chunkSz, chunks := calcParallelism(tableLen, minBucketsPerCPU, overCpus)
 	sizeLen := calcSizeLen(tableLen, cpus)
 	return &mapOfTable{
 		buckets:  makeUnsafeSlice(make([]bucketOf, tableLen)),
@@ -497,7 +500,7 @@ func newMapOfTable(tableLen, cpus int) *mapOfTable {
 		size:     makeUnsafeSlice(make([]counterStripe, sizeLen)),
 		sizeMask: sizeLen - 1,
 		chunks:   chunks,
-		chunkSz:  chunkSize,
+		chunkSz:  chunkSz,
 	}
 }
 
@@ -2738,7 +2741,7 @@ func parallelProcess(
 	itemCount int,
 	processor func(start, end int),
 ) {
-	chunkSize, chunks := calcParallelism(
+	chunkSz, chunks := calcParallelism(
 		itemCount,
 		minBatchItems,
 		runtime.GOMAXPROCS(0),
@@ -2750,7 +2753,7 @@ func parallelProcess(
 			go func(start, end int) {
 				defer wg.Done()
 				processor(start, end)
-			}(i*chunkSize, min((i+1)*chunkSize, itemCount))
+			}(i*chunkSz, min((i+1)*chunkSz, itemCount))
 		}
 		wg.Wait()
 		return
@@ -2769,10 +2772,10 @@ func parallelProcess(
 //
 // Returns:
 //   - chunks: Suggested degree of parallelism (number of goroutines).
-//   - chunkSize: Number of items processed per goroutine
+//   - chunkSz: Number of items processed per goroutine
 //
 //go:nosplit
-func calcParallelism(items, threshold, cpus int) (chunkSize, chunks int) {
+func calcParallelism(items, threshold, cpus int) (chunkSz, chunks int) {
 	// If the items are too small, use single-threaded processing.
 	// Adjusts the parallel process trigger threshold using a scaling factor.
 	// example: items < threshold * 2
@@ -2782,9 +2785,9 @@ func calcParallelism(items, threshold, cpus int) (chunkSize, chunks int) {
 
 	chunks = min(items/threshold, cpus)
 
-	chunkSize = (items + chunks - 1) / chunks
+	chunkSz = (items + chunks - 1) / chunks
 
-	return chunkSize, chunks
+	return chunkSz, chunks
 }
 
 // calcTableLen computes the bucket count for the table

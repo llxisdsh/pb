@@ -173,7 +173,8 @@ func newFlatTable[K comparable, V comparable](
 	tableLen, cpus int,
 ) *flatTable[K, V] {
 	b := make([]flatBucket[K, V], tableLen)
-	chunkSz, chunks := calcParallelism(tableLen, minBucketsPerCPU, cpus)
+	overCpus := cpus * resizeOverPartition
+	chunkSz, chunks := calcParallelism(tableLen, minBucketsPerCPU, overCpus)
 	sizeLen := calcSizeLen(tableLen, cpus)
 	return &flatTable[K, V]{
 		buckets:  makeUnsafeSlice(b),

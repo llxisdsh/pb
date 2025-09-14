@@ -112,7 +112,8 @@ func newSeqFlatTable[K comparable, V any](
 	tableLen, cpus int,
 ) *seqFlatTable[K, V] {
 	b := make([]seqFlatBucket[K, V], tableLen)
-	chunkSz, chunks := calcParallelism(tableLen, minBucketsPerCPU, cpus)
+	overCpus := cpus * resizeOverPartition
+	chunkSz, chunks := calcParallelism(tableLen, minBucketsPerCPU, overCpus)
 	sizeLen := calcSizeLen(tableLen, cpus)
 	return &seqFlatTable[K, V]{
 		buckets:  makeUnsafeSlice(b),
