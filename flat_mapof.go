@@ -476,17 +476,6 @@ func (m *FlatMapOf[K, V]) Process(
 				}
 
 				table.AddSize(idx, 1)
-				// Early grow: only consider when the bucket just became full
-				// to reduce overhead in single-thread case
-				if (idx&1023) == 0 &&
-					atomic.LoadPointer(&m.resize) == nil {
-					tableLen := table.mask + 1
-					size := table.SumSize()
-					const sizeHintFactor = float64(entriesPerBucket) * loadFactor
-					if size >= int(float64(tableLen)*sizeHintFactor) {
-						m.tryResize(mapGrowHint, size, 0)
-					}
-				}
 				return value, status
 			}
 
