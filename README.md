@@ -236,14 +236,14 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 
 
 <details>
-<summary> Store Throughput Test (09/01/2025) </summary>
+<summary> Store Throughput Test (09/15/2025) </summary>
 
 ```go
 
 const total = 100_000_000
 
 func testInsert_pb_MapOf(t *testing.T, total int, numCPU int, preSize bool) {
-	time.Sleep(1 * time.Second)
+	time.Sleep(2 * time.Second)
 	runtime.GC()
 	
 	var m *MapOf[int, int]
@@ -314,26 +314,34 @@ func TestInsert_pb_MapOf(t *testing.T) {
 
 | Implementation & Case       | Throughput<br>(M ops/s) | Performance Scale        |
 |-----------------------------|------------------------:|--------------------------|
-| pb_MapOf (64/pre)           |                  181.49 | ━━━━━━━━━━━━━━━━━━━━━━━━ |
-| pb_MapOf (64)               |                   92.83 | ━━━━━━━━━━━━━            |
-| xsync_MapV4 (64/pre)        |                   92.51 | ━━━━━━━━━━━━━            |
-| RWLockShardedMap_256 (64)   |                   40.77 | ━━━━━━━━                 |
-| pb_MapOf (1/pre)            |                   26.86 | ━━━━━                    |
-| pb_HashTrieMap (64)         |                   25.54 | ━━━━━                    |
-| zhangyunhao116_skipmap (64) |                   25.37 | ━━━━━                    |
-| xsync_MapV4 (64)            |                   23.40 | ━━━━━                    |
-| original_syncMap (64)       |                   21.84 | ━━━━                     |
-| pb_MapOf (1)                |                   21.29 | ━━━━                     |
-| xsync_MapV4 (1/pre)         |                    6.06 | ━                        |
-| xsync_MapV4 (1)             |                    4.89 | ━                        |
-| RWLockShardedMap_256 (1)    |                    3.47 | ━                        |
+| pb_FlatMapOf (64/pre)       |                  293.67 | ━━━━━━━━━━━━━━━━━━━━━━━━ |
+| pb_FlatMapOf (64)           |                  103.16 | ━━━━━━━━━━━━━            |
+| pb_FlatMapOf (1/pre)        |                   49.63 | ━━━━━━━━                 |
+| pb_FlatMapOf (1)            |                   30.81 | ━━━━━                    |
+| pb_SeqFlatMapOf (64/pre)    |                  289.86 | ━━━━━━━━━━━━━━━━━━━━━━━━ |
+| pb_SeqFlatMapOf (64)        |                   97.40 | ━━━━━━━━━━━━             |
+| pb_SeqFlatMapOf (1/pre)     |                   34.64 | ━━━━━                    |
+| pb_SeqFlatMapOf (1)         |                   24.46 | ━━━━                     |
+| pb_MapOf (64/pre)           |                  178.09 | ━━━━━━━━━━━━━━━━         |
+| pb_MapOf (64)               |                   94.21 | ━━━━━━━━━━━              |
+| pb_MapOf (1/pre)            |                   26.83 | ━━━━                     |
+| pb_MapOf (1)                |                   21.45 | ━━━                      |
+| xsync_MapV4 (64/pre)        |                   91.83 | ━━━━━━━━━━━              |
+| xsync_MapV4 (64)            |                   25.47 | ━━━━                     |
+| xsync_MapV4 (1/pre)         |                    5.86 | ━                        |
+| xsync_MapV4 (1)             |                    3.23 | ━                        |
+| pb_HashTrieMap (64)         |                   25.54 | ━━━━                     |
+| pb_HashTrieMap (1)          |                    1.73 |                          |
+| zhangyunhao116_skipmap (64) |                   25.37 | ━━━━                     |
 | zhangyunhao116_skipmap (1)  |                    3.38 | ━                        |
+| RWLockShardedMap_256 (64)   |                   21.92 | ━━━                      |
+| RWLockShardedMap_256 (1)    |                    3.47 | ━                        |
+| original_syncMap (64)       |                   21.84 | ━━━                      |
+| original_syncMap (1)        |                    1.42 |                          |
 | alphadose_haxmap (64/pre)   |                    2.88 | ━                        |
-| pb_HashTrieMap (1)          |                    1.73 | ━                        |
-| alphadose_haxmap (1/pre)    |                    1.00 | ━                        |
-| original_syncMap (1)        |                    1.42 | ━                        |
-| alphadose_haxmap (1)        |                    0.92 | ━                        |
-| alphadose_haxmap (64)       |                    0.57 | ━                        |
+| alphadose_haxmap (64)       |                    0.57 |                          |
+| alphadose_haxmap (1/pre)    |                    1.00 |                          |
+| alphadose_haxmap (1)        |                    0.92 |                          |
 
 - (1): 1 goroutine without pre-allocation
 - (1/pre): 1 goroutine with pre-allocation
