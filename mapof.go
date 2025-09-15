@@ -1100,7 +1100,8 @@ func (m *MapOf[K, V]) tryResize(
 		atomic.AddUint32(&m.shrinks, 1)
 	}
 
-	if newLen*int(unsafe.Sizeof(bucketOf{})) >= asyncThreshold && cpus > 1 {
+	if cpus > 1 &&
+		newLen*int(unsafe.Sizeof(bucketOf{})) >= asyncThreshold {
 		// The big table, use goroutines to create new table and copy entries
 		go m.finalizeResize(table, newLen, rs, cpus)
 	} else {
@@ -1311,9 +1312,27 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 		return
 	}
 
+restart:
 	for i := 0; i <= table.mask; i++ {
 		root := table.buckets.At(i)
 		root.Lock()
+
+		// Check if resize is in progress and help complete the copy
+		if rs := (*resizeState)(loadPointerNoMB(&m.resize)); rs != nil &&
+			loadPointerNoMB(&rs.table) != nil &&
+			loadPointerNoMB(&rs.newTable) != nil {
+			root.Unlock()
+			m.helpCopyAndWait(rs)
+			table = (*mapOfTable)(loadPointerNoMB(&m.table))
+			goto restart
+		}
+		// Check if table has been swapped during resize
+		if newTable := (*mapOfTable)(loadPointerNoMB(&m.table)); newTable != table {
+			root.Unlock()
+			table = newTable
+			goto restart
+		}
+
 		for b := root; b != nil; b = (*bucketOf)(b.next) {
 			meta := b.meta
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
@@ -1323,7 +1342,7 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 					newEntry := fn(e)
 
 					if newEntry == e {
-						// No entry to update or delete
+						// No-op
 					} else if newEntry != nil {
 						// Update
 						if embeddedHash {
@@ -1334,8 +1353,9 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 					} else {
 						// Delete
 						storePointerNoMB(b.At(j), nil)
-						newMeta := setByte(meta, emptySlot, j)
-						storeUint64NoMB(&b.meta, newMeta)
+						// Keep snapshot fresh to prevent stale meta
+						meta = setByte(meta, emptySlot, j)
+						storeUint64NoMB(&b.meta, meta)
 						table.AddSize(i, -1)
 					}
 				}

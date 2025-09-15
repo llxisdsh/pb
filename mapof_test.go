@@ -947,37 +947,39 @@ func (e EqualValue) Equal(other EqualValue) bool {
 // TestMapOf_Interfaces tests the IHashCode, IHashOpts, and IEqual interfaces
 func TestMapOf_Interfaces(t *testing.T) {
 	t.Run("IHashCode", func(t *testing.T) {
-		
 		m := NewMapOf[CustomKey, string]()
 		key1 := CustomKey{ID: 1, Name: "test"}
 		key2 := CustomKey{ID: 2, Name: "hello"}
-		
+
 		m.Store(key1, "value1")
 		m.Store(key2, "value2")
-		
+
 		if val, ok := m.Load(key1); !ok || val != "value1" {
 			t.Errorf("Expected value1, got %s, exists=%v", val, ok)
 		}
 		if val, ok := m.Load(key2); !ok || val != "value2" {
 			t.Errorf("Expected value2, got %s, exists=%v", val, ok)
 		}
-		
+
 		// Test that different keys with same hash don't collide incorrectly
 		key3 := CustomKey{ID: 1, Name: "test"} // same as key1
 		if val, ok := m.Load(key3); !ok || val != "value1" {
-			t.Errorf("Expected value1 for equivalent key, got %s, exists=%v", val, ok)
+			t.Errorf(
+				"Expected value1 for equivalent key, got %s, exists=%v",
+				val,
+				ok,
+			)
 		}
 	})
-	
+
 	t.Run("IHashOpts", func(t *testing.T) {
-		
 		m := NewMapOf[SequentialKey, string]()
-		
+
 		// Store sequential keys
 		for i := SequentialKey(1); i <= 10; i++ {
 			m.Store(i, fmt.Sprintf("value%d", i))
 		}
-		
+
 		// Verify all values can be retrieved
 		for i := SequentialKey(1); i <= 10; i++ {
 			expected := fmt.Sprintf("value%d", i)
@@ -985,103 +987,119 @@ func TestMapOf_Interfaces(t *testing.T) {
 				t.Errorf("Expected %s, got %s, exists=%v", expected, val, ok)
 			}
 		}
-		
+
 		// Test size
 		if size := m.Size(); size != 10 {
 			t.Errorf("Expected size 10, got %d", size)
 		}
 	})
-	
+
 	t.Run("IEqual", func(t *testing.T) {
-		
 		m := NewMapOf[string, CustomValue]()
-		
+
 		val1 := CustomValue{Data: []int{1, 2, 3}, Meta: "meta1"}
-		val2 := CustomValue{Data: []int{1, 2, 3}, Meta: "meta2"} // different Meta, same Data
-		val3 := CustomValue{Data: []int{4, 5, 6}, Meta: "meta1"} // different Data, same Meta
-		
+		val2 := CustomValue{
+			Data: []int{1, 2, 3},
+			Meta: "meta2",
+		} // different Meta, same Data
+		val3 := CustomValue{
+			Data: []int{4, 5, 6},
+			Meta: "meta1",
+		} // different Data, same Meta
+
 		m.Store("key1", val1)
-		
+
 		// Test CompareAndSwap with custom equality
-		// Should succeed because val1 and val2 are equal according to custom logic
+		// Should succeed because val1 and val2 are equal according to custom
+		// logic
 		if !m.CompareAndSwap("key1", val2, val3) {
 			t.Error("CompareAndSwap should have succeeded with custom equality")
 		}
-		
+
 		// Verify the value was swapped
 		if actual, ok := m.Load("key1"); !ok {
 			t.Error("Key should exist after CompareAndSwap")
 		} else if !actual.Equal(val3) {
 			t.Errorf("Expected value to be swapped to val3, got %+v", actual)
 		}
-		
+
 		// Test CompareAndDelete with custom equality
-		val4 := CustomValue{Data: []int{4, 5, 6}, Meta: "different_meta"} // same Data as val3
+		val4 := CustomValue{
+			Data: []int{4, 5, 6},
+			Meta: "different_meta",
+		} // same Data as val3
 		if !m.CompareAndDelete("key1", val4) {
-			t.Error("CompareAndDelete should have succeeded with custom equality")
+			t.Error(
+				"CompareAndDelete should have succeeded with custom equality",
+			)
 		}
-		
+
 		// Verify the key was deleted
 		if _, ok := m.Load("key1"); ok {
 			t.Error("Key should be deleted after CompareAndDelete")
 		}
 	})
-	
+
 	t.Run("CombinedInterfaces", func(t *testing.T) {
-		
 		m := NewMapOf[SmartKey, SmartValue]()
-		
+
 		key := SmartKey{ID: 42}
 		val1 := SmartValue{Value: 100, Ignored: "ignore1"}
-		val2 := SmartValue{Value: 100, Ignored: "ignore2"} // same Value, different Ignored
+		val2 := SmartValue{
+			Value:   100,
+			Ignored: "ignore2",
+		} // same Value, different Ignored
 		val3 := SmartValue{Value: 200, Ignored: "ignore1"} // different Value
-		
+
 		m.Store(key, val1)
-		
+
 		// Test that custom hash and equality work together
 		if actual, ok := m.Load(key); !ok || !actual.Equal(val1) {
 			t.Errorf("Failed to load stored value")
 		}
-		
+
 		// Test CompareAndSwap with custom equality
 		if !m.CompareAndSwap(key, val2, val3) {
 			t.Error("CompareAndSwap should succeed with custom equality")
 		}
-		
+
 		if actual, ok := m.Load(key); !ok || !actual.Equal(val3) {
 			t.Errorf("Value should be swapped to val3")
 		}
 	})
-	
+
 	t.Run("InterfacePriority", func(t *testing.T) {
 		// Test that explicit WithKeyHasher overrides IHashCode
-		
+
 		// Custom hasher that should take precedence
 		customHasher := func(key HashKey, seed uintptr) uintptr {
 			return uintptr(key)*2 + seed // different from IHashCode
 		}
-		
+
 		m := NewMapOf[HashKey, string](WithKeyHasher(customHasher))
-		
+
 		m.Store(HashKey(1), "test")
 		if val, ok := m.Load(HashKey(1)); !ok || val != "test" {
 			t.Errorf("Custom hasher should work, got %s, exists=%v", val, ok)
 		}
-		
+
 		// Test that explicit WithValueEqual overrides IEqual
-		
+
 		// Custom equality that should take precedence
 		customEqual := func(a, b EqualValue) bool {
 			return false // always return false for testing
 		}
-		
+
 		m2 := NewMapOf[string, EqualValue](WithValueEqual(customEqual))
 		val := EqualValue{Value: 42}
 		m2.Store("key", val)
-		
-		// CompareAndSwap should fail because custom equality always returns false
+
+		// CompareAndSwap should fail because custom equality always returns
+		// false
 		if m2.CompareAndSwap("key", val, EqualValue{Value: 43}) {
-			t.Error("CompareAndSwap should fail with custom equality that always returns false")
+			t.Error(
+				"CompareAndSwap should fail with custom equality that always returns false",
+			)
 		}
 	})
 }
@@ -7271,36 +7289,36 @@ func TestMapOf_SetDefaultJSONMarshal(t *testing.T) {
 	t.Run("DefaultBehavior", func(t *testing.T) {
 		// Reset to default
 		SetDefaultJSONMarshal(nil, nil)
-		
+
 		m := NewMapOf[string, int]()
 		m.Store("key1", 100)
 		m.Store("key2", 200)
-		
+
 		// Test MarshalJSON with default behavior
 		data, err := m.MarshalJSON()
 		if err != nil {
 			t.Fatalf("MarshalJSON failed: %v", err)
 		}
-		
+
 		// Verify it's valid JSON
 		var result map[string]int
 		if err := json.Unmarshal(data, &result); err != nil {
 			t.Fatalf("Failed to unmarshal result: %v", err)
 		}
-		
+
 		if len(result) != 2 {
 			t.Errorf("Expected 2 items, got %d", len(result))
 		}
 		if result["key1"] != 100 || result["key2"] != 200 {
 			t.Errorf("Unexpected values: %v", result)
 		}
-		
+
 		// Test UnmarshalJSON with default behavior
 		m2 := NewMapOf[string, int]()
 		if err := m2.UnmarshalJSON(data); err != nil {
 			t.Fatalf("UnmarshalJSON failed: %v", err)
 		}
-		
+
 		if val, ok := m2.Load("key1"); !ok || val != 100 {
 			t.Errorf("Expected key1=100, got %d, exists=%v", val, ok)
 		}
@@ -7308,7 +7326,7 @@ func TestMapOf_SetDefaultJSONMarshal(t *testing.T) {
 			t.Errorf("Expected key2=200, got %d, exists=%v", val, ok)
 		}
 	})
-	
+
 	t.Run("CustomMarshalFunctions", func(t *testing.T) {
 		// Custom marshal function that adds a prefix
 		customMarshal := func(v any) ([]byte, error) {
@@ -7317,9 +7335,11 @@ func TestMapOf_SetDefaultJSONMarshal(t *testing.T) {
 				return nil, err
 			}
 			// Add a custom prefix to identify custom marshaling
-			return append([]byte(`{"custom":true,"data":`), append(data, '}')...), nil
+			return append(
+				[]byte(`{"custom":true,"data":`),
+				append(data, '}')...), nil
 		}
-		
+
 		// Custom unmarshal function that handles the prefix
 		customUnmarshal := func(data []byte, v any) error {
 			var wrapper struct {
@@ -7339,46 +7359,46 @@ func TestMapOf_SetDefaultJSONMarshal(t *testing.T) {
 			}
 			return json.Unmarshal(dataBytes, v)
 		}
-		
+
 		// Set custom functions
 		SetDefaultJSONMarshal(customMarshal, customUnmarshal)
-		
+
 		m := NewMapOf[string, int]()
 		m.Store("test", 42)
-		
+
 		// Test custom marshal
 		data, err := m.MarshalJSON()
 		if err != nil {
 			t.Fatalf("Custom MarshalJSON failed: %v", err)
 		}
-		
+
 		// Verify custom format
 		if !strings.Contains(string(data), `"custom":true`) {
 			t.Errorf("Custom marshal format not detected in: %s", string(data))
 		}
-		
+
 		// Test custom unmarshal
 		m2 := NewMapOf[string, int]()
 		if err := m2.UnmarshalJSON(data); err != nil {
 			t.Fatalf("Custom UnmarshalJSON failed: %v", err)
 		}
-		
+
 		if val, ok := m2.Load("test"); !ok || val != 42 {
 			t.Errorf("Expected test=42, got %d, exists=%v", val, ok)
 		}
 	})
-	
+
 	t.Run("MarshalError", func(t *testing.T) {
 		// Custom marshal that always returns an error
 		errorMarshal := func(v any) ([]byte, error) {
 			return nil, fmt.Errorf("custom marshal error")
 		}
-		
+
 		SetDefaultJSONMarshal(errorMarshal, nil)
-		
+
 		m := NewMapOf[string, int]()
 		m.Store("key", 123)
-		
+
 		_, err := m.MarshalJSON()
 		if err == nil {
 			t.Error("Expected marshal error, got nil")
@@ -7387,18 +7407,18 @@ func TestMapOf_SetDefaultJSONMarshal(t *testing.T) {
 			t.Errorf("Expected custom error message, got: %v", err)
 		}
 	})
-	
+
 	t.Run("UnmarshalError", func(t *testing.T) {
 		// Custom unmarshal that always returns an error
 		errorUnmarshal := func(data []byte, v any) error {
 			return fmt.Errorf("custom unmarshal error")
 		}
-		
+
 		SetDefaultJSONMarshal(nil, errorUnmarshal)
-		
+
 		m := NewMapOf[string, int]()
 		data := []byte(`{"key":123}`)
-		
+
 		err := m.UnmarshalJSON(data)
 		if err == nil {
 			t.Error("Expected unmarshal error, got nil")
@@ -7407,31 +7427,34 @@ func TestMapOf_SetDefaultJSONMarshal(t *testing.T) {
 			t.Errorf("Expected custom error message, got: %v", err)
 		}
 	})
-	
+
 	t.Run("NilFunctionsResetToDefault", func(t *testing.T) {
 		// Set custom functions first
 		customMarshal := func(v any) ([]byte, error) {
 			return []byte(`{"custom":true}`), nil
 		}
 		SetDefaultJSONMarshal(customMarshal, nil)
-		
+
 		// Reset to default by passing nil
 		SetDefaultJSONMarshal(nil, nil)
-		
+
 		m := NewMapOf[string, int]()
 		m.Store("key", 123)
-		
+
 		// Should use standard library now
 		data, err := m.MarshalJSON()
 		if err != nil {
 			t.Fatalf("MarshalJSON failed: %v", err)
 		}
-		
+
 		// Should not contain custom format
 		if strings.Contains(string(data), `"custom":true`) {
-			t.Errorf("Should use default marshal, but got custom format: %s", string(data))
+			t.Errorf(
+				"Should use default marshal, but got custom format: %s",
+				string(data),
+			)
 		}
-		
+
 		// Verify it's valid standard JSON
 		var result map[string]int
 		if err := json.Unmarshal(data, &result); err != nil {

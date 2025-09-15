@@ -351,6 +351,74 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	}
 }
 
+// RangeProcess iterates over all key-value pairs and applies a function to
+// each. The function can return UpdateOp to modify the value, DeleteOp to
+// remove the entry, or CancelOp to leave it unchanged. Uses seqlock for
+// consistency during updates.
+//
+// Parameters:
+//   - fn: callback that processes each entry and returns new value and
+//     operation
+//
+// Notes:
+//   - Holds bucket lock for entire iteration - avoid long operations
+//   - Blocks concurrent map operations during execution
+func (m *SeqFlatMapOf[K, V]) RangeProcess(
+	fn func(key K, value V) (V, ComputeOp),
+) {
+restart:
+	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
+	for i := 0; i <= table.mask; i++ {
+		root := table.buckets.At(i)
+		root.Lock()
+
+		// Check if resize is in progress and help complete the copy
+		if rs := (*seqFlatResizeState)(atomic.LoadPointer(&m.resize)); rs != nil &&
+			atomic.LoadPointer(&rs.table) != nil &&
+			atomic.LoadPointer(&rs.newTable) != nil {
+			root.Unlock()
+			m.helpCopyAndWait(rs)
+			goto restart
+		}
+		// Check if table has been swapped during resize
+		if newTable := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table)); newTable != table {
+			root.Unlock()
+			goto restart
+		}
+
+		for b := root; b != nil; b = (*seqFlatBucket[K, V])(b.next) {
+			meta := *b.meta.Raw()
+			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
+				j := firstMarkedByteIndex(marked)
+				e := b.At(j)
+				newV, op := fn(e.key, e.value)
+				switch op {
+				case CancelOp:
+					// No-op
+				case UpdateOp:
+					s := b.seq.Load()
+					b.seq.Store(s + 1)
+					b.At(j).value = newV
+					b.seq.Store(s + 2)
+				case DeleteOp:
+					// Keep snapshot fresh to prevent stale meta
+					meta = setByte(meta, emptySlot, j)
+					s := b.seq.Load()
+					b.seq.Store(s + 1)
+					b.meta.Store(meta)
+					b.seq.Store(s + 2)
+					*b.At(j) = seqFlatEntry[K, V]{}
+					table.AddSize(i, -1)
+				default:
+					root.Unlock()
+					panic("unexpected op")
+				}
+			}
+		}
+		root.Unlock()
+	}
+}
+
 // Process applies a compute-style update with root bucket lock + per-bucket
 // seq fencing.
 func (m *SeqFlatMapOf[K, V]) Process(
@@ -423,21 +491,8 @@ func (m *SeqFlatMapOf[K, V]) Process(
 
 		newV, op, value, status := fn(oldVal, loaded)
 		switch op {
-		case DeleteOp:
-			if !loaded {
-				root.Unlock()
-				return value, status
-			}
-			// Precompute new meta and minimize odd window
-			newMeta := setByte(oldMeta, emptySlot, oldIdx)
-			s := oldB.seq.Load()
-			oldB.seq.Store(s + 1)
-			oldB.meta.Store(newMeta)
-			oldB.seq.Store(s + 2)
-			// After publishing even, clear entry fields before releasing root lock
-			*oldB.At(oldIdx) = seqFlatEntry[K, V]{}
+		case CancelOp:
 			root.Unlock()
-			table.AddSize(idx, -1)
 			return value, status
 		case UpdateOp:
 			if loaded {
@@ -463,7 +518,8 @@ func (m *SeqFlatMapOf[K, V]) Process(
 				// Publish meta while still holding the root lock to ensure
 				// no other writer starts while this bucket is in odd state
 				emptyB.meta.Store(newMeta)
-				// Complete seqlock write (make it even) before releasing root lock
+				// Complete seqlock write (make it even) before
+				// releasing root lock
 				emptyB.seq.Store(s + 2)
 				root.Unlock()
 				table.AddSize(idx, 1)
@@ -492,10 +548,26 @@ func (m *SeqFlatMapOf[K, V]) Process(
 				}
 			}
 			return value, status
-		default:
-			// CancelOp
+		case DeleteOp:
+			if !loaded {
+				root.Unlock()
+				return value, status
+			}
+			// Precompute new meta and minimize odd window
+			newMeta := setByte(oldMeta, emptySlot, oldIdx)
+			s := oldB.seq.Load()
+			oldB.seq.Store(s + 1)
+			oldB.meta.Store(newMeta)
+			oldB.seq.Store(s + 2)
+			// After publishing even, clear entry fields before
+			// releasing root lock
+			*oldB.At(oldIdx) = seqFlatEntry[K, V]{}
 			root.Unlock()
+			table.AddSize(idx, -1)
 			return value, status
+		default:
+			root.Unlock()
+			panic("unexpected op")
 		}
 	}
 }
@@ -637,7 +709,8 @@ func (m *SeqFlatMapOf[K, V]) tryResize(hint mapResizeHint, size, sizeAdd int) {
 		}
 	}
 
-	if newLen*int(unsafe.Sizeof(seqFlatBucket[K, V]{})) >= asyncThreshold && cpus > 1 {
+	if cpus > 1 &&
+		newLen*int(unsafe.Sizeof(seqFlatBucket[K, V]{})) >= asyncThreshold {
 		go m.finalizeResize(table, newLen, rs, cpus)
 	} else {
 		m.finalizeResize(table, newLen, rs, cpus)

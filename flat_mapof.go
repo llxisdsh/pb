@@ -340,6 +340,74 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	}
 }
 
+// RangeProcess iterates over all key-value pairs and applies a function to
+// each. The function can return UpdateOp to modify the value, DeleteOp to
+// remove the entry, or CancelOp to leave it unchanged.
+//
+// Parameters:
+//   - fn: callback that processes each entry and returns new value and
+//     operation
+//
+// Notes:
+//   - Holds bucket lock for entire iteration - avoid long operations
+//   - Blocks concurrent map operations during execution
+func (m *FlatMapOf[K, V]) RangeProcess(
+	fn func(key K, value V) (V, ComputeOp),
+) {
+restart:
+	table := (*flatTable[K, V])(atomic.LoadPointer(&m.table))
+	for i := 0; i <= table.mask; i++ {
+		root := table.buckets.At(i)
+		root.Lock()
+
+		// Check if resize is in progress and help complete the copy
+		if rs := (*flatResizeState)(atomic.LoadPointer(&m.resize)); rs != nil &&
+			atomic.LoadPointer(&rs.table) != nil &&
+			atomic.LoadPointer(&rs.newTable) != nil {
+			root.Unlock()
+			m.helpCopyAndWait(rs)
+			goto restart
+		}
+		// Check if resize is in progress and help complete the copy
+		if newTable := (*flatTable[K, V])(atomic.LoadPointer(&m.table)); newTable != table {
+			root.Unlock()
+			goto restart
+		}
+
+		for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
+			meta := *b.meta.Raw()
+			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
+				j := firstMarkedByteIndex(marked)
+				e := b.At(j)
+				if v := e.value.raw; m.valueIsValid(v) {
+					newV, op := fn(e.key, v)
+					if !m.valueIsValid(newV) {
+						op = DeleteOp
+					}
+					switch op {
+					case CancelOp:
+						// No-op
+					case UpdateOp:
+						e.value.Store(newV)
+					case DeleteOp:
+						// Keep snapshot fresh to prevent stale meta
+						meta = setByte(meta, emptySlot, j)
+						b.meta.Store(meta)
+						if m.zeroDel {
+							e.value.Store(*new(V))
+						}
+						table.AddSize(i, -1)
+					default:
+						root.Unlock()
+						panic("unexpected op")
+					}
+				}
+			}
+		}
+		root.Unlock()
+	}
+}
+
 // Process applies a compute-style update to the map entry for the given key.
 // The function fn receives the current value (if any) and whether the key
 // exists, and returns the new value, operation type, result value, and status.
@@ -429,29 +497,8 @@ func (m *FlatMapOf[K, V]) Process(
 			op = DeleteOp
 		}
 		switch op {
-		case DeleteOp:
-			if !loaded {
-				root.Unlock()
-				return value, status
-			}
-			// Clear the meta slot to mark as deleted (publish-unpublish
-			// barrier): readers that still observe the old meta may only ever
-			// see the old key; we never clear the key on delete to avoid torn
-			// key reads under concurrency.
-			newMeta := setByte(oldMeta, emptySlot, oldIdx)
-			oldB.meta.Store(newMeta)
-
-			// Clear references: only clear the value to aid GC; keep the old
-			// key intact until the slot is reused by a future insert. The old
-			// key remains invisible to readers after meta is cleared; when
-			// reusing the slot, we (1) store key, (2) store value, then (3) set
-			// meta. Keeping the key may retain its backing memory until reuse;
-			// this is a conscious trade-off to avoid torn key reads.
-			if m.zeroDel {
-				oldB.At(oldIdx).value.Store(*new(V))
-			}
+		case CancelOp:
 			root.Unlock()
-			table.AddSize(idx, -1)
 			return value, status
 		case UpdateOp:
 			if loaded {
@@ -511,10 +558,33 @@ func (m *FlatMapOf[K, V]) Process(
 				}
 			}
 			return value, status
-		default:
-			// CancelOp
+		case DeleteOp:
+			if !loaded {
+				root.Unlock()
+				return value, status
+			}
+			// Clear the meta slot to mark as deleted (publish-unpublish
+			// barrier): readers that still observe the old meta may only ever
+			// see the old key; we never clear the key on delete to avoid torn
+			// key reads under concurrency.
+			newMeta := setByte(oldMeta, emptySlot, oldIdx)
+			oldB.meta.Store(newMeta)
+
+			// Clear references: only clear the value to aid GC; keep the old
+			// key intact until the slot is reused by a future insert. The old
+			// key remains invisible to readers after meta is cleared; when
+			// reusing the slot, we (1) store key, (2) store value, then (3) set
+			// meta. Keeping the key may retain its backing memory until reuse;
+			// this is a conscious trade-off to avoid torn key reads.
+			if m.zeroDel {
+				oldB.At(oldIdx).value.Store(*new(V))
+			}
 			root.Unlock()
+			table.AddSize(idx, -1)
 			return value, status
+		default:
+			root.Unlock()
+			panic("unexpected op")
 		}
 	}
 }
@@ -655,7 +725,8 @@ func (m *FlatMapOf[K, V]) tryResize(hint mapResizeHint, size, sizeAdd int) {
 		}
 	}
 
-	if newLen*int(unsafe.Sizeof(flatBucket[K, V]{})) >= asyncThreshold && cpus > 1 {
+	if cpus > 1 &&
+		newLen*int(unsafe.Sizeof(flatBucket[K, V]{})) >= asyncThreshold {
 		go m.finalizeResize(table, newLen, rs, cpus)
 	} else {
 		m.finalizeResize(table, newLen, rs, cpus)
@@ -736,7 +807,8 @@ func (m *FlatMapOf[K, V]) copyFlatBucketRange(
 							// It is safe to set meta first here because
 							// newTable is not published to readers until the
 							// final atomic swap of m.table in helpCopyAndWait;
-							// no reader can observe dest bucket before that point.
+							// no reader can observe dest bucket before that
+							// point.
 							*b.meta.Raw() = setByte(meta, h2v, emptyIdx)
 							entry := b.At(emptyIdx)
 							entry.value.raw = v

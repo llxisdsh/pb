@@ -350,8 +350,14 @@ func TestSeqFlatMapOf_KeyTornRead_Stress_Heavy(t *testing.T) {
 				default:
 					for i := offset; i < N; i += writerN {
 						k := keys[i]
-						m.Process(k, func(old int, loaded bool) (int, ComputeOp, int, bool) { return 0, DeleteOp, 0, false })
-						m.Process(k, func(old int, loaded bool) (int, ComputeOp, int, bool) { return i, UpdateOp, i, true })
+						m.Process(
+							k,
+							func(old int, loaded bool) (int, ComputeOp, int, bool) { return 0, DeleteOp, 0, false },
+						)
+						m.Process(
+							k,
+							func(old int, loaded bool) (int, ComputeOp, int, bool) { return i, UpdateOp, i, true },
+						)
 					}
 					runtime.Gosched()
 				}
@@ -366,7 +372,9 @@ func TestSeqFlatMapOf_KeyTornRead_Stress_Heavy(t *testing.T) {
 	wg.Wait()
 
 	if foundTornKey.Load() {
-		t.Fatalf("detected possible torn read of key: invariant k.B == ^k.A violated under concurrency (heavy)")
+		t.Fatalf(
+			"detected possible torn read of key: invariant k.B == ^k.A violated under concurrency (heavy)",
+		)
 	}
 }
 
@@ -390,9 +398,12 @@ func TestSeqFlatMapOf_Range_NoDuplicateVisit_Heavy(t *testing.T) {
 			defer wg.Done()
 			for atomic.LoadUint32(&stop) == 0 {
 				for i := offset; i < N; i += writerN {
-					m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
-						return old + 1, UpdateOp, old + 1, true
-					})
+					m.Process(
+						i,
+						func(old int, loaded bool) (int, ComputeOp, int, bool) {
+							return old + 1, UpdateOp, old + 1, true
+						},
+					)
 				}
 				runtime.Gosched()
 			}
@@ -406,7 +417,10 @@ func TestSeqFlatMapOf_Range_NoDuplicateVisit_Heavy(t *testing.T) {
 		m.Range(func(k, v int) bool {
 			if k >= 0 && k < N {
 				if seen[k] != 0 {
-					t.Fatalf("Range yielded duplicate key within a single pass (heavy): %d", k)
+					t.Fatalf(
+						"Range yielded duplicate key within a single pass (heavy): %d",
+						k,
+					)
 				}
 				seen[k] = 1
 			}
@@ -437,22 +451,29 @@ func TestSeqFlatMapOf_Range_NoDuplicateVisit(t *testing.T) {
 			for atomic.LoadUint32(&stop) == 0 {
 				for i := offset; i < N; i += writerN {
 					// mutate value to force seq changes
-					m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
-						return old + 1, UpdateOp, old + 1, true
-					})
+					m.Process(
+						i,
+						func(old int, loaded bool) (int, ComputeOp, int, bool) {
+							return old + 1, UpdateOp, old + 1, true
+						},
+					)
 				}
 				runtime.Gosched()
 			}
 		}(w)
 	}
 
-	// Run several Range passes under writer churn; each pass must not see duplicates
+	// Run several Range passes under writer churn; each pass must not see
+	// duplicates
 	rounds := 10
 	for r := 0; r < rounds; r++ {
 		seen := make(map[int]struct{}, N)
 		m.Range(func(k, v int) bool {
 			if _, dup := seen[k]; dup {
-				t.Fatalf("Range yielded duplicate key within a single pass: %d", k)
+				t.Fatalf(
+					"Range yielded duplicate key within a single pass: %d",
+					k,
+				)
 			}
 			seen[k] = struct{}{}
 			return true
@@ -460,5 +481,189 @@ func TestSeqFlatMapOf_Range_NoDuplicateVisit(t *testing.T) {
 	}
 
 	atomic.StoreUint32(&stop, 1)
+	wg.Wait()
+}
+
+func TestSeqFlatMapOf_RangeProcess_Basic(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int]()
+	const N = 1024
+	for i := 0; i < N; i++ {
+		m.Store(i, i)
+	}
+
+	// Delete evens, add +100 to odds, cancel others (none)
+	m.RangeProcess(func(k, v int) (int, ComputeOp) {
+		if k%2 == 0 {
+			return 0, DeleteOp
+		}
+		return v + 100, UpdateOp
+	})
+
+	for i := 0; i < N; i++ {
+		v, ok := m.Load(i)
+		if i%2 == 0 {
+			if ok {
+				t.Fatalf("key %d should be deleted", i)
+			}
+		} else {
+			if !ok || v != i+100 {
+				t.Fatalf("key %d got (%v,%v), want (%d,true)", i, v, ok, i+100)
+			}
+		}
+	}
+}
+
+func TestSeqFlatMapOf_RangeProcess_CancelAndEarlyStop(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int]()
+	for i := 0; i < 100; i++ {
+		m.Store(i, i)
+	}
+	count := 0
+	m.RangeProcess(func(k, v int) (int, ComputeOp) {
+		count++
+		if count >= 10 {
+			return v, CancelOp // no change
+		}
+		return v + 1, UpdateOp
+	})
+	// we cannot assert exact count, but state should be consistent
+	// First 9 updated, others unchanged
+	for i := 0; i < 100; i++ {
+		v, ok := m.Load(i)
+		if !ok {
+			t.Fatalf("missing key %d", i)
+		}
+		if i < 9 {
+			if v != i+1 {
+				t.Fatalf("key %d expected %d got %d", i, i+1, v)
+			}
+		} else if v != i {
+			t.Fatalf("key %d expected %d got %d", i, i, v)
+		}
+	}
+}
+
+func TestSeqFlatMapOf_RangeProcess_WithZeroAsDeleted(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int](WithZeroAsDeleted())
+	for i := 0; i < 256; i++ {
+		m.Store(i, 1)
+	}
+	m.RangeProcess(func(k, v int) (int, ComputeOp) {
+		if k%3 == 0 {
+			return 0, UpdateOp // in SeqFlatMapOf, zero remains visible unless explicitly deleted
+		}
+		return v, CancelOp
+	})
+	// Expect: multiples of 3 now have value 0 but remain visible; others remain
+	// 1
+	for i := 0; i < 256; i++ {
+		v, ok := m.Load(i)
+		if !ok {
+			t.Fatalf("key %d unexpectedly missing", i)
+		}
+		if i%3 == 0 {
+			if v != 0 {
+				t.Fatalf("key %d expected 0 (visible), got %d", i, v)
+			}
+		} else {
+			if v != 1 {
+				t.Fatalf("key %d expected 1, got %d", i, v)
+			}
+		}
+	}
+
+	// Now explicitly delete zeros via DeleteOp and verify deletion
+	m.RangeProcess(func(k, v int) (int, ComputeOp) {
+		if v == 0 {
+			return 0, DeleteOp
+		}
+		return v, CancelOp
+	})
+	for i := 0; i < 256; i++ {
+		v, ok := m.Load(i)
+		if i%3 == 0 {
+			if ok {
+				t.Fatalf(
+					"key %d should be deleted after explicit DeleteOp, got (%v,true)",
+					i,
+					v,
+				)
+			}
+		} else {
+			if !ok || v != 1 {
+				t.Fatalf("key %d expected (1,true) got (%v,%v)", i, v, ok)
+			}
+		}
+	}
+}
+
+// Concurrency smoke: interleave RangeProcess with Process to ensure no panics
+// and state convergence.
+func TestSeqFlatMapOf_RangeProcess_Concurrent(t *testing.T) {
+	m := NewSeqFlatMapOf[int, int]()
+	const N = 512
+	for i := 0; i < N; i++ {
+		m.Store(i, i)
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	wg.Add(3)
+
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.RangeProcess(func(k, v int) (int, ComputeOp) {
+					if k%7 == 0 {
+						return 0, DeleteOp
+					}
+					return v + 1, UpdateOp
+				})
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				for i := 0; i < N; i++ {
+					m.Process(
+						i,
+						func(old int, loaded bool) (int, ComputeOp, int, bool) {
+							if !loaded {
+								return i, UpdateOp, i, false
+							}
+							return old + 1, UpdateOp, old + 1, true
+						},
+					)
+				}
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				for i := 0; i < N; i++ {
+					m.Load(i)
+				}
+			}
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
 	wg.Wait()
 }

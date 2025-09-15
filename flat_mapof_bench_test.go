@@ -356,7 +356,8 @@ type LargeValue struct {
 //	for i := 0; i < size; i++ {
 //		m.Process(
 //			i,
-//			func(old LargeValue, loaded bool) (LargeValue, ComputeOp, LargeValue, bool) {
+// 			func(old LargeValue, loaded bool) (LargeValue, ComputeOp, LargeValue,
+// bool) {
 //				newV := LargeValue{
 //					ID:   int64(i),
 //					Name: fmt.Sprintf("item_%d", i),
