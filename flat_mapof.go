@@ -452,14 +452,14 @@ func (m *FlatMapOf[K, V]) Process(
 		}
 
 		var (
-			oldB    *flatBucket[K, V]
-			oldIdx  int
-			oldMeta uint64
-			oldVal  V
-			loaded  bool
-			emptyB  *flatBucket[K, V]
-			emptyI  int
-			lastB   *flatBucket[K, V]
+			oldB     *flatBucket[K, V]
+			oldIdx   int
+			oldMeta  uint64
+			oldVal   V
+			loaded   bool
+			emptyB   *flatBucket[K, V]
+			emptyIdx int
+			lastB    *flatBucket[K, V]
 		)
 
 	findLoop:
@@ -485,7 +485,7 @@ func (m *FlatMapOf[K, V]) Process(
 			if emptyB == nil {
 				if empty := (^meta) & metaMask; empty != 0 {
 					emptyB = b
-					emptyI = firstMarkedByteIndex(empty)
+					emptyIdx = firstMarkedByteIndex(empty)
 				}
 			}
 			lastB = b
@@ -509,7 +509,7 @@ func (m *FlatMapOf[K, V]) Process(
 			}
 			// insert new
 			if emptyB != nil {
-				entry := emptyB.At(emptyI)
+				entry := emptyB.At(emptyIdx)
 				if embeddedHash {
 					entry.setHash(hash)
 				}
@@ -518,7 +518,7 @@ func (m *FlatMapOf[K, V]) Process(
 				// (before publishing via meta)
 				entry.value.Store(newV)
 				// Publish the slot by setting meta last (release)
-				newMeta := setByte(*emptyB.meta.Raw(), h2v, emptyI)
+				newMeta := setByte(*emptyB.meta.Raw(), h2v, emptyIdx)
 				if emptyB == root {
 					root.UnlockWithMeta(newMeta)
 				} else {

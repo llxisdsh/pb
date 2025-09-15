@@ -398,7 +398,7 @@ restart:
 				case UpdateOp:
 					s := b.seq.Load()
 					b.seq.Store(s + 1)
-					b.At(j).value = newV
+					e.value = newV
 					b.seq.Store(s + 2)
 				case DeleteOp:
 					// Keep snapshot fresh to prevent stale meta
@@ -407,7 +407,7 @@ restart:
 					b.seq.Store(s + 1)
 					b.meta.Store(meta)
 					b.seq.Store(s + 2)
-					*b.At(j) = seqFlatEntry[K, V]{}
+					*e = seqFlatEntry[K, V]{}
 					table.AddSize(i, -1)
 				default:
 					root.Unlock()
