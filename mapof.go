@@ -1360,6 +1360,7 @@ restart:
 
 					newEntry, shouldContinue := fn(e)
 					if !shouldContinue {
+						root.Unlock()
 						return
 					}
 
@@ -1390,11 +1391,9 @@ restart:
 // IterEntry represents an entry being processed in ProcessAll operations.
 // It provides methods to update or delete the entry during iteration.
 type IterEntry[K comparable, V any] struct {
-	key     K
-	value   V
-	loaded  bool
-	updated bool
-	deleted bool
+	key   K
+	value V
+	op    ComputeOp
 }
 
 // Key returns the key of the current entry.
@@ -1416,10 +1415,8 @@ func (e *IterEntry[K, V]) Value() V {
 //
 //go:nosplit
 func (e *IterEntry[K, V]) Update(newValue V) {
-	if e.loaded && !e.deleted {
-		e.value = newValue
-		e.updated = true
-	}
+	e.value = newValue
+	e.op = UpdateOp
 }
 
 // Delete marks the current entry for deletion.
@@ -1427,8 +1424,8 @@ func (e *IterEntry[K, V]) Update(newValue V) {
 //
 //go:nosplit
 func (e *IterEntry[K, V]) Delete() {
-	e.deleted = true
-	e.updated = false // deletion takes precedence
+	e.value = *new(V)
+	e.op = DeleteOp
 }
 
 // ProcessAll returns a function that can be used to iterate through all entries
@@ -1450,34 +1447,30 @@ func (e *IterEntry[K, V]) Delete() {
 //			e.Delete()
 //		}
 //	}
+//
+//go:nosplit
 func (m *MapOf[K, V]) ProcessAll() func(yield func(*IterEntry[K, V]) bool) {
 	return func(yield func(*IterEntry[K, V]) bool) {
 		m.rangeProcessEntryWithBreak(
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool) {
+				// loaded can never be nil
 				e := &IterEntry[K, V]{
-					key:    loaded.Key,
-					value:  loaded.Value,
-					loaded: loaded != nil,
+					key:   loaded.Key,
+					value: loaded.Value,
 				}
 
 				if !yield(e) {
 					return loaded, false // exit early
 				}
 
-				if e.deleted {
+				switch e.op {
+				case UpdateOp:
+					return &EntryOf[K, V]{Value: e.value}, true
+				case DeleteOp:
 					return nil, true
+				default:
+					return loaded, true
 				}
-
-				if e.updated {
-					// create new entry for update
-					updatedEntry := &EntryOf[K, V]{
-						Key:   loaded.Key,
-						Value: e.value,
-					}
-					return updatedEntry, true
-				}
-
-				return loaded, true
 			},
 		)
 	}
