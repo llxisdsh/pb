@@ -60,7 +60,11 @@ func TestConcurrentCacheMapOf(t *testing.T) {
 			a := get(&m, i%P)
 			b := get(&m, i%P)
 			if a != b {
-				t.Errorf("consecutive cache reads returned different values: a != b (%p vs %p)\n", a, b)
+				t.Errorf(
+					"consecutive cache reads returned different values: a != b (%p vs %p)\n",
+					a,
+					b,
+				)
 			}
 		}()
 	}

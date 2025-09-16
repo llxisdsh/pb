@@ -1307,6 +1307,25 @@ func (m *MapOf[K, V]) copyBucketOf(
 func (m *MapOf[K, V]) RangeProcessEntry(
 	fn func(loaded *EntryOf[K, V]) *EntryOf[K, V],
 ) {
+	m.rangeProcessEntryWithBreak(
+		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool) {
+			return fn(loaded), true
+		},
+	)
+}
+
+// rangeProcessEntryWithBreak iterates through all map entries while holding the
+// bucket lock, applying fn to each entry. The iteration is thread-safe
+// due to bucket-level locking.
+//
+// The fn callback controls entry modification and iteration:
+//   - Return (modified entry, true): updates the value and continues
+//   - Return (nil, true): deletes the entry and continues
+//   - Return (original entry, true): no change and continues
+//   - Return (any, false): stops iteration early
+func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
+	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool),
+) {
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	if table == nil {
 		return
@@ -1339,7 +1358,10 @@ restart:
 				j := firstMarkedByteIndex(marked)
 				if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
 
-					newEntry := fn(e)
+					newEntry, shouldContinue := fn(e)
+					if !shouldContinue {
+						return
+					}
 
 					if newEntry == e {
 						// No-op
@@ -1362,6 +1384,102 @@ restart:
 			}
 		}
 		root.Unlock()
+	}
+}
+
+// IterEntry represents an entry being processed in ProcessAll operations.
+// It provides methods to update or delete the entry during iteration.
+type IterEntry[K comparable, V any] struct {
+	key     K
+	value   V
+	loaded  bool
+	updated bool
+	deleted bool
+}
+
+// Key returns the key of the current entry.
+//
+//go:nosplit
+func (e *IterEntry[K, V]) Key() K {
+	return e.key
+}
+
+// Value returns the value of the current entry.
+//
+//go:nosplit
+func (e *IterEntry[K, V]) Value() V {
+	return e.value
+}
+
+// Update sets a new value for the current entry.
+// The change will be applied to the map.
+//
+//go:nosplit
+func (e *IterEntry[K, V]) Update(newValue V) {
+	if e.loaded && !e.deleted {
+		e.value = newValue
+		e.updated = true
+	}
+}
+
+// Delete marks the current entry for deletion.
+// The entry will be removed from the map.
+//
+//go:nosplit
+func (e *IterEntry[K, V]) Delete() {
+	e.deleted = true
+	e.updated = false // deletion takes precedence
+}
+
+// ProcessAll returns a function that can be used to iterate through all entries
+// in the map. It is the iterator version of RangeProcessEntry.
+// It allows modification (update/delete) of entries during iteration.
+//
+// Notes:
+//   - Use for scenarios requiring entry modification during iteration
+//   - For read-only iteration, prefer Range() or All() methods for better
+//     performance
+//
+// Example:
+//
+//	for e := range m.ProcessAll() {
+//		if shouldUpdate(e.Key()) {
+//			e.Update(newValue)
+//		}
+//		if shouldDelete(e.Key()) {
+//			e.Delete()
+//		}
+//	}
+func (m *MapOf[K, V]) ProcessAll() func(yield func(*IterEntry[K, V]) bool) {
+	return func(yield func(*IterEntry[K, V]) bool) {
+		m.rangeProcessEntryWithBreak(
+			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool) {
+				e := &IterEntry[K, V]{
+					key:    loaded.Key,
+					value:  loaded.Value,
+					loaded: loaded != nil,
+				}
+
+				if !yield(e) {
+					return loaded, false // exit early
+				}
+
+				if e.deleted {
+					return nil, true
+				}
+
+				if e.updated {
+					// create new entry for update
+					updatedEntry := &EntryOf[K, V]{
+						Key:   loaded.Key,
+						Value: e.value,
+					}
+					return updatedEntry, true
+				}
+
+				return loaded, true
+			},
+		)
 	}
 }
 
