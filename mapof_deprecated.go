@@ -109,11 +109,6 @@ func (m *MapOf[K, V]) Init(
 // WithFastStringHasher returns a MapConfig option that enables optimized
 // hashing for string and []byte keys.
 //
-// DEPRECATED: This function is deprecated as the fast string hasher is now
-// the default behavior for string and []byte keys. The optimized hashing
-// strategy is automatically applied when using NewMapOf with string or []byte
-// keys without any additional configuration.
-//
 // If you need to revert to Go's built-in hasher for compatibility or
 // debugging purposes, use WithBuiltInHasher instead:
 //

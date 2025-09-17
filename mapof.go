@@ -2878,7 +2878,7 @@ func parallelProcess(
 	if chunks > 1 {
 		var wg sync.WaitGroup
 		wg.Add(chunks)
-		for i := 0; i < chunks; i++ {
+		for i := range chunks {
 			go func(start, end int) {
 				defer wg.Done()
 				processor(start, end)
@@ -3317,7 +3317,7 @@ func hashString(ptr unsafe.Pointer, seed uintptr) uintptr {
 	}
 	s := (*stringHeader)(ptr)
 	if s.len <= 12 {
-		for i := 0; i < s.len; i++ {
+		for i := range s.len {
 			seed = seed*31 + uintptr(*(*uint8)(unsafe.Add(noescape(s.data), i)))
 		}
 		return seed

@@ -300,9 +300,9 @@ func (ht *HashTrieMap[K, V]) CompareAndSwap(key K, old, new V) (swapped bool) {
 
 	// Find a node with the key and compare with it. n != nil if we found the node.
 	i, _, slot, n := ht.find(i, key, hash, ht.valEqual, old)
-	//if i != nil {
-	//	defer i.mu.Unlock()
-	//}
+	// if i != nil {
+	// 	defer i.mu.Unlock()
+	// }
 	if n == nil {
 		return false
 	}

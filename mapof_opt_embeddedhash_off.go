@@ -4,7 +4,7 @@ package pb
 
 const embeddedHash = false
 
-// EntryOf is an immutable map entry.
+// Entry is an immutable key-value entry type for [MapOf]
 type EntryOf[K comparable, V any] struct {
 	Key   K
 	Value V
@@ -19,7 +19,7 @@ func (e *EntryOf[K, V]) getHash() uintptr {
 func (e *EntryOf[K, V]) setHash(_ uintptr) {
 }
 
-// flatEntry is a flat map entry.
+// flatEntry is an entry type for [FlatMapOf]
 type flatEntry[K comparable, V any] struct {
 	value atomicValue[V]
 	key   K
@@ -34,17 +34,17 @@ func (e *flatEntry[K, V]) getHash() uintptr {
 func (e *flatEntry[K, V]) setHash(_ uintptr) {
 }
 
-// seqFlatEntry is a flat map entry.
+// seqFlatEntry is an entry type for [SeqFlatMapOf]
 type seqFlatEntry[K comparable, V any] struct {
 	key   K
 	value V
 }
 
-// getHash is a no-op for non-embedded-hash build.
+//go:nosplit
 func (e *seqFlatEntry[K, V]) getHash() uintptr {
 	return 0
 }
 
-// setHash is a no-op for non-embedded-hash build.
+//go:nosplit
 func (e *seqFlatEntry[K, V]) setHash(_ uintptr) {
 }
