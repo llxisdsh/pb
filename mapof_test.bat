@@ -10,7 +10,6 @@ go test mapof_test.go mapof.go ^
 mapof_deprecated.go ^
 mapof_experimental.go ^
 mapof_opt_cachelinesize.go ^
-mapof_opt_atomiclevel.go ^
 mapof_opt_enablepadding_off.go ^
 mapof_opt_embeddedhash_off.go ^
 atomic_utils.go ^

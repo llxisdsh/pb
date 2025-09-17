@@ -298,7 +298,7 @@ func WithKeyHasher[K comparable](
 //
 // LinearDistribution))
 //
-// ⚠️  SAFETY WARNING:
+// Notes:
 //   - You must correctly cast unsafe.Pointer to the actual key type
 //   - Incorrect pointer operations will cause crashes or memory corruption
 //   - Only use if you understand Go's unsafe package
@@ -367,7 +367,7 @@ func WithValueEqual[V any](
 //	}
 //	m := NewMapOf[string, MyStruct](WithValueEqualUnsafe(unsafeEqual))
 //
-// ⚠️  SAFETY WARNING:
+// Notes:
 //   - You must correctly cast unsafe.Pointer to the actual value type
 //   - Both pointers must point to valid memory of the same type
 //   - Incorrect pointer operations will cause crashes or memory corruption
@@ -375,6 +375,28 @@ func WithValueEqual[V any](
 func WithValueEqualUnsafe(eq EqualFunc) func(*MapConfig) {
 	return func(c *MapConfig) {
 		c.ValEqual = eq
+	}
+}
+
+// WithBuiltInHasher returns a MapConfig option that explicitly sets the
+// built-in hash function for the specified type.
+//
+// This option is useful when you want to explicitly use Go's built-in hasher
+// instead of any optimized variants. It ensures that the map uses the same
+// hashing strategy as Go's native map implementation.
+//
+// Performance characteristics:
+// - Provides consistent performance across all key sizes
+// - Uses Go's optimized internal hash functions
+// - Guaranteed compatibility with future Go versions
+// - May be slower than specialized hashers for specific use cases
+//
+// Usage:
+//
+//	m := NewMapOf[string, int](WithBuiltInHasher[string]())
+func WithBuiltInHasher[T comparable]() func(*MapConfig) {
+	return func(c *MapConfig) {
+		c.KeyHash = GetBuiltInHasher[T]()
 	}
 }
 
@@ -1293,7 +1315,8 @@ func (m *MapOf[K, V]) copyBucketOf(
 // Ideal for batch operations requiring atomic read-modify-write semantics.
 //
 // Parameters:
-//   - fn: callback that processes each entry and returns an operation indicator
+//   - fn: callback that processes each entry.
+//     The loaded parameter is guaranteed to be non-nil during iteration.
 //
 // Notes:
 //
@@ -2101,6 +2124,11 @@ func (m *MapOf[K, V]) Shrink() {
 
 // RangeEntry iterates over all entries in the map.
 //
+//   - yield: callback that processes each entry and return a boolean
+//     to control iteration.
+//     Return true to continue iteration, false to stop early.
+//     The loaded parameter is guaranteed to be non-nil during iteration.
+//
 // Notes:
 //
 //   - Never modify the Key or Value in an Entry under any circumstances.
@@ -2109,7 +2137,7 @@ func (m *MapOf[K, V]) Shrink() {
 //     to be real-time but provides eventual consistency.
 //     In extreme cases, the same value may be traversed twice
 //     (if it gets deleted and re-added later during iteration).
-func (m *MapOf[K, V]) RangeEntry(yield func(e *EntryOf[K, V]) bool) {
+func (m *MapOf[K, V]) RangeEntry(yield func(loaded *EntryOf[K, V]) bool) {
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	if table == nil {
 		return
@@ -3056,15 +3084,15 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 	return (w &^ (0xff << shift)) | (uint64(b) << shift)
 }
 
-//goland:noinspection ALL
-const useAutoDetectedTSO = atomicLevel == -1 &&
-	(runtime.GOARCH == "amd64" || runtime.GOARCH == "386" ||
-		runtime.GOARCH == "s390x" || runtime.GOARCH == "s390")
+const isTSO = runtime.GOARCH == "amd64" ||
+	runtime.GOARCH == "386" ||
+	runtime.GOARCH == "s390x" ||
+	runtime.GOARCH == "s390"
 
 //go:nosplit
 func loadPointerNoMB(addr *unsafe.Pointer) unsafe.Pointer {
 	//goland:noinspection ALL
-	if useAutoDetectedTSO || atomicLevel >= 1 {
+	if isTSO {
 		return *addr
 	} else {
 		return atomic.LoadPointer(addr)
@@ -3074,7 +3102,7 @@ func loadPointerNoMB(addr *unsafe.Pointer) unsafe.Pointer {
 //go:nosplit
 func storePointerNoMB(addr *unsafe.Pointer, val unsafe.Pointer) {
 	//goland:noinspection ALL
-	if useAutoDetectedTSO || atomicLevel >= 2 {
+	if isTSO {
 		*addr = val
 	} else {
 		atomic.StorePointer(addr, val)
@@ -3084,7 +3112,7 @@ func storePointerNoMB(addr *unsafe.Pointer, val unsafe.Pointer) {
 //go:nosplit
 func loadUintptrNoMB(addr *uintptr) uintptr {
 	//goland:noinspection ALL
-	if useAutoDetectedTSO || atomicLevel >= 1 {
+	if isTSO {
 		return *addr
 	} else {
 		return atomic.LoadUintptr(addr)
@@ -3094,7 +3122,7 @@ func loadUintptrNoMB(addr *uintptr) uintptr {
 // //go:nosplit
 // func storeUintptrNoMB(addr *uintptr, val uintptr) {
 // 	//goland:noinspection ALL
-// 	if useAutoDetectedTSO || atomicLevel >= 2 {
+// 	if isTSO {
 // 		*addr = val
 // 	} else {
 // 		atomic.StoreUintptr(addr, val)
@@ -3104,7 +3132,7 @@ func loadUintptrNoMB(addr *uintptr) uintptr {
 //go:nosplit
 func loadUint64NoMB(addr *uint64) uint64 {
 	//goland:noinspection ALL
-	if (useAutoDetectedTSO || atomicLevel >= 1) && bits.UintSize >= 64 {
+	if isTSO && bits.UintSize >= 64 {
 		return *addr
 	} else {
 		return atomic.LoadUint64(addr)
@@ -3114,7 +3142,7 @@ func loadUint64NoMB(addr *uint64) uint64 {
 //go:nosplit
 func storeUint64NoMB(addr *uint64, val uint64) {
 	//goland:noinspection ALL
-	if (useAutoDetectedTSO || atomicLevel >= 2) && bits.UintSize >= 64 {
+	if isTSO && bits.UintSize >= 64 {
 		*addr = val
 	} else {
 		atomic.StoreUint64(addr, val)
@@ -3124,7 +3152,7 @@ func storeUint64NoMB(addr *uint64, val uint64) {
 //go:nosplit
 func loadUint32NoMB(addr *uint32) uint32 {
 	//goland:noinspection ALL
-	if (useAutoDetectedTSO || atomicLevel >= 1) && bits.UintSize >= 64 {
+	if isTSO {
 		return *addr
 	} else {
 		return atomic.LoadUint32(addr)
@@ -3134,7 +3162,7 @@ func loadUint32NoMB(addr *uint32) uint32 {
 // //go:nosplit
 // func storeUint32NoMB(addr *uint32, val uint32) {
 // 	//goland:noinspection ALL
-// 	if (useAutoDetectedTSO || atomicLevel >= 2) && bits.UintSize >= 64 {
+// 	if isTSO {
 // 		*addr = val
 // 	} else {
 // 		atomic.StoreUint32(addr, val)
@@ -3214,6 +3242,23 @@ func runtime_canSpin(i int) bool
 //go:nosplit
 //goland:noinspection ALL
 func runtime_doSpin()
+
+// GetBuiltInHasher returns Go's built-in hash function for the specified type.
+// This function provides direct access to the same hash function that Go's
+// built-in map uses internally, ensuring optimal performance and compatibility.
+//
+// The returned hash function is type-specific and optimized for the given
+// comparable type T. It uses Go's internal type representation to access
+// the most efficient hashing implementation available.
+//
+// Usage:
+//
+//	hashFunc := GetBuiltInHasher[string]()
+//	m := NewMapOf[string, int](WithKeyHasherUnsafe(GetBuiltInHasher[string]()))
+func GetBuiltInHasher[T comparable]() HashFunc {
+	keyHash, _ := defaultHasherUsingBuiltIn[T, struct{}]()
+	return keyHash
+}
 
 type (
 	HashFunc  func(ptr unsafe.Pointer, seed uintptr) uintptr

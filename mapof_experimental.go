@@ -2,45 +2,6 @@ package pb
 
 import "unsafe"
 
-// WithBuiltInHasher returns a MapConfig option that explicitly sets the
-// built-in hash function for the specified type.
-//
-// This option is useful when you want to explicitly use Go's built-in hasher
-// instead of any optimized variants. It ensures that the map uses the same
-// hashing strategy as Go's native map implementation.
-//
-// Performance characteristics:
-// - Provides consistent performance across all key sizes
-// - Uses Go's optimized internal hash functions
-// - Guaranteed compatibility with future Go versions
-// - May be slower than specialized hashers for specific use cases
-//
-// Usage:
-//
-//	m := NewMapOf[string, int](WithBuiltInHasher[string]())
-func WithBuiltInHasher[T comparable]() func(*MapConfig) {
-	return func(c *MapConfig) {
-		c.KeyHash = GetBuiltInHasher[T]()
-	}
-}
-
-// GetBuiltInHasher returns Go's built-in hash function for the specified type.
-// This function provides direct access to the same hash function that Go's
-// built-in map uses internally, ensuring optimal performance and compatibility.
-//
-// The returned hash function is type-specific and optimized for the given
-// comparable type T. It uses Go's internal type representation to access
-// the most efficient hashing implementation available.
-//
-// Usage:
-//
-//	hashFunc := GetBuiltInHasher[string]()
-//	m := NewMapOf[string, int](WithKeyHasherUnsafe(GetBuiltInHasher[string]()))
-func GetBuiltInHasher[T comparable]() HashFunc {
-	keyHash, _ := defaultHasherUsingBuiltIn[T, struct{}]()
-	return keyHash
-}
-
 // ProcessEntryOptimistic processes a key-value pair using the provided
 // function.
 //
@@ -86,8 +47,7 @@ func GetBuiltInHasher[T comparable]() HashFunc {
 //   - If you need to modify a value, return a new EntryOf instance
 //   - The fn function is executed while holding an internal lock during the
 //     second phase. Keep the execution time short to avoid blocking other
-//
-// operations.
+//     operations.
 //   - Avoid calling other map methods inside fn to prevent deadlocks.
 //   - Do not perform expensive computations or I/O operations inside fn.
 //   - ⚠️ WARNING: fn may be called TWICE - ensure your function is idempotent

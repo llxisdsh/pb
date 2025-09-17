@@ -10,7 +10,6 @@ go test flat_mapof_test.go flat_mapof.go ^
 atomic_utils.go ^
 mapof.go ^
 mapof_opt_cachelinesize.go ^
-mapof_opt_atomiclevel.go ^
 mapof_opt_enablepadding_off.go ^
 mapof_opt_embeddedhash_off.go ^
  -c -o "%OUTPUT%"

@@ -45,11 +45,9 @@ pb.MapOf excels in scenarios requiring:
 - Counter Performance Optimization.  
   For improved counter performance, use `mapof_opt_enablepadding` to force padding around counters, reducing false sharing.
 - Compatibility
-  - Already optimized for strong memory models (e.g., x86 TSO, Apple Silicon).
-  - Already optimized for Weak memory models.
+  - Automatically detects and optimizes for strong memory model CPUs (e.g., x86 TSO).
   - Tested/Validated CPUs with default configurations:
-    AMD Ryzen Threadripper 3970X, ARM Neoverse-N2, Apple M3 Ultra, Qualcomm Snapdragon 636 (32bit)
-  - Enable `mapof_opt_atomiclevel_1` or `mapof_opt_atomiclevel_2` for better performance on strong memory models.
+    AMD Ryzen ThreadRipper 3970X, ARM Neoverse-N2, Apple M3 Ultra, Qualcomm Snapdragon 636 (32bit)
 - Implements zero-value usability for convenient initialization
 - Provides lazy initialization for better performance
 - Defaults to Go's built-in hash function, customizable on creation or initialization.  
@@ -611,8 +609,9 @@ func iterationOperations() {
 	})
 
 	// RangeEntry: Iterate over all entry pointers (more efficient)
-	cache.RangeEntry(func(entry *pb.EntryOf[string, int]) bool {
-		fmt.Printf("%s: %d\n", entry.Key, entry.Value)
+    // Note: loaded parameter is guaranteed to be non-nil during iteration
+	cache.RangeEntry(func(loaded *pb.EntryOf[string, int]) bool {
+		fmt.Printf("%s: %d\n", loaded.Key, loaded.Value)
 		return true
 	})
 
@@ -657,13 +656,26 @@ func batchOperations() {
 	cache.BatchDelete([]string{"batch1", "batch2"})
 
 	// RangeProcessEntry: Batch process all entries
+	// Note: loaded parameter is guaranteed to be non-nil during iteration
 	cache.RangeProcessEntry(func(loaded *pb.EntryOf[string, int]) *pb.EntryOf[string, int] {
-		if loaded != nil && loaded.Value < 100 {
+		if loaded.Value < 100 {
 			// Double all values less than 100
 			return &pb.EntryOf[string, int]{Value: loaded.Value * 2}
 		}
 		return loaded // Keep unchanged
 	})
+
+	// ProcessAll: Process all entries with callback (Go 1.23+ iterator support)
+	for e := range cache.ProcessAll() {
+		switch e.Key() {
+			case "batch1":
+				e.Update(e.Value() + 500)
+			case "batch2":
+				e.Delete()
+			default:
+				// no-op
+		}
+	}
 
 	// BatchProcess: Batch process iterator data
 	data := map[string]int{"a": 1, "b": 2, "c": 3}
@@ -769,12 +781,6 @@ go build -tags mapof_opt_cachelinesize_32   # For some embedded systems
 go build -tags mapof_opt_cachelinesize_64   # For most modern CPUs
 go build -tags mapof_opt_cachelinesize_128  # For some high-end server CPUs
 go build -tags mapof_opt_cachelinesize_256  # For some specialized architectures
-
-# === Memory Model Optimization ===
-# For strong memory model CPU architectures (x86, Apple Silicon)
-# ⚠️ Warning: May cause data races on weak memory model architectures
-go build -tags mapof_opt_atomiclevel_1      # Reduce some atomic operations
-go build -tags mapof_opt_atomiclevel_2      # Further reduce atomics (more aggressive)
 
 # === Counter Performance Optimization ===
 # Add padding around counters to reduce false sharing in high-concurrency scenarios
