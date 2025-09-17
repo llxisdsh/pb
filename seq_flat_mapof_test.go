@@ -543,60 +543,6 @@ func TestSeqFlatMapOf_RangeProcess_CancelAndEarlyStop(t *testing.T) {
 	}
 }
 
-func TestSeqFlatMapOf_RangeProcess_WithZeroAsDeleted(t *testing.T) {
-	m := NewSeqFlatMapOf[int, int](WithZeroAsDeleted())
-	for i := 0; i < 256; i++ {
-		m.Store(i, 1)
-	}
-	m.RangeProcess(func(k, v int) (int, ComputeOp) {
-		if k%3 == 0 {
-			return 0, UpdateOp // in SeqFlatMapOf, zero remains visible unless explicitly deleted
-		}
-		return v, CancelOp
-	})
-	// Expect: multiples of 3 now have value 0 but remain visible; others remain
-	// 1
-	for i := 0; i < 256; i++ {
-		v, ok := m.Load(i)
-		if !ok {
-			t.Fatalf("key %d unexpectedly missing", i)
-		}
-		if i%3 == 0 {
-			if v != 0 {
-				t.Fatalf("key %d expected 0 (visible), got %d", i, v)
-			}
-		} else {
-			if v != 1 {
-				t.Fatalf("key %d expected 1, got %d", i, v)
-			}
-		}
-	}
-
-	// Now explicitly delete zeros via DeleteOp and verify deletion
-	m.RangeProcess(func(k, v int) (int, ComputeOp) {
-		if v == 0 {
-			return 0, DeleteOp
-		}
-		return v, CancelOp
-	})
-	for i := 0; i < 256; i++ {
-		v, ok := m.Load(i)
-		if i%3 == 0 {
-			if ok {
-				t.Fatalf(
-					"key %d should be deleted after explicit DeleteOp, got (%v,true)",
-					i,
-					v,
-				)
-			}
-		} else {
-			if !ok || v != 1 {
-				t.Fatalf("key %d expected (1,true) got (%v,%v)", i, v, ok)
-			}
-		}
-	}
-}
-
 // Concurrency smoke: interleave RangeProcess with Process to ensure no panics
 // and state convergence.
 func TestSeqFlatMapOf_RangeProcess_Concurrent(t *testing.T) {

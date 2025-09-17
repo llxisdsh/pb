@@ -396,14 +396,14 @@ restart:
 				case CancelOp:
 					// No-op
 				case UpdateOp:
-					s := b.seq.Load()
+					s := *b.seq.Raw()
 					b.seq.Store(s + 1)
 					e.value = newV
 					b.seq.Store(s + 2)
 				case DeleteOp:
 					// Keep snapshot fresh to prevent stale meta
 					meta = setByte(meta, emptySlot, j)
-					s := b.seq.Load()
+					s := *b.seq.Raw()
 					b.seq.Store(s + 1)
 					b.meta.Store(meta)
 					b.seq.Store(s + 2)
@@ -496,7 +496,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 			return value, status
 		case UpdateOp:
 			if loaded {
-				s := oldB.seq.Load()
+				s := *oldB.seq.Raw()
 				oldB.seq.Store(s + 1)
 				oldB.At(oldIdx).value = newV
 				oldB.seq.Store(s + 2)
@@ -513,7 +513,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 				entry.key = key
 				entry.value = newV
 				newMeta := setByte(*emptyB.meta.Raw(), h2v, emptyIdx)
-				s := emptyB.seq.Load()
+				s := *emptyB.seq.Raw()
 				emptyB.seq.Store(s + 1)
 				// Publish meta while still holding the root lock to ensure
 				// no other writer starts while this bucket is in odd state
@@ -555,7 +555,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 			}
 			// Precompute new meta and minimize odd window
 			newMeta := setByte(oldMeta, emptySlot, oldIdx)
-			s := oldB.seq.Load()
+			s := *oldB.seq.Raw()
 			oldB.seq.Store(s + 1)
 			oldB.meta.Store(newMeta)
 			oldB.seq.Store(s + 2)
