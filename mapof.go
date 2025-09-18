@@ -1415,9 +1415,10 @@ restart:
 // IterEntry represents an entry being processed in ProcessAll operations.
 // It provides methods to update or delete the entry during iteration.
 type IterEntry[K comparable, V any] struct {
-	key   K
-	value V
-	op    ComputeOp
+	key    K
+	value  V
+	loaded bool
+	op     ComputeOp
 }
 
 // Key returns the key of the current entry.
@@ -1432,6 +1433,13 @@ func (e *IterEntry[K, V]) Key() K {
 //go:nosplit
 func (e *IterEntry[K, V]) Value() V {
 	return e.value
+}
+
+// Loaded returns true if the entry is loaded, false otherwise.
+//
+//go:nosplit
+func (e *IterEntry[K, V]) Loaded() bool {
+	return e.loaded
 }
 
 // Update sets a new value for the current entry.
@@ -1452,30 +1460,13 @@ func (e *IterEntry[K, V]) Delete() {
 	e.op = DeleteOp
 }
 
-// ProcessAll returns an iterator function that processes all entries in the map
-// or only specified keys if provided. This method supports Go 1.23+ range-over-func
-// iteration and allows in-place modification of entries during iteration.
+// ProcessAll returns a function that can be used to iterate through all entries
+// in the map. It is the iterator version of RangeProcessEntry.
+// It allows modification (update/delete) of entries during iteration.
 //
-// The returned iterator yields *IterEntry[K, V] objects that provide access to
-// the key-value pair and allow modification operations (Update/Delete) during
-// iteration. The iterator is safe for concurrent use and supports early
-// termination via break statements.
+// Example:
 //
-// Parameters:
-//   - keys: optional variadic parameter specifying which keys to process.
-//     If empty, all entries in the map will be processed.
-//     If provided, only entries with matching keys will be yielded.
-//
-// Returns:
-//   - func(yield func(*IterEntry[K, V]) bool): iterator function compatible with
-//     Go 1.23+ range-over-func. The yield function returns true to continue
-//     iteration or false to stop early.
-//
-// Usage examples:
-//
-//	// Process all entries
 //	for e := range m.ProcessAll() {
-//		fmt.Printf("Key: %v, Value: %v\n", e.Key(), e.Value())
 //		// Update value
 //		e.Update(e.Value() * 2)
 //		// Or delete entry
@@ -1484,84 +1475,94 @@ func (e *IterEntry[K, V]) Delete() {
 //		}
 //	}
 //
-//	// Process only specific keys
-//	for e := range m.ProcessAll("key1", "key2", "key3") {
-//		fmt.Printf("Processing: %v = %v\n", e.Key(), e.Value())
-//		e.Update(newValue)
-//	}
-//
-//	// Early termination
-//	count := 0
-//	for e := range m.ProcessAll() {
-//		count++
-//		if count >= 10 {
-//			break // Stop after processing 10 entries
-//		}
-//		e.Update(e.Value() + 1)
-//	}
-//
 // Notes:
-//   - Requires Go 1.23+ for range-over-func support
-//   - The IterEntry.loaded parameter is guaranteed to be non-nil during iteration
-//   - Modifications (Update/Delete) are applied immediately and atomically
-//   - Safe for concurrent access with other map operations
-//   - When keys is specified, non-existent keys are skipped silently
+//   - IterEntry.Loaded() will always return true during iteration
+//   - Holds bucket lock for entire iteration - avoid long operations/deadlock
+//     risks
+//   - Blocks concurrent map operations during execution
 //   - The iteration order is not guaranteed to be deterministic
+//   - For read-only iteration, prefer Range() or All() methods for better
+//     performance
 //
 //go:nosplit
-func (m *MapOf[K, V]) ProcessAll(keys ...K) func(yield func(*IterEntry[K, V]) bool) {
-	if len(keys) == 0 {
-		return func(yield func(*IterEntry[K, V]) bool) {
-			var e IterEntry[K, V]
-			// loaded can never be nil
-			m.rangeProcessEntryWithBreak(
-				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool) {
-					// loaded can never be nil
-					e.key = loaded.Key
-					e.value = loaded.Value
-					e.op = CancelOp
+func (m *MapOf[K, V]) ProcessAll() func(yield func(*IterEntry[K, V]) bool) {
+	return func(yield func(*IterEntry[K, V]) bool) {
+		var e IterEntry[K, V]
+		// loaded can never be nil
+		m.rangeProcessEntryWithBreak(
+			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool) {
+				// loaded can never be nil
+				e.key = loaded.Key
+				e.value = loaded.Value
+				e.loaded = true
+				e.op = CancelOp
 
-					if !yield(&e) {
-						return loaded, false // exit early
-					}
-					switch e.op {
-					case UpdateOp:
-						return &EntryOf[K, V]{Value: e.value}, true
-					case DeleteOp:
-						return nil, true
-					default:
-						return loaded, true
-					}
-				},
-			)
-		}
-	} else {
-		return func(yield func(*IterEntry[K, V]) bool) {
-			var e IterEntry[K, V]
-			for _, key := range keys {
-				if _, cont := m.ProcessEntry(key, func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-					// Skip if key doesn't exist
-					if loaded == nil {
-						return nil, *new(V), true
-					}
-					e.key = key
-					e.value = loaded.Value
-					e.op = CancelOp
-
-					if !yield(&e) {
-						return loaded, *new(V), false // exit early
-					}
-					switch e.op {
-					case UpdateOp:
-						return &EntryOf[K, V]{Value: e.value}, *new(V), true
-					case DeleteOp:
-						return nil, *new(V), true
-					default:
-						return loaded, *new(V), true
-					}
-				}); !cont {
-					return
+				if !yield(&e) {
+					return loaded, false // exit early
 				}
+				switch e.op {
+				case UpdateOp:
+					return &EntryOf[K, V]{Value: e.value}, true
+				case DeleteOp:
+					return nil, true
+				default:
+					return loaded, true
+				}
+			},
+		)
+	}
+}
+
+// ProcessSpecified returns a function that can be used to iterate through
+// specified keys in the map. It allows modification (update/delete) of entries
+// during iteration.
+//
+// Example:
+//
+//	for e := range m.ProcessSpecified("key1", "key2", "key3") {
+//		if e.Loaded() {
+//			// Key exists, update value
+//			e.Update(e.Value() * 2)
+//		} else {
+//			// Key doesn't exist, can insert new value
+//			e.Update(defaultValue)
+//		}
+//	}
+//
+// Key differences from ProcessAll:
+//   - IterEntry.Loaded() may return false when key doesn't exist in map
+//   - Iteration order is guaranteed to match the order of provided keys
+//   - Only processes the specified keys, not all entries in the map
+//   - Holds bucket lock for each key individually during processing
+//
+//go:nosplit
+func (m *MapOf[K, V]) ProcessSpecified(keys ...K) func(yield func(*IterEntry[K, V]) bool) {
+	return func(yield func(*IterEntry[K, V]) bool) {
+		var e IterEntry[K, V]
+		for _, key := range keys {
+			if _, cont := m.ProcessEntry(key, func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+				e.key = key
+				if loaded != nil {
+					e.value = loaded.Value
+					e.loaded = true
+				} else {
+					e.loaded = false
+				}
+				e.op = CancelOp
+
+				if !yield(&e) {
+					return loaded, *new(V), false // exit early
+				}
+				switch e.op {
+				case UpdateOp:
+					return &EntryOf[K, V]{Value: e.value}, *new(V), true
+				case DeleteOp:
+					return nil, *new(V), true
+				default:
+					return loaded, *new(V), true
+				}
+			}); !cont {
+				return
 			}
 		}
 	}
@@ -1970,7 +1971,7 @@ func (m *MapOf[K, V]) LoadOrCompute(
 	)
 }
 
-type ComputeOp int
+type ComputeOp uint8
 
 const (
 	// CancelOp signals to Compute to not do anything as a result

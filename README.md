@@ -677,9 +677,9 @@ func batchOperations() {
 		}
 	}
 
-    // Process entries with selective keys (Go 1.23+ iterator support)
-    for e := range cache.ProcessAll("batch1", "batch2") {
-        if e.Value() < 1000 {
+    // Process entries with specified keys (Go 1.23+ iterator support)
+    for e := range cache.ProcessSpecified("batch1", "batch4") {
+        if e.Loaded() && e.Value() < 1000 {
             e.Delete()
         }
 	}
