@@ -210,7 +210,7 @@ findEntry:
 			table.AddSize(idx, -1)
 
 			// Check if table shrinking is needed
-			if m.shrinkOn && newMeta&(^uint64(opByteMask)) == emptyMeta &&
+			if m.shrinkOn && newMeta&metaDataMask == emptyMeta &&
 				loadPointerNoMB(&m.resize) == nil {
 				tableLen := table.mask + 1
 				if m.minLen < tableLen {

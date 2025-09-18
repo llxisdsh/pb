@@ -6,7 +6,7 @@ set TIMESTAMP=%DATE:~10,4%-%DATE:~4,2%-%DATE:~7,2%_%TIME:~0,2%-%TIME:~3,2%-%TIME
 set TIMESTAMP=%TIMESTAMP: =0%
 set OUTPUT=mapof_test_%TIMESTAMP%.exe
 
-go test mapof_test.go mapof.go ^
+go test mapof_test.go mapof_go1.23_test.go mapof_go1.24_test.go mapof.go ^
 mapof_deprecated.go ^
 mapof_experimental.go ^
 mapof_opt_cachelinesize.go ^

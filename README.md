@@ -655,7 +655,7 @@ func batchOperations() {
 	// Delete multiple values using BatchDelete
 	cache.BatchDelete([]string{"batch1", "batch2"})
 
-	// RangeProcessEntry: Batch process all entries
+	// Batch process all entries
 	// Note: loaded parameter is guaranteed to be non-nil during iteration
 	cache.RangeProcessEntry(func(loaded *pb.EntryOf[string, int]) *pb.EntryOf[string, int] {
 		if loaded.Value < 100 {
@@ -665,7 +665,7 @@ func batchOperations() {
 		return loaded // Keep unchanged
 	})
 
-	// ProcessAll: Process all entries with callback (Go 1.23+ iterator support)
+	// Process all entries with callback (Go 1.23+ iterator support)
 	for e := range cache.ProcessAll() {
 		switch e.Key() {
 			case "batch1":
@@ -675,6 +675,13 @@ func batchOperations() {
 			default:
 				// no-op
 		}
+	}
+
+    // Process entries with selective keys (Go 1.23+ iterator support)
+    for e := range cache.ProcessAll("batch1", "batch2") {
+        if e.Value() < 1000 {
+            e.Delete()
+        }
 	}
 
 	// BatchProcess: Batch process iterator data
