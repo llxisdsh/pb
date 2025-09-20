@@ -28,21 +28,66 @@ import (
 type SeqFlatMapOf[K comparable, V any] struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_       noCopy
-		table   unsafe.Pointer
+		table   seqFlatTable[K, V]
 		resize  unsafe.Pointer
 		seed    uintptr
 		keyHash HashFunc
-		minLen  int
 		intKey  bool
+		seq     uint32
 	}{})%CacheLineSize) % CacheLineSize]byte
 
 	_       noCopy
-	table   unsafe.Pointer // *seqFlatTable[K,V]
+	table   seqFlatTable[K, V]
 	resize  unsafe.Pointer // *seqFlatResizeState
 	seed    uintptr
 	keyHash HashFunc
-	minLen  int
 	intKey  bool
+	seq     uint32
+}
+
+//go:nosplit
+func (m *SeqFlatMapOf[K, V]) loadTable(t *seqFlatTable[K, V]) uint32 {
+retry:
+	s1 := atomic.LoadUint32(&m.seq)
+	if s1&1 == 0 {
+		*t = m.table
+		s2 := atomic.LoadUint32(&m.seq)
+		if s1 == s2 {
+			return s1
+		}
+	}
+	goto retry
+}
+
+type seqFlatResizeState struct {
+	_ [(CacheLineSize - unsafe.Sizeof(struct {
+		newTable  unsafe.Pointer
+		chunks    int
+		chunkSz   int
+		process   int32
+		completed int32
+		wg        sync.WaitGroup
+	}{})%CacheLineSize) % CacheLineSize]byte
+
+	newTable  unsafe.Pointer // *seqFlatTable[K,V]
+	chunks    int
+	chunkSz   int
+	process   int32
+	completed int32
+	wg        sync.WaitGroup
+}
+type seqFlatTable[K comparable, V any] struct {
+	buckets  unsafeSlice[seqFlatBucket[K, V]]
+	mask     int
+	size     unsafeSlice[counterStripe]
+	sizeMask int
+}
+
+type seqFlatBucket[K comparable, V any] struct {
+	meta    atomicUint64 // occupancy + h2 bytes + op lock bit
+	seq     atomicUint64 // seqlock sequence (even=stable, odd=write)
+	entries [entriesPerBucket]seqFlatEntry[K, V]
+	next    unsafe.Pointer // *seqFlatBucket[K,V]
 }
 
 // NewSeqFlatMapOf creates a new seqlock-based flat map.
@@ -83,46 +128,21 @@ func NewSeqFlatMapOf[K comparable, V any](
 			}
 		}
 	}
-	m.minLen = calcTableLen(cfg.SizeHint)
+	minLen := calcTableLen(cfg.SizeHint)
 
-	t := newSeqFlatTable[K, V](m.minLen, runtime.GOMAXPROCS(0))
-	atomic.StorePointer(&m.table, unsafe.Pointer(t))
+	newSeqFlatTable(minLen, runtime.GOMAXPROCS(0), &m.table)
 	return m
 }
-
-type seqFlatTable[K comparable, V any] struct {
-	_ [(CacheLineSize - unsafe.Sizeof(struct {
-		buckets  unsafeSlice[seqFlatBucket[K, V]]
-		mask     int
-		size     unsafeSlice[counterStripe]
-		sizeMask int
-		chunks   int
-		chunkSz  int
-	}{})%CacheLineSize) % CacheLineSize]byte
-
-	buckets  unsafeSlice[seqFlatBucket[K, V]]
-	mask     int
-	size     unsafeSlice[counterStripe]
-	sizeMask int
-	chunks   int
-	chunkSz  int
-}
-
 func newSeqFlatTable[K comparable, V any](
 	tableLen, cpus int,
-) *seqFlatTable[K, V] {
+	table *seqFlatTable[K, V],
+) {
 	b := make([]seqFlatBucket[K, V], tableLen)
-	overCpus := cpus * resizeOverPartition
-	chunkSz, chunks := calcParallelism(tableLen, minBucketsPerCPU, overCpus)
+	table.buckets = makeUnsafeSlice(b)
+	table.mask = tableLen - 1
 	sizeLen := calcSizeLen(tableLen, cpus)
-	return &seqFlatTable[K, V]{
-		buckets:  makeUnsafeSlice(b),
-		mask:     tableLen - 1,
-		size:     makeUnsafeSlice(make([]counterStripe, sizeLen)),
-		sizeMask: sizeLen - 1,
-		chunks:   chunks,
-		chunkSz:  chunkSz,
-	}
+	table.size = makeUnsafeSlice(make([]counterStripe, sizeLen))
+	table.sizeMask = sizeLen - 1
 }
 
 //go:nosplit
@@ -149,13 +169,6 @@ func (t *seqFlatTable[K, V]) SumSizeExceeds(limit int) bool {
 		}
 	}
 	return false
-}
-
-type seqFlatBucket[K comparable, V any] struct {
-	meta    atomicUint64 // occupancy + h2 bytes + op lock bit
-	seq     atomicUint64 // seqlock sequence (even=stable, odd=write)
-	entries [entriesPerBucket]seqFlatEntry[K, V]
-	next    unsafe.Pointer // *seqFlatBucket[K,V]
 }
 
 //go:nosplit
@@ -210,7 +223,8 @@ func (b *seqFlatBucket[K, V]) UnlockWithMeta(
 
 // Load with per-bucket seqlock read
 func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
-	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
+	var table seqFlatTable[K, V]
+	m.loadTable(&table)
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
@@ -290,7 +304,8 @@ func (m *SeqFlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	}
 	var cache [entriesPerBucket]kvEntry
 	var cacheCount int
-	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
+	var table seqFlatTable[K, V]
+	m.loadTable(&table)
 	for i := 0; i <= table.mask; i++ {
 		root := table.buckets.At(i)
 		for b := root; b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
@@ -367,21 +382,22 @@ func (m *SeqFlatMapOf[K, V]) RangeProcess(
 	fn func(key K, value V) (V, ComputeOp),
 ) {
 restart:
-	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
+	var table seqFlatTable[K, V]
+	s := m.loadTable(&table)
 	for i := 0; i <= table.mask; i++ {
 		root := table.buckets.At(i)
 		root.Lock()
 
 		// Check if resize is in progress and help complete the copy
 		if rs := (*seqFlatResizeState)(atomic.LoadPointer(&m.resize)); rs != nil &&
-			atomic.LoadPointer(&rs.table) != nil &&
+			//atomic.LoadPointer(&rs.table) != nil &&
 			atomic.LoadPointer(&rs.newTable) != nil {
 			root.Unlock()
 			m.helpCopyAndWait(rs)
 			goto restart
 		}
 		// Check if table has been swapped during resize
-		if newTable := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table)); newTable != table {
+		if atomic.LoadUint32(&m.seq) != s {
 			root.Unlock()
 			goto restart
 		}
@@ -425,29 +441,28 @@ func (m *SeqFlatMapOf[K, V]) Process(
 	key K,
 	fn func(old V, loaded bool) (V, ComputeOp, V, bool),
 ) (V, bool) {
-	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h1v := h1(hash, m.intKey)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 
+	var table seqFlatTable[K, V]
 	for {
+		s := m.loadTable(&table)
 		idx := table.mask & h1v
 		root := table.buckets.At(idx)
 		root.Lock()
 
 		// help finishing resize if needed
 		if rs := (*seqFlatResizeState)(atomic.LoadPointer(&m.resize)); rs != nil &&
-			atomic.LoadPointer(&rs.table) != nil &&
+			//atomic.LoadPointer(&rs.table) != nil &&
 			atomic.LoadPointer(&rs.newTable) != nil {
 			root.Unlock()
 			m.helpCopyAndWait(rs)
-			table = (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
 			continue
 		}
-		if newTable := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table)); newTable != table {
+		if atomic.LoadUint32(&m.seq) != s {
 			root.Unlock()
-			table = newTable
 			continue
 		}
 
@@ -637,7 +652,9 @@ func (m *SeqFlatMapOf[K, V]) All() func(yield func(K, V) bool) {
 //
 //go:nosplit
 func (m *SeqFlatMapOf[K, V]) Size() int {
-	return (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table)).SumSize()
+	var table seqFlatTable[K, V]
+	m.loadTable(&table)
+	return table.SumSize()
 }
 
 // IsZero checks if the map is empty.
@@ -645,25 +662,9 @@ func (m *SeqFlatMapOf[K, V]) Size() int {
 //
 //go:nosplit
 func (m *SeqFlatMapOf[K, V]) IsZero() bool {
-	return !(*seqFlatTable[K, V])(
-		atomic.LoadPointer(&m.table),
-	).SumSizeExceeds(0)
-}
-
-type seqFlatResizeState struct {
-	_ [(CacheLineSize - unsafe.Sizeof(struct {
-		wg        sync.WaitGroup
-		table     unsafe.Pointer
-		newTable  unsafe.Pointer
-		process   int32
-		completed int32
-	}{})%CacheLineSize) % CacheLineSize]byte
-
-	wg        sync.WaitGroup
-	table     unsafe.Pointer // *seqFlatTable[K,V]
-	newTable  unsafe.Pointer // *seqFlatTable[K,V]
-	process   int32
-	completed int32
+	var table seqFlatTable[K, V]
+	m.loadTable(&table)
+	return !table.SumSizeExceeds(0)
 }
 
 //go:noinline
@@ -674,15 +675,14 @@ func (m *SeqFlatMapOf[K, V]) tryResize(hint mapResizeHint, size, sizeAdd int) {
 		return
 	}
 	cpus := runtime.GOMAXPROCS(0)
-	if hint == mapClearHint {
-		newTable := newSeqFlatTable[K, V](m.minLen, cpus)
-		atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
-		atomic.StorePointer(&m.resize, nil)
-		rs.wg.Done()
-		return
-	}
-
-	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&m.table))
+	// if hint == mapClearHint {
+	// 	newTable := newSeqFlatTable[K, V](minTableLen, cpus)
+	// 	atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
+	// 	atomic.StorePointer(&m.resize, nil)
+	// 	rs.wg.Done()
+	// 	return
+	// }
+	table := &m.table
 	tableLen := table.mask + 1
 	var newLen int
 	if hint == mapGrowHint {
@@ -702,7 +702,7 @@ func (m *SeqFlatMapOf[K, V]) tryResize(hint mapResizeHint, size, sizeAdd int) {
 		} else {
 			newLen = calcTableLen(size)
 		}
-		if newLen < m.minLen {
+		if newLen < minTableLen {
 			atomic.StorePointer(&m.resize, nil)
 			rs.wg.Done()
 			return
@@ -723,19 +723,22 @@ func (m *SeqFlatMapOf[K, V]) finalizeResize(
 	rs *seqFlatResizeState,
 	cpus int,
 ) {
-	atomic.StorePointer(&rs.table, unsafe.Pointer(table))
-	newTable := newSeqFlatTable[K, V](newLen, cpus)
+	//atomic.StorePointer(&rs.table, unsafe.Pointer(table))
+	overCpus := cpus * resizeOverPartition
+	rs.chunkSz, rs.chunks = calcParallelism(table.mask+1, minBucketsPerCPU, overCpus)
+	newTable := &seqFlatTable[K, V]{}
+	newSeqFlatTable(newLen, cpus, newTable)
 	atomic.StorePointer(&rs.newTable, unsafe.Pointer(newTable))
 	m.helpCopyAndWait(rs)
 }
 
 //go:noinline
 func (m *SeqFlatMapOf[K, V]) helpCopyAndWait(rs *seqFlatResizeState) {
-	table := (*seqFlatTable[K, V])(atomic.LoadPointer(&rs.table))
+	table := &m.table
 	tableLen := table.mask + 1
-	chunks := int32(table.chunks)
-	chunkSz := table.chunkSz
 	newTable := (*seqFlatTable[K, V])(atomic.LoadPointer(&rs.newTable))
+	chunks := int32(rs.chunks)
+	chunkSz := rs.chunkSz
 	for {
 		process := atomic.AddInt32(&rs.process, 1)
 		if process > chunks {
@@ -747,7 +750,10 @@ func (m *SeqFlatMapOf[K, V]) helpCopyAndWait(rs *seqFlatResizeState) {
 		end := min(start+chunkSz, tableLen)
 		m.copySeqFlatBucketRange(table, start, end, newTable)
 		if atomic.AddInt32(&rs.completed, 1) == chunks {
-			atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
+			s := atomic.LoadUint32(&m.seq)
+			atomic.StoreUint32(&m.seq, s+1)
+			m.table = *newTable
+			atomic.StoreUint32(&m.seq, s+2)
 			atomic.StorePointer(&m.resize, nil)
 			rs.wg.Done()
 			return
