@@ -159,9 +159,8 @@ func (t *seqFlatTable[K, V]) SeqStore(v *seqFlatTable[K, V]) {
 }
 
 //go:nosplit
-func (t *seqFlatTable[K, V]) SeqStoreDone() bool {
-	s1 := atomic.LoadUint32(&t.seq)
-	return s1 != 0 && s1&1 == 0
+func (t *seqFlatTable[K, V]) SeqInitDone() bool {
+	return atomic.LoadUint32(&t.seq) == 2
 }
 
 //go:nosplit
@@ -406,7 +405,7 @@ restart:
 
 		// Check if resize is in progress and help complete the copy
 		if rs := (*seqFlatResizeState[K, V])(atomic.LoadPointer(&m.resize)); rs != nil &&
-			rs.newTable.SeqStoreDone() {
+			rs.newTable.SeqInitDone() {
 			root.Unlock()
 			m.helpCopyAndWait(rs)
 			goto restart
@@ -469,7 +468,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 
 		// help finishing resize if needed
 		if rs := (*seqFlatResizeState[K, V])(atomic.LoadPointer(&m.resize)); rs != nil &&
-			rs.newTable.SeqStoreDone() {
+			rs.newTable.SeqInitDone() {
 			root.Unlock()
 			m.helpCopyAndWait(rs)
 			continue
