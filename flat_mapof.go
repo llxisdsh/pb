@@ -216,8 +216,8 @@ func (t *flatTable[K, V]) SumSizeExceeds(limit int) bool {
 // Uses atomicValue for lock-free value access instead of double buffering.
 type flatBucket[K comparable, V comparable] struct {
 	meta    atomicUint64
-	entries [entriesPerBucket]flatEntry[K, V]
 	next    unsafe.Pointer // *flatBucket[K,V]
+	entries [entriesPerBucket]flatEntry[K, V]
 }
 
 //go:nosplit

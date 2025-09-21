@@ -50,7 +50,7 @@ const (
 	// loadFactor: resize table when occupancy > loadFactor
 	loadFactor = 0.75
 	// minTableLen: minimum number of buckets
-	minTableLen = 32
+	minTableLen = 8
 	// minBucketsPerCPU: threshold for parallel resizing
 	minBucketsPerCPU = 4
 	// asyncThreshold: threshold for asynchronous resize

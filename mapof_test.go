@@ -1048,7 +1048,7 @@ func TestMapOf_Interfaces(t *testing.T) {
 		val2 := SmartValue{
 			Value:   100,
 			Ignored: "ignore2",
-		} // same Value, different Ignored
+		}                                                  // same Value, different Ignored
 		val3 := SmartValue{Value: 200, Ignored: "ignore1"} // different Value
 
 		m.Store(key, val1)
@@ -3977,7 +3977,7 @@ func TestMapOfStats(t *testing.T) {
 	}
 
 	stats = m.Stats()
-	if stats.RootBuckets > 2*DefaultMinMapTableLen {
+	if stats.RootBuckets != calcTableLen(200) {
 		t.Fatalf("unexpected number of root buckets: %s", stats.ToString())
 	}
 	if stats.TotalBuckets < stats.RootBuckets {
