@@ -1,14 +1,11 @@
 package pb
 
 import (
+	"math/rand/v2"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"unsafe"
-)
-
-const (
-	hashSeed = 0x9E3779B97F4A7C15
 )
 
 // SeqFlatMapOf implements a flat hash map using bucket-level seqlock.
@@ -33,6 +30,7 @@ type SeqFlatMapOf[K comparable, V any] struct {
 		_       noCopy
 		table   seqFlatTable[K, V]
 		resize  unsafe.Pointer
+		seed    uintptr
 		keyHash HashFunc
 		intKey  bool
 	}{})%CacheLineSize) % CacheLineSize]byte
@@ -40,6 +38,7 @@ type SeqFlatMapOf[K comparable, V any] struct {
 	_       noCopy
 	table   seqFlatTable[K, V]
 	resize  unsafe.Pointer // *seqFlatResizeState[K,V]
+	seed    uintptr
 	keyHash HashFunc
 	intKey  bool
 }
@@ -102,6 +101,7 @@ func NewSeqFlatMapOf[K comparable, V any](
 	}
 
 	m := &SeqFlatMapOf[K, V]{}
+	m.seed = uintptr(rand.Uint64())
 	m.keyHash, _, m.intKey = defaultHasher[K, V]()
 	if cfg.KeyHash != nil {
 		m.keyHash = cfg.KeyHash
@@ -243,7 +243,7 @@ func (b *seqFlatBucket[K, V]) UnlockWithMeta(
 // Load with per-bucket seqlock read
 func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := m.table.SeqLoad()
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), hashSeed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 	idx := table.mask & h1(hash, m.intKey)
@@ -456,7 +456,7 @@ func (m *SeqFlatMapOf[K, V]) Process(
 	key K,
 	fn func(old V, loaded bool) (V, ComputeOp, V, bool),
 ) (V, bool) {
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), hashSeed)
+	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h1v := h1(hash, m.intKey)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
@@ -789,7 +789,7 @@ func (m *SeqFlatMapOf[K, V]) copySeqFlatBucketRange(
 				if embeddedHash {
 					hash = e.getHash()
 				} else {
-					hash = m.keyHash(noescape(unsafe.Pointer(&e.key)), hashSeed)
+					hash = m.keyHash(noescape(unsafe.Pointer(&e.key)), m.seed)
 				}
 				idx := newTable.mask & h1(hash, m.intKey)
 				destBucket := newTable.buckets.At(idx)
