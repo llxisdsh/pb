@@ -249,38 +249,36 @@ func (m *SeqFlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	idx := table.mask & h1(hash, m.intKey)
 	root := table.buckets.At(idx)
 	for b := root; b != nil; b = (*seqFlatBucket[K, V])(atomic.LoadPointer(&b.next)) {
-		spins := 0
+		var spins int
 	retry:
 		s1 := b.seq.Load()
-		if (s1 & 1) == 0 {
-			meta := b.meta.Load()
-			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
-				j := firstMarkedByteIndex(marked)
-				e := *b.At(j) // copy entry after seq check
-				s2 := b.seq.Load()
-				if s1 == s2 {
-					if embeddedHash {
-						if e.getHash() == hash && e.key == key {
-							return e.value, true
-						}
-					} else {
-						if e.key == key {
-							return e.value, true
-						}
-					}
-				} else {
-					if trySpin(&spins) {
-						goto retry
-					}
-					goto fallback
-				}
-			}
-		} else {
+		if (s1 & 1) != 0 {
 			// writer in progress
 			if trySpin(&spins) {
 				goto retry
 			}
 			goto fallback
+		}
+		meta := b.meta.Load()
+		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
+			j := firstMarkedByteIndex(marked)
+			e := *b.At(j) // copy entry after seq check
+			s2 := b.seq.Load()
+			if s1 != s2 {
+				if trySpin(&spins) {
+					goto retry
+				}
+				goto fallback
+			}
+			if embeddedHash {
+				if e.getHash() == hash && e.key == key {
+					return e.value, true
+				}
+			} else {
+				if e.key == key {
+					return e.value, true
+				}
+			}
 		}
 	}
 	return
