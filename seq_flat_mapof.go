@@ -45,17 +45,16 @@ type SeqFlatMapOf[K comparable, V any] struct {
 }
 
 type seqFlatResizeState[K comparable, V any] struct {
-	//_ [(CacheLineSize - unsafe.Sizeof(struct {
-	//	newTable  seqFlatTable[K, V]
-	//	chunks    int
-	//	chunkSz   int
-	//	process   int32
-	//	completed int32
-	//}{})%CacheLineSize) % CacheLineSize]byte
+	_ [(CacheLineSize - unsafe.Sizeof(struct {
+		newTable  seqFlatTable[K, V]
+		chunks    int
+		process   int32
+		completed int32
+		wg        sync.WaitGroup
+	}{})%CacheLineSize) % CacheLineSize]byte
 
 	newTable  seqFlatTable[K, V]
 	chunks    int
-	chunkSz   int
 	process   int32 // atomic
 	completed int32 // atomic
 	wg        sync.WaitGroup
@@ -67,6 +66,8 @@ type seqFlatTable[K comparable, V any] struct {
 	size     unsafeSlice[counterStripe]
 	sizeMask uint32
 	seq      uint32 // seqlock of table
+	// The inline size has minimal effect on reducing cache misses,
+	// so we will not use it for now.
 	// smallSz  uintptr
 }
 
@@ -686,9 +687,9 @@ func (m *SeqFlatMapOf[K, V]) tryResize(hint mapResizeHint, size, sizeAdd int) {
 	}
 	cpus := runtime.GOMAXPROCS(0)
 	if hint == mapClearHint {
-		newTable := new(seqFlatTable[K, V])
+		var newTable seqFlatTable[K, V]
 		newTable.makeTable(minTableLen, cpus)
-		m.table.SeqStore(newTable)
+		m.table.SeqStore(&newTable)
 		atomic.StorePointer(&m.resize, nil)
 		rs.wg.Done()
 		return
@@ -735,7 +736,7 @@ func (m *SeqFlatMapOf[K, V]) finalizeResize(
 	cpus int,
 ) {
 	overCpus := cpus * resizeOverPartition
-	rs.chunkSz, rs.chunks = calcParallelism(table.mask+1, minBucketsPerCPU, overCpus)
+	_, rs.chunks = calcParallelism(table.mask+1, minBucketsPerCPU, overCpus)
 	newTable := new(seqFlatTable[K, V])
 	newTable.makeTable(newLen, cpus)
 	// Release rs
@@ -750,7 +751,7 @@ func (m *SeqFlatMapOf[K, V]) helpCopyAndWait(rs *seqFlatResizeState[K, V]) {
 	// Acquire rs
 	newTable := rs.newTable.SeqLoad()
 	chunks := int32(rs.chunks)
-	chunkSz := rs.chunkSz
+	chunkSz := (tableLen + rs.chunks - 1) / rs.chunks
 	for {
 		process := atomic.AddInt32(&rs.process, 1)
 		if process > chunks {
