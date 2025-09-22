@@ -8,11 +8,10 @@ import (
 	"unsafe"
 )
 
-// SeqFlatMapOf implements a flat hash map using bucket-level seqlock.
-// Keys and values are stored inline (flat). Values are plain (no atomicValue),
-// so V is not limited by CPU word size. Consistency for readers is guaranteed
-// by per-bucket seqlock (sequence is even when stable; writers make it odd
-// during mutations and then even again).
+// SeqFlatMapOf implements a flat hash map using seqlock. Table and K/V are
+// stored inline (flat). K/V is not limited by CPU word size. Consistency for
+// readers is guaranteed by per-bucket seqlock (sequence is even when stable;
+// writers make it odd during mutations and then even again).
 // API mirrors FlatMapOf as much as practical.
 //
 // Concurrency model:

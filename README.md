@@ -885,42 +885,27 @@ When to use which
 
 # pb.SeqFlatMapOf
 
-`pb.SeqFlatMapOf` is a seqlock-based flat hash map: the read path uses optimistic validation (s1 even → read metadata/entries → s2, retry if changed), while the write path performs ordered bucket updates and briefly flips the per-bucket sequence to odd during mutation before restoring it to even to publish a consistent view.
+`SeqFlatMapOf` is a seqlock-based flat hash map. Both the table and K/V are stored inline (fully flat layout) to minimize cache misses. This design delivers stable hit latency and throughput even on cold working sets, which differs from the other concurrent maps’ memory layouts and access paths.
 
-## Key Properties
-- Bucket-level seqlock: readers validate with a lightweight s1/s2 check; on conflict or odd sequence they retry or gracefully fall back to a locked slow path.
-- Flat, inline storage (K/V in-place): no atomicValue on the value path, so V is not restricted by CPU word size (arbitrary-sized value types are supported).
-- Clear deletion semantics: delete first “unpublishes” the slot (clears metadata and completes an even-sequence publish) and then, under the bucket lock, actively clears both key and value; this does not require `WithZeroAsDeleted`.
-- Parallel resizing: follows the package-wide help–copy–publish protocol and can be performed in parallel.
-- API parity: largely mirrors `MapOf`/`FlatMapOf` (Load, Store, LoadOrStore, Range, Process, etc.).
+Key highlights
+- Bucket-level seqlock: readers perform optimistic validation (s1 even → read → s2 equal means stable). On conflict, they retry quickly and, if necessary, fall back to a short locked slow path.
+- Ordered publication for writes: with the root-bucket lock held, flip the bucket sequence to odd → apply changes → flip to even to publish a consistent view.
+- Fully flat storage: inlined table and K/V greatly reduce pointer chasing and cache misses; performance remains strong even with cold data.
+- No value-size limit: V is not constrained by machine word size; arbitrary-sized value types are supported.
+- Parallel resizing: follows a help–copy–publish protocol and can proceed in parallel with minimal impact to ongoing reads/writes.
+- API parity: largely matches MapOf/FlatMapOf (Load, Store, LoadOrStore, Range, Process, etc.).
 
-## Trade-offs and Boundaries
-Advantages
-- Very low read-side overhead under low contention; close to “lock-free read” behavior in the common case.
-- Range-friendly iteration: callbacks are invoked outside locks; consistency is bucket-local (not a global snapshot) but stable for each bucket.
-- No limit on V size thanks to the non-atomic value layout.
+Trade-offs
+- No automatic shrinking (same as FlatMapOf).
+- Consistency is bucket-local (not a global snapshot).
+- Slightly higher per-bucket overhead than MapOf due to seqlock/metadata.
 
-Limitations
-- No automatic shrinking (same as `FlatMapOf`).
-- Buckets carry seqlock metadata, so overall memory efficiency is typically worse than `MapOf`.
-- Consistency is bucket-level, not a global snapshot across the entire table.
+How it differs
+- Versus `FlatMapOf`: more stable on cold/irregular access patterns but includes seqlock validation and occasional slow-path; supports arbitrarily large V; also no automatic shrinking.
+- Versus `MapOf`: typically more predictable hit latency on read-heavy/mixed workloads; MapOf generally wins on memory efficiency and features (e.g., shrinking).
 
-## Differences from Other Implementations
-- Versus `FlatMapOf`
-  - Read performance: FlatMapOf uses true lock-free reads via atomicValue and is usually faster on pure read workloads; SeqFlatMapOf incurs seqlock validation and occasional fallback, so it is typically a bit slower.
-  - Value type constraints: FlatMapOf’s read path favors V ≤ 8 bytes (or pointer indirection); SeqFlatMapOf has no value size limitation.
-  - Delete behavior: FlatMapOf by default only “unpublishes” the slot and retains the key (optionally zeroing the value with `WithZeroAsDeleted`); SeqFlatMapOf, after publishing an even sequence, actively clears both key and value without any additional option.
-  - Shrinking: neither supports automatic shrinking.
-- Versus `MapOf`
-  - Performance direction: SeqFlatMapOf is generally faster than MapOf on read-heavy and mixed workloads; FlatMapOf remains the top choice for peak read throughput.
-  - Memory and features: MapOf typically achieves better memory efficiency and supports automatic shrinking; SeqFlatMapOf trades a larger per-bucket footprint and seqlock for predictable read latency.
-  - Consistency model: MapOf provides a global snapshot view; SeqFlatMapOf offers bucket-local consistency but may experience “stale reads” in some scenarios.
-  - Access path: MapOf uses pointer indirection without sequence checks; SeqFlatMapOf uses a flat layout with seqlock validation, often providing more stable hit latency.
-
-## When to Choose What
-- Choose `SeqFlatMapOf`: read-heavy workloads with frequent Range; values larger than a machine word (>8B) where you want inline storage; you want deletes to physically clear both K and V without feature switches.
-- Choose `FlatMapOf`: very small K/V with the highest possible read throughput, and you can accept “no shrinking” and V size constraints.
-- Choose `MapOf`: best memory utilization, supports shrinking, and offers the most general-purpose feature set.
+When to use
+- Read-heavy or mixed workloads; small value types; require stable performance even with cold data.
 
 ---
 
