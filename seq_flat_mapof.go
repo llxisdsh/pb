@@ -31,7 +31,6 @@ type SeqFlatMapOf[K comparable, V any] struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_       noCopy
 		table   seqFlatTable[K, V]
-		smallSz uintptr
 		resize  unsafe.Pointer
 		keyHash HashFunc
 		intKey  bool
@@ -39,7 +38,6 @@ type SeqFlatMapOf[K comparable, V any] struct {
 
 	_       noCopy
 	table   seqFlatTable[K, V]
-	smallSz uintptr
 	resize  unsafe.Pointer // *seqFlatResizeState[K,V]
 	keyHash HashFunc
 	intKey  bool
@@ -67,6 +65,7 @@ type seqFlatTable[K comparable, V any] struct {
 	size     unsafeSlice[counterStripe]
 	sizeMask uint32
 	seq      uint32 // seqlock of table
+	//smallSz  uintptr
 }
 
 type seqFlatBucket[K comparable, V any] struct {
@@ -114,24 +113,23 @@ func NewSeqFlatMapOf[K comparable, V any](
 		}
 	}
 	minLen := calcTableLen(cfg.SizeHint)
-	m.makeTable(minLen, runtime.GOMAXPROCS(0), &m.table)
+	m.table.makeTable(minLen, runtime.GOMAXPROCS(0))
 	return m
 }
 
-func (m *SeqFlatMapOf[K, V]) makeTable(
+func (t *seqFlatTable[K, V]) makeTable(
 	tableLen, cpus int,
-	table *seqFlatTable[K, V],
 ) {
 	b := make([]seqFlatBucket[K, V], tableLen)
 	sizeLen := calcSizeLen(tableLen, cpus)
-	table.buckets = makeUnsafeSlice(b)
-	table.mask = tableLen - 1
-	if sizeLen <= 1 {
-		table.size.ptr = unsafe.Pointer(&m.smallSz)
-	} else {
-		table.size = makeUnsafeSlice(make([]counterStripe, sizeLen))
-	}
-	table.sizeMask = uint32(sizeLen - 1)
+	t.buckets = makeUnsafeSlice(b)
+	t.mask = tableLen - 1
+	// if sizeLen <= 1 {
+	// 	t.size.ptr = unsafe.Pointer(&t.smallSz)
+	// } else {
+	t.size = makeUnsafeSlice(make([]counterStripe, sizeLen))
+	// }
+	t.sizeMask = uint32(sizeLen - 1)
 }
 
 //go:nosplit
@@ -686,7 +684,7 @@ func (m *SeqFlatMapOf[K, V]) tryResize(hint mapResizeHint, size, sizeAdd int) {
 	cpus := runtime.GOMAXPROCS(0)
 	if hint == mapClearHint {
 		newTable := new(seqFlatTable[K, V])
-		m.makeTable(minTableLen, cpus, newTable)
+		newTable.makeTable(minTableLen, cpus)
 		m.table.SeqStore(newTable)
 		atomic.StorePointer(&m.resize, nil)
 		return
@@ -733,7 +731,7 @@ func (m *SeqFlatMapOf[K, V]) finalizeResize(
 	overCpus := cpus * resizeOverPartition
 	rs.chunkSz, rs.chunks = calcParallelism(table.mask+1, minBucketsPerCPU, overCpus)
 	newTable := new(seqFlatTable[K, V])
-	m.makeTable(newLen, cpus, newTable)
+	newTable.makeTable(newLen, cpus)
 	// Release rs
 	rs.newTable.SeqStore(newTable)
 	m.helpCopyAndWait(rs)
