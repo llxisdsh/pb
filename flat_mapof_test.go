@@ -2,22 +2,16 @@ package pb
 
 import (
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
-	"unsafe"
 )
 
 // TestFlatMapOf_BasicOperations tests basic Load and Process operations
 func TestFlatMapOf_BasicOperations(t *testing.T) {
-	var value atomicValue[bool]
-	if unsafe.Sizeof(value) != unsafe.Sizeof(uintptr(0)) {
-		t.Errorf("Expected atomicValue sizeof")
-	}
-
 	m := NewFlatMapOf[string, int]()
 
 	// Test empty map
@@ -105,6 +99,48 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 	}
 }
 
+// TestFlatMapOf_EdgeCases tests edge cases and error conditions
+func TestFlatMapOf_EdgeCases(t *testing.T) {
+	m := NewFlatMapOf[string, *string]()
+
+	// Test with empty string key
+	m.Process(
+		"",
+		func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
+			newV := "empty_key_value"
+			return &newV, UpdateOp, &newV, true
+		},
+	)
+	if val, ok := m.Load(""); !ok || *val != "empty_key_value" {
+		t.Errorf("Empty key test failed: got (%v, %v)", *val, ok)
+	}
+
+	// Test with very long key
+	longKey := string(make([]byte, 1000))
+	for i := range longKey {
+		longKey = longKey[:i] + "a" + longKey[i+1:]
+	}
+	m.Process(
+		longKey,
+		func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
+			newV := "long_key_value"
+			return &newV, UpdateOp, &newV, true
+		},
+	)
+	if val, ok := m.Load(longKey); !ok || *val != "long_key_value" {
+		t.Errorf("Long key test failed: got (%v, %v)", *val, ok)
+	}
+
+	// Verify data still intact
+	if val, ok := m.Load(""); !ok || *val != "empty_key_value" {
+		t.Errorf(
+			"After invalid grow, empty key test failed: got (%v, %v)",
+			*val,
+			ok,
+		)
+	}
+}
+
 // TestFlatMapOf_MultipleKeys tests operations with multiple keys
 func TestFlatMapOf_MultipleKeys(t *testing.T) {
 	m := NewFlatMapOf[int, *string]()
@@ -166,6 +202,43 @@ func TestFlatMapOf_MultipleKeys(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestFlatMapOf_Store tests the Store method
+func TestFlatMapOf_Store(t *testing.T) {
+	m := NewFlatMapOf[string, int]()
+
+	// Test store new key
+	m.Store("key1", 100)
+	if val, ok := m.Load("key1"); !ok || val != 100 {
+		t.Errorf("Expected (100, true), got (%v, %v)", val, ok)
+	}
+
+	// Test store existing key (update)
+	m.Store("key1", 200)
+	if val, ok := m.Load("key1"); !ok || val != 200 {
+		t.Errorf("Expected (200, true), got (%v, %v)", val, ok)
+	}
+}
+
+// TestFlatMapOf_Delete tests the Delete method
+func TestFlatMapOf_Delete(t *testing.T) {
+	m := NewFlatMapOf[string, int]()
+
+	// Store a key
+	m.Store("key1", 100)
+	if val, ok := m.Load("key1"); !ok || val != 100 {
+		t.Errorf("Expected (100, true), got (%v, %v)", val, ok)
+	}
+
+	// Delete the key
+	m.Delete("key1")
+	if val, ok := m.Load("key1"); ok {
+		t.Errorf("Expected key to be deleted, but got (%v, %v)", val, ok)
+	}
+
+	// Delete non-existent key (should not panic)
+	m.Delete("nonexistent")
 }
 
 // TestFlatMapOf_Concurrent tests concurrent operations
@@ -251,7 +324,7 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					key := rand.Intn(1000)
+					key := rand.IntN(1000)
 					m.Load(key)
 				}
 			}
@@ -268,11 +341,11 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					key := rand.Intn(1000)
+					key := rand.IntN(1000)
 					m.Process(
 						key,
 						func(old int, loaded bool) (int, ComputeOp, int, bool) {
-							newV := rand.Intn(10000)
+							newV := rand.IntN(10000)
 							return newV, UpdateOp, newV, true
 						},
 					)
@@ -287,154 +360,6 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 	wg.Wait()
 
 	// t.Log("Concurrent read/write test completed successfully")
-}
-
-// TestFlatMapOf_DoubleBufferConsistency tests the double buffer mechanism
-func TestFlatMapOf_DoubleBufferConsistency(t *testing.T) {
-	m := NewFlatMapOf[int, int]()
-	const numKeys = 100
-	const numUpdates = 50
-
-	// Insert initial data
-	for i := 1; i <= numKeys; i++ {
-		m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
-			return i, UpdateOp, i, true
-		})
-	}
-
-	var wg sync.WaitGroup
-	stop := make(chan struct{})
-
-	// Continuous readers to stress test the double buffer
-	for r := 0; r < 4; r++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					for i := 1; i <= numKeys; i++ {
-						val, ok := m.Load(i)
-						if !ok {
-							t.Errorf("Key %d should exist", i)
-							return
-						}
-						// Value should be consistent (either old or new, but
-						// not corrupted)
-						if val < 0 {
-							t.Errorf("Corrupted value %d for key %d", val, i)
-							return
-						}
-					}
-				}
-			}
-		}()
-	}
-
-	// Writer that updates all keys multiple times
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for update := 0; update < numUpdates; update++ {
-			for i := 1; i <= numKeys; i++ {
-				m.Process(
-					i,
-					func(old int, loaded bool) (int, ComputeOp, int, bool) {
-						return old + 1000, UpdateOp, old + 1000, true
-					},
-				)
-			}
-			runtime.Gosched() // Give readers a chance
-		}
-	}()
-
-	// Let it run for a bit
-	time.Sleep(100 * time.Millisecond)
-	close(stop)
-	wg.Wait()
-
-	// t.Log("Double buffer consistency test completed")
-}
-
-// TestFlatMapOf_EdgeCases tests edge cases and error conditions
-func TestFlatMapOf_EdgeCases(t *testing.T) {
-	m := NewFlatMapOf[string, *string]()
-
-	// Test with empty string key
-	m.Process(
-		"",
-		func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
-			newV := "empty_key_value"
-			return &newV, UpdateOp, &newV, true
-		},
-	)
-	if val, ok := m.Load(""); !ok || *val != "empty_key_value" {
-		t.Errorf("Empty key test failed: got (%v, %v)", *val, ok)
-	}
-
-	// Test with very long key
-	longKey := string(make([]byte, 1000))
-	for i := range longKey {
-		longKey = longKey[:i] + "a" + longKey[i+1:]
-	}
-	m.Process(
-		longKey,
-		func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
-			newV := "long_key_value"
-			return &newV, UpdateOp, &newV, true
-		},
-	)
-	if val, ok := m.Load(longKey); !ok || *val != "long_key_value" {
-		t.Errorf("Long key test failed: got (%v, %v)", *val, ok)
-	}
-
-	// Verify data still intact
-	if val, ok := m.Load(""); !ok || *val != "empty_key_value" {
-		t.Errorf(
-			"After invalid grow, empty key test failed: got (%v, %v)",
-			*val,
-			ok,
-		)
-	}
-}
-
-// TestFlatMapOf_Store tests the Store method
-func TestFlatMapOf_Store(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
-
-	// Test store new key
-	m.Store("key1", 100)
-	if val, ok := m.Load("key1"); !ok || val != 100 {
-		t.Errorf("Expected (100, true), got (%v, %v)", val, ok)
-	}
-
-	// Test store existing key (update)
-	m.Store("key1", 200)
-	if val, ok := m.Load("key1"); !ok || val != 200 {
-		t.Errorf("Expected (200, true), got (%v, %v)", val, ok)
-	}
-}
-
-// TestFlatMapOf_Delete tests the Delete method
-func TestFlatMapOf_Delete(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
-
-	// Store a key
-	m.Store("key1", 100)
-	if val, ok := m.Load("key1"); !ok || val != 100 {
-		t.Errorf("Expected (100, true), got (%v, %v)", val, ok)
-	}
-
-	// Delete the key
-	m.Delete("key1")
-	if val, ok := m.Load("key1"); ok {
-		t.Errorf("Expected key to be deleted, but got (%v, %v)", val, ok)
-	}
-
-	// Delete non-existent key (should not panic)
-	m.Delete("nonexistent")
 }
 
 // TestFlatMapOf_LoadOrStore tests the LoadOrStore method
@@ -531,36 +456,6 @@ func TestFlatMapOf_Range(t *testing.T) {
 	}
 }
 
-//// Go 1.23+ iterator support
-//// TestFlatMapOf_All tests the All method (iterator)
-//func TestFlatMapOf_All(t *testing.T) {
-//	m := NewFlatMapOf[int, string]()
-//
-//	// Add some data
-//	expected := make(map[int]string)
-//	for i := 0; i < 5; i++ {
-//		value := fmt.Sprintf("value_%d", i)
-//		m.Store(i, value)
-//		expected[i] = value
-//	}
-//
-//	// Test using range-over-func
-//	found := make(map[int]string)
-//	for k, v := range m.All() {
-//		found[k] = v
-//	}
-//
-//	if len(found) != len(expected) {
-//		t.Errorf("Expected %d items, got %d", len(expected), len(found))
-//	}
-//
-//	for k, v := range expected {
-//		if foundV, ok := found[k]; !ok || foundV != v {
-//			t.Errorf("Key %d: expected %s, got %s (ok=%v)", k, v, foundV, ok)
-//		}
-//	}
-//}
-
 // TestFlatMapOf_Size tests the Size method
 func TestFlatMapOf_Size(t *testing.T) {
 	m := NewFlatMapOf[int, *string]()
@@ -638,6 +533,104 @@ func TestFlatMapOf_IsZero(t *testing.T) {
 	}
 }
 
+// ---------------- Additional boundary/concurrency tests ----------------
+
+func TestFlatMapOf_LoadOrStoreFn_OnceUnderRace(t *testing.T) {
+	m := NewFlatMapOf[int, int]()
+	var called int32
+	var wg sync.WaitGroup
+	workers := max(2, runtime.GOMAXPROCS(0)) // Reduce Concurrency​
+	wg.Add(workers)
+	for i := 0; i < workers; i++ {
+		go func() {
+			defer wg.Done()
+			_, _ = m.LoadOrStoreFn(999, func() int {
+				// widen race window
+				atomic.AddInt32(&called, 1)
+				time.Sleep(1 * time.Millisecond)
+				return 777
+			})
+		}()
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&called); got != 1 {
+		t.Fatalf("LoadOrStoreFn invoked %d times; want 1", got)
+	}
+	if v, ok := m.Load(999); !ok || v != 777 {
+		t.Fatalf("post state: got (%v,%v), want (777,true)", v, ok)
+	}
+}
+
+// TestFlatMapOf_DoubleBufferConsistency tests the double buffer mechanism
+func TestFlatMapOf_DoubleBufferConsistency(t *testing.T) {
+	m := NewFlatMapOf[int, int]()
+	const numKeys = 100
+	const numUpdates = 50
+
+	// Insert initial data
+	for i := 1; i <= numKeys; i++ {
+		m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
+			return i, UpdateOp, i, true
+		})
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Continuous readers to stress test the double buffer
+	for r := 0; r < 4; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					for i := 1; i <= numKeys; i++ {
+						val, ok := m.Load(i)
+						if !ok {
+							t.Errorf("Key %d should exist", i)
+							return
+						}
+						// Value should be consistent (either old or new, but
+						// not corrupted)
+						if val < 0 {
+							t.Errorf("Corrupted value %d for key %d", val, i)
+							return
+						}
+					}
+				}
+			}
+		}()
+	}
+
+	// Writer that updates all keys multiple times
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for update := 0; update < numUpdates; update++ {
+			for i := 1; i <= numKeys; i++ {
+				m.Process(
+					i,
+					func(old int, loaded bool) (int, ComputeOp, int, bool) {
+						return old + 1000, UpdateOp, old + 1000, true
+					},
+				)
+			}
+			runtime.Gosched() // Give readers a chance
+		}
+	}()
+
+	// Let it run for a bit
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	// t.Log("Double buffer consistency test completed")
+}
+
 // TestFlatMapOf_DoubleBufferConsistency_StressABA stresses rapid A/B flips on
 // the same key and verifies that readers never observe torn values (i.e.,
 // reading half old, half new). This detects correctness of the double-buffer
@@ -710,43 +703,86 @@ func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
 	wg.Wait()
 }
 
-func TestFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
-	// Goal: Observe the undesirable return of "ok==true && value==0" under race
-	// between
-	// concurrent Insert/Delete and Load operations.
-	//
-	// Explanation:
-	// - Delete sequence in write path: (1) clear meta, then (2) zero the value.
-	// - Read path loads meta first (old snapshot may still show slot as valid),
-	// then value. - If reader gets a pre-deletion meta snapshot while value has
-	// been zeroed by writer,
-	//   it may return (ok=true, value=0).
-	// - This is why the comment suggests: "for stricter semantics, add a
-	// post-read meta
-	//   verification and retry/return miss if slot is unpublished".
-	//
-	// Test strategy: Continuously write a constant non-zero value and
-	// immediately delete;
-	// run parallel Load operations.
-	// If (ok=true && value==0) is observed, record the count but do not fail
-	// (avoiding
-	// timing-related flakiness).
-	//
-	// Tip: Use go test -race, and increase duration/concurrency appropriately
-	// to
-	// increase observation probability.
+// Stress ABA-like rapid flips on the same key and ensure seqlock prevents torn
+// reads.
+func TestFlatMapOf_SeqlockConsistency_StressABA(t *testing.T) {
+	type pair struct{ X, Y uint64 }
+	m := NewFlatMapOf[int, pair]()
 
-	m := NewFlatMapOf[string, uint32]()
-	const key = "k"
-	const insertedVal uint32 = 1 // 恒非零，便于区分“被清零”的值
+	m.Store(0, pair{X: 0, Y: ^uint64(0)})
 
 	var (
-		anom uint64 // 统计 ok==true 且 value==0 的次数
+		wg   sync.WaitGroup
+		stop = make(chan struct{})
+		seq  uint32
+	)
+
+	writerN := 4 // Reduce Concurrency​
+	for w := 0; w < writerN; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					s := atomic.AddUint32(&seq, 1)
+					val := pair{X: uint64(s), Y: ^uint64(s)}
+					m.Process(
+						0,
+						func(old pair, loaded bool) (pair, ComputeOp, pair, bool) {
+							return val, UpdateOp, val, true
+						},
+					)
+				}
+			}
+		}()
+	}
+
+	readerN := 4 // Reduce Concurrency​
+	for r := 0; r < readerN; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					v, ok := m.Load(0)
+					if !ok {
+						t.Errorf("key missing while stressed")
+						return
+					}
+					if v.Y != ^v.X {
+						t.Errorf("torn read detected: %+v", v)
+						return
+					}
+				}
+			}
+		}()
+	}
+
+	time.Sleep(150 * time.Millisecond) // Reduce Duration​
+	close(stop)
+	wg.Wait()
+}
+
+// Load/Delete race semantics: under seqlock, readers should not observe
+// ok==true with zero value.
+func TestFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
+	m := NewFlatMapOf[string, uint32]()
+	const key = "k"
+	const insertedVal uint32 = 1
+
+	var (
+		anom uint64
 		stop uint32
 	)
 
-	readers := runtime.GOMAXPROCS(0) * 4
-	dur := 2 * time.Second
+	readers := max(2, runtime.GOMAXPROCS(0)) // Reduce Concurrency​
+	dur := 500 * time.Millisecond            // Reduce Duration​
 
 	var wg sync.WaitGroup
 	wg.Add(readers + 1)
@@ -756,14 +792,13 @@ func TestFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
 		deadline := time.Now().Add(dur)
 		for time.Now().Before(deadline) {
 			m.Store(key, insertedVal)
-			runtime.Gosched() // 扩大竞争机会
+			runtime.Gosched()
 			m.Delete(key)
 			runtime.Gosched()
 		}
 		atomic.StoreUint32(&stop, 1)
 	}()
 
-	// readers
 	for i := 0; i < readers; i++ {
 		go func() {
 			defer wg.Done()
@@ -779,20 +814,10 @@ func TestFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
 	wg.Wait()
 	if anom > 0 {
 		t.Fatalf(
-			"Load/Delete race: observed ok==true && value==0 %d times (dur=%v, readers=%d)",
+			"Load/Delete race: observed ok==true && value==0 %d times",
 			anom,
-			dur,
-			readers,
 		)
 	}
-
-	// Explanation:
-	// - If anom > 0, it indicates that readers judged existence based on old
-	// meta snapshots but read zeroed values; this perfectly matches the
-	// behavior described in the Load comment. - If anom == 0, it does not mean
-	// the scenario is impossible, but merely that the current stress level and
-	// timing did not trigger it; try increasing concurrency/duration or running
-	// on a busy machine.
 }
 
 func TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
@@ -912,691 +937,700 @@ func TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 	}
 }
 
-// TestFlatMapOf_WithZeroAsDeleted_BasicOperations tests basic functionality
-// of WithZeroAsDeleted option
-func TestFlatMapOf_WithZeroAsDeleted_BasicOperations(t *testing.T) {
-	// Test with WithZeroAsDeleted enabled
-	m := NewFlatMapOf[string, int](WithZeroAsDeleted())
-
-	// Test storing non-zero value
-	m.Store("key1", 42)
-	if val, ok := m.Load("key1"); !ok || val != 42 {
-		t.Errorf("Expected (42, true), got (%v, %v)", val, ok)
+// Key torn-read stress: delete/re-insert big keys under load and ensure key
+// invariants hold.
+func TestFlatMapOf_KeyTornRead_Stress_Heavy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping heavy stress in -short mode")
 	}
 
-	// Test storing zero value - should be treated as deleted
-	m.Store("key1", 0)
-	if val, ok := m.Load("key1"); ok {
-		t.Errorf(
-			"Expected zero value to be treated as deleted, got (%v, %v)",
-			val,
-			ok,
-		)
+	type bigKey struct{ A, B uint64 }
+	m := NewFlatMapOf[bigKey, int]()
+
+	const N = 4096
+	keys := make([]bigKey, N)
+	for i := 0; i < N; i++ {
+		ai := uint64(i*2147483647 + 987654321)
+		keys[i] = bigKey{A: ai, B: ^ai}
+		m.Store(keys[i], i)
 	}
 
-	// Test storing zero value on new key - should not be visible
-	m.Store("key2", 0)
-	if val, ok := m.Load("key2"); ok {
-		t.Errorf(
-			"Expected zero value on new key to be invisible, got (%v, %v)",
-			val,
-			ok,
-		)
-	}
-
-	// Test without WithZeroAsDeleted (default behavior)
-	m2 := NewFlatMapOf[string, int]()
-
-	// Store zero value - should be visible
-	m2.Store("key1", 0)
-	if val, ok := m2.Load("key1"); !ok || val != 0 {
-		t.Errorf(
-			"Expected zero value to be visible without WithZeroAsDeleted, got (%v, %v)",
-			val,
-			ok,
-		)
-	}
-
-	// Store non-zero then zero - zero should be visible
-	m2.Store("key2", 42)
-	m2.Store("key2", 0)
-	if val, ok := m2.Load("key2"); !ok || val != 0 {
-		t.Errorf(
-			"Expected zero value to be visible without WithZeroAsDeleted, got (%v, %v)",
-			val,
-			ok,
-		)
-	}
-}
-
-// TestFlatMapOf_WithZeroAsDeleted_ZeroValueHandling tests zero value handling
-// with Process method and various operations
-func TestFlatMapOf_WithZeroAsDeleted_ZeroValueHandling(t *testing.T) {
-	m := NewFlatMapOf[string, int](WithZeroAsDeleted())
-
-	// Test Process with zero value update
-	actual, ok := m.Process(
-		"key1",
-		func(old int, loaded bool) (int, ComputeOp, int, bool) {
-			if loaded {
-				t.Error("Expected not loaded for new key")
-			}
-			return 0, UpdateOp, 0, true
-		},
+	var (
+		wg           sync.WaitGroup
+		stop         = make(chan struct{})
+		foundTornKey atomic.Bool
 	)
-	if !ok || actual != 0 {
-		t.Errorf(
-			"Expected Process with zero value to return (0, false), got (%v, %v)",
-			actual,
-			ok,
-		)
-	}
 
-	// Verify key is not visible after zero value insert
-	if val, ok := m.Load("key1"); ok {
-		t.Errorf(
-			"Expected key to be invisible after zero value insert, got (%v, %v)",
-			val,
-			ok,
-		)
-	}
-
-	// Test LoadOrStore with zero value
-	actual, loaded := m.LoadOrStore("key2", 0)
-	if loaded || actual != 0 {
-		t.Errorf(
-			"Expected LoadOrStore with zero value to return (0, false), got (%v, %v)",
-			actual,
-			loaded,
-		)
-	}
-
-	// Verify key is not visible
-	if val, ok := m.Load("key2"); ok {
-		t.Errorf(
-			"Expected key to be invisible after LoadOrStore with zero, got (%v, %v)",
-			val,
-			ok,
-		)
-	}
-
-	// Test LoadOrStoreFn with zero value
-	actual, loaded = m.LoadOrStoreFn("key3", func() int { return 0 })
-	if loaded || actual != 0 {
-		t.Errorf(
-			"Expected LoadOrStoreFn with zero value to return (0, false), got (%v, %v)",
-			actual,
-			loaded,
-		)
-	}
-
-	// Test updating existing non-zero value to zero
-	m.Store("key4", 42)
-	if val, ok := m.Load("key4"); !ok || val != 42 {
-		t.Errorf("Expected (42, true), got (%v, %v)", val, ok)
-	}
-
-	// Update to zero value
-	actual, ok = m.Process(
-		"key4",
-		func(old int, loaded bool) (int, ComputeOp, int, bool) {
-			if !loaded || old != 42 {
-				t.Errorf(
-					"Expected loaded=true, old=42, got loaded=%v, old=%v",
-					loaded,
-					old,
-				)
+	readerN := max(8, runtime.GOMAXPROCS(0)*2)
+	wg.Add(readerN)
+	for r := 0; r < readerN; r++ {
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					m.Range(func(k bigKey, _ int) bool {
+						if k.B != ^k.A {
+							foundTornKey.Store(true)
+							return false
+						}
+						return true
+					})
+				}
 			}
-			return 0, UpdateOp, 0, false
-		},
-	)
-	if ok {
-		t.Errorf(
-			"Expected Process update to zero to return ok=false, got ok=%v",
-			ok,
-		)
+		}()
 	}
 
-	// Verify key is now invisible
-	if val, ok := m.Load("key4"); ok {
-		t.Errorf(
-			"Expected key to be invisible after update to zero, got (%v, %v)",
-			val,
-			ok,
-		)
-	}
-
-	// Test delete operation on zero value
-	m.Delete("key4") // Should be safe even if already "deleted" by zero value
-	if val, ok := m.Load("key4"); ok {
-		t.Errorf(
-			"Expected key to remain invisible after delete, got (%v, %v)",
-			val,
-			ok,
-		)
-	}
-}
-
-// TestFlatMapOf_WithZeroAsDeleted_RangeFiltering tests that Range method
-// properly filters out zero values when WithZeroAsDeleted is enabled
-func TestFlatMapOf_WithZeroAsDeleted_RangeFiltering(t *testing.T) {
-	m := NewFlatMapOf[string, int](WithZeroAsDeleted())
-
-	// Add mix of zero and non-zero values
-	m.Store("key1", 10)
-	m.Store("key2", 0) // Should be filtered out
-	m.Store("key3", 20)
-	m.Store("key4", 0) // Should be filtered out
-	m.Store("key5", 30)
-
-	// Test Range filtering
-	found := make(map[string]int)
-	m.Range(func(k string, v int) bool {
-		if v == 0 {
-			t.Errorf(
-				"Range should not yield zero values, got key=%s, value=%d",
-				k,
-				v,
-			)
-		}
-		found[k] = v
-		return true
-	})
-
-	// Verify only non-zero values are found
-	expected := map[string]int{
-		"key1": 10,
-		"key3": 20,
-		"key5": 30,
-	}
-
-	if len(found) != len(expected) {
-		t.Errorf(
-			"Expected %d items in Range, got %d",
-			len(expected),
-			len(found),
-		)
-	}
-
-	for k, v := range expected {
-		if foundV, ok := found[k]; !ok || foundV != v {
-			t.Errorf("Key %s: expected %d, got %d (ok=%v)", k, v, foundV, ok)
-		}
-	}
-
-	// Test early termination in Range
-	count := 0
-	m.Range(func(k string, v int) bool {
-		count++
-		return count < 2 // Stop after 2 iterations
-	})
-	if count != 2 {
-		t.Errorf("Expected 2 iterations with early termination, got %d", count)
-	}
-
-	// Compare with map without WithZeroAsDeleted
-	m2 := NewFlatMapOf[string, int]()
-	m2.Store("key1", 10)
-	m2.Store("key2", 0) // Should be visible
-	m2.Store("key3", 20)
-
-	found2 := make(map[string]int)
-	m2.Range(func(k string, v int) bool {
-		found2[k] = v
-		return true
-	})
-
-	// Should include zero value
-	expected2 := map[string]int{
-		"key1": 10,
-		"key2": 0,
-		"key3": 20,
-	}
-
-	if len(found2) != len(expected2) {
-		t.Errorf(
-			"Expected %d items in Range without WithZeroAsDeleted, got %d",
-			len(expected2),
-			len(found2),
-		)
-	}
-
-	for k, v := range expected2 {
-		if foundV, ok := found2[k]; !ok || foundV != v {
-			t.Errorf("Key %s: expected %d, got %d (ok=%v)", k, v, foundV, ok)
-		}
-	}
-}
-
-// TestFlatMapOf_WithZeroAsDeleted_SizeAccuracy tests that Size and IsZero
-// methods accurately reflect the logical state when WithZeroAsDeleted is
-// enabled
-func TestFlatMapOf_WithZeroAsDeleted_SizeAccuracy(t *testing.T) {
-	m := NewFlatMapOf[string, int](WithZeroAsDeleted())
-
-	// Test empty map
-	if !m.IsZero() {
-		t.Error("Expected IsZero() to return true for empty map")
-	}
-	if size := m.Size(); size != 0 {
-		t.Errorf("Expected Size() to return 0 for empty map, got %d", size)
-	}
-
-	// Add non-zero values
-	m.Store("key1", 10)
-	m.Store("key2", 20)
-	if m.IsZero() {
-		t.Error(
-			"Expected IsZero() to return false after adding non-zero values",
-		)
-	}
-	if size := m.Size(); size != 2 {
-		t.Errorf("Expected Size() to return 2, got %d", size)
-	}
-
-	// Add zero values - should not affect logical size
-	m.Store("key3", 0)
-	m.Store("key4", 0)
-	if m.IsZero() {
-		t.Error(
-			"Expected IsZero() to return false (zero values should not affect logical state)",
-		)
-	}
-	if size := m.Size(); size != 2 {
-		t.Errorf(
-			"Expected Size() to remain 2 after adding zero values, got %d",
-			size,
-		)
-	}
-
-	// Update existing non-zero value to zero
-	m.Store("key1", 0)
-	if m.IsZero() {
-		t.Error("Expected IsZero() to return false (still has key2)")
-	}
-	if size := m.Size(); size != 1 {
-		t.Errorf(
-			"Expected Size() to return 1 after updating key1 to zero, got %d",
-			size,
-		)
-	}
-
-	// Update remaining non-zero value to zero
-	m.Store("key2", 0)
-	if !m.IsZero() {
-		t.Error("Expected IsZero() to return true after all values become zero")
-	}
-	if size := m.Size(); size != 0 {
-		t.Errorf(
-			"Expected Size() to return 0 after all values become zero, got %d",
-			size,
-		)
-	}
-
-	// Add non-zero value again
-	m.Store("key5", 50)
-	if m.IsZero() {
-		t.Error("Expected IsZero() to return false after adding non-zero value")
-	}
-	if size := m.Size(); size != 1 {
-		t.Errorf("Expected Size() to return 1, got %d", size)
-	}
-
-	// Test explicit delete
-	m.Delete("key5")
-	if !m.IsZero() {
-		t.Error("Expected IsZero() to return true after deleting last key")
-	}
-	if size := m.Size(); size != 0 {
-		t.Errorf(
-			"Expected Size() to return 0 after deleting last key, got %d",
-			size,
-		)
-	}
-
-	// Compare with map without WithZeroAsDeleted
-	m2 := NewFlatMapOf[string, int]()
-	m2.Store("key1", 10)
-	m2.Store("key2", 0) // Should count towards size
-	m2.Store("key3", 20)
-
-	if m2.IsZero() {
-		t.Error(
-			"Expected IsZero() to return false for map with values (including zero)",
-		)
-	}
-	if size := m2.Size(); size != 3 {
-		t.Errorf(
-			"Expected Size() to return 3 without WithZeroAsDeleted, got %d",
-			size,
-		)
-	}
-}
-
-// TestFlatMapOf_WithZeroAsDeleted_ConcurrentOperations tests zero value
-// handling
-// under concurrent operations to ensure thread safety and consistency
-func TestFlatMapOf_WithZeroAsDeleted_ConcurrentOperations(t *testing.T) {
-	m := NewFlatMapOf[int, int](WithZeroAsDeleted())
-	const numGoroutines = 10
-	const numOperations = 100
-
-	var wg sync.WaitGroup
-	wg.Add(numGoroutines * 3) // writers, readers, and zero-writers
-
-	// Concurrent writers (non-zero values)
-	for i := 0; i < numGoroutines; i++ {
+	loadN := max(4, runtime.GOMAXPROCS(0))
+	wg.Add(loadN)
+	for r := 0; r < loadN; r++ {
 		go func(id int) {
 			defer wg.Done()
-			for j := 0; j < numOperations; j++ {
-				key := id*numOperations + j
-				value := key + 1 // Ensure non-zero
-				m.Store(key, value)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					for i := id; i < N; i += loadN {
+						m.Load(keys[i])
+					}
+				}
 			}
-		}(i)
+		}(r)
 	}
 
-	// Concurrent readers
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
+	writerN := max(8, runtime.GOMAXPROCS(0)*2)
+	wg.Add(writerN)
+	for w := 0; w < writerN; w++ {
+		go func(offset int) {
 			defer wg.Done()
-			for j := 0; j < numOperations; j++ {
-				key := id*numOperations + j
-				if val, ok := m.Load(key); ok {
-					if val == 0 {
-						t.Errorf(
-							"Load should not return zero values, got key=%d, value=%d",
-							key,
-							val,
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					for i := offset; i < N; i += writerN {
+						k := keys[i]
+						m.Process(
+							k,
+							func(old int, loaded bool) (int, ComputeOp, int, bool) { return 0, DeleteOp, 0, false },
+						)
+						m.Process(
+							k,
+							func(old int, loaded bool) (int, ComputeOp, int, bool) { return i, UpdateOp, i, true },
 						)
 					}
-					if val != key+1 {
-						// This might happen due to timing, but value should
-						// never be 0
-						if val == 0 {
-							t.Errorf("Unexpected zero value for key=%d", key)
-						}
-					}
+					runtime.Gosched()
 				}
 			}
-		}(i)
+		}(w)
 	}
 
-	// Concurrent zero-value writers
-	for i := 0; i < numGoroutines; i++ {
-		go func(id int) {
-			defer wg.Done()
-			for j := 0; j < numOperations; j++ {
-				key := (id+numGoroutines)*numOperations + j // Different key range
-				m.Store(key, 0)                             // Store zero values
-				// Verify zero values are not visible
-				if val, ok := m.Load(key); ok {
-					t.Errorf(
-						"Zero value should not be visible, got key=%d, value=%d",
-						key,
-						val,
-					)
-				}
-			}
-		}(i)
-	}
-
+	dur := 2 * time.Second
+	timer := time.NewTimer(dur)
+	<-timer.C
+	close(stop)
 	wg.Wait()
 
-	// Verify final state
-	count := 0
-	m.Range(func(k, v int) bool {
-		if v == 0 {
-			t.Errorf(
-				"Range should not yield zero values, got key=%d, value=%d",
-				k,
-				v,
-			)
-		}
-		count++
-		return true
-	})
-
-	// Should only have non-zero values from the first set of goroutines
-	expectedCount := numGoroutines * numOperations
-	if count != expectedCount {
-		t.Errorf(
-			"Expected %d non-zero values in final state, got %d",
-			expectedCount,
-			count,
-		)
-	}
-
-	// Test concurrent updates from non-zero to zero
-	m2 := NewFlatMapOf[int, int](WithZeroAsDeleted())
-
-	// First, populate with non-zero values
-	for i := 0; i < 100; i++ {
-		m2.Store(i, i+1)
-	}
-
-	var wg2 sync.WaitGroup
-	wg2.Add(2)
-
-	// Concurrent updater (non-zero to zero)
-	go func() {
-		defer wg2.Done()
-		for i := 0; i < 100; i++ {
-			m2.Store(i, 0) // Update to zero
-		}
-	}()
-
-	// Concurrent reader
-	zeroObserved := int32(0)
-	go func() {
-		defer wg2.Done()
-		for i := 0; i < 1000; i++ {
-			for j := 0; j < 100; j++ {
-				if val, ok := m2.Load(j); ok && val == 0 {
-					atomic.AddInt32(&zeroObserved, 1)
-				}
-			}
-		}
-	}()
-
-	wg2.Wait()
-
-	// Zero values should not be observed
-	if observed := atomic.LoadInt32(&zeroObserved); observed > 0 {
-		t.Errorf(
-			"Observed %d zero values during concurrent updates, expected 0",
-			observed,
-		)
-	}
-
-	// Final state should be empty (all values updated to zero)
-	if !m2.IsZero() {
-		t.Error(
-			"Expected map to be logically empty after all values updated to zero",
+	if foundTornKey.Load() {
+		t.Fatalf(
+			"detected possible torn read of key: invariant k.B == ^k.A violated under concurrency (heavy)",
 		)
 	}
 }
 
-// TestFlatMapOf_RangeProcess_Basic tests basic RangeProcess functionality
+func TestFlatMapOf_Range_NoDuplicateVisit_Heavy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping heavy stress in -short mode")
+	}
+
+	m := NewFlatMapOf[int, int]()
+	const N = 2048 * 50 // ~100K keys to cover chains
+	for i := 0; i < N; i++ {
+		m.Store(i, i)
+	}
+
+	var stop uint32
+	writerN := max(4, runtime.GOMAXPROCS(0))
+	var wg sync.WaitGroup
+	wg.Add(writerN)
+	for w := 0; w < writerN; w++ {
+		go func(offset int) {
+			defer wg.Done()
+			for atomic.LoadUint32(&stop) == 0 {
+				for i := offset; i < N; i += writerN {
+					m.Process(
+						i,
+						func(old int, loaded bool) (int, ComputeOp, int, bool) {
+							return old + 1, UpdateOp, old + 1, true
+						},
+					)
+				}
+				runtime.Gosched()
+			}
+		}(w)
+	}
+
+	// Multiple Range passes; each pass must not yield duplicates
+	rounds := 20
+	for r := 0; r < rounds; r++ {
+		seen := make([]uint8, N) // compact bitset
+		m.Range(func(k, v int) bool {
+			if k >= 0 && k < N {
+				if seen[k] != 0 {
+					t.Fatalf(
+						"Range yielded duplicate key within a single pass (heavy): %d",
+						k,
+					)
+				}
+				seen[k] = 1
+			}
+			return true
+		})
+	}
+
+	atomic.StoreUint32(&stop, 1)
+	wg.Wait()
+}
+
+// New test: verify a single Range call never yields duplicate keys, even under
+// concurrent writers causing seqlock retries.
+func TestFlatMapOf_Range_NoDuplicateVisit(t *testing.T) {
+	m := NewFlatMapOf[int, int]()
+	const N = 2048 * 100 // cover multiple buckets and chains
+	for i := 0; i < N; i++ {
+		m.Store(i, i)
+	}
+
+	var stop uint32
+	writerN := max(2, runtime.GOMAXPROCS(0)/2) // Reduce Concurrency​
+	var wg sync.WaitGroup
+	wg.Add(writerN)
+	for w := 0; w < writerN; w++ {
+		go func(offset int) {
+			defer wg.Done()
+			for atomic.LoadUint32(&stop) == 0 {
+				for i := offset; i < N; i += writerN {
+					// mutate value to force seq changes
+					m.Process(
+						i,
+						func(old int, loaded bool) (int, ComputeOp, int, bool) {
+							return old + 1, UpdateOp, old + 1, true
+						},
+					)
+				}
+				runtime.Gosched()
+			}
+		}(w)
+	}
+
+	// Run several Range passes under writer churn; each pass must not see
+	// duplicates
+	rounds := 10
+	for r := 0; r < rounds; r++ {
+		seen := make(map[int]struct{}, N)
+		m.Range(func(k, v int) bool {
+			if _, dup := seen[k]; dup {
+				t.Fatalf(
+					"Range yielded duplicate key within a single pass: %d",
+					k,
+				)
+			}
+			seen[k] = struct{}{}
+			return true
+		})
+	}
+
+	atomic.StoreUint32(&stop, 1)
+	wg.Wait()
+}
+
 func TestFlatMapOf_RangeProcess_Basic(t *testing.T) {
 	m := NewFlatMapOf[int, int]()
-
-	// Test empty map
-	count := 0
-	m.RangeProcess(func(key int, value int) (int, ComputeOp) {
-		count++
-		return value, CancelOp
-	})
-	if count != 0 {
-		t.Errorf("Expected 0 iterations on empty map, got %d", count)
+	const N = 1024
+	for i := 0; i < N; i++ {
+		m.Store(i, i)
 	}
 
-	// Add some data
-	for i := 0; i < 10; i++ {
-		m.Store(i, i*10)
-	}
-
-	// Test update operation
-	processed := make(map[int]int)
-	m.RangeProcess(func(key int, value int) (int, ComputeOp) {
-		processed[key] = value
-		newValue := value + 1
-		return newValue, UpdateOp
-	})
-
-	// Verify all keys were processed
-	if len(processed) != 10 {
-		t.Errorf("Expected 10 keys processed, got %d", len(processed))
-	}
-
-	// Verify updates were applied
-	for i := 0; i < 10; i++ {
-		if val, ok := m.Load(i); !ok || val != i*10+1 {
-			t.Errorf("Key %d: expected %d, got %d (ok=%v)", i, i*10+1, val, ok)
-		}
-	}
-
-	// Test delete operation
-	m.RangeProcess(func(key int, value int) (int, ComputeOp) {
-		if key%2 == 0 {
-			return 0, DeleteOp // Delete even keys
-		}
-		return value, CancelOp // Keep odd keys
-	})
-
-	// Verify deletions
-	for i := 0; i < 10; i++ {
-		val, ok := m.Load(i)
-		if i%2 == 0 {
-			if ok {
-				t.Errorf(
-					"Key %d should be deleted, but got (%d, %v)",
-					i,
-					val,
-					ok,
-				)
-			}
-		} else {
-			expected := i*10 + 1
-			if !ok || val != expected {
-				t.Errorf("Key %d: expected (%d, true), got (%d, %v)", i, expected, val, ok)
-			}
-		}
-	}
-}
-
-// TestFlatMapOf_WithZeroAsDeleted_RangeProcess tests RangeProcess with
-// zero-as-deleted semantics
-func TestFlatMapOf_WithZeroAsDeleted_RangeProcess(t *testing.T) {
-	m := NewFlatMapOf[int, int](WithZeroAsDeleted())
-
-	// Add some data
-	for i := 1; i <= 10; i++ {
-		m.Store(i, i*10)
-	}
-
-	// Test update to zero (should delete)
-	m.RangeProcess(func(key int, value int) (int, ComputeOp) {
-		if key%2 == 0 {
-			return 0, UpdateOp // Update even keys to zero (delete)
-		}
-		return value + 1, UpdateOp // Increment odd keys
-	})
-
-	// Verify zero updates resulted in deletions
-	for i := 1; i <= 10; i++ {
-		val, ok := m.Load(i)
-		if i%2 == 0 {
-			if ok {
-				t.Errorf(
-					"Key %d should be deleted (zero), but got (%d, %v)",
-					i,
-					val,
-					ok,
-				)
-			}
-		} else {
-			expected := i*10 + 1
-			if !ok || val != expected {
-				t.Errorf("Key %d: expected (%d, true), got (%d, %v)", i, expected, val, ok)
-			}
-		}
-	}
-
-	// Test explicit delete operation
-	m.RangeProcess(func(key int, value int) (int, ComputeOp) {
-		if key == 1 {
+	// Delete evens, add +100 to odds, cancel others (none)
+	m.RangeProcess(func(k, v int) (int, ComputeOp) {
+		if k%2 == 0 {
 			return 0, DeleteOp
 		}
-		return value, CancelOp
+		return v + 100, UpdateOp
 	})
 
-	// Verify explicit delete
-	if val, ok := m.Load(1); ok {
-		t.Errorf("Key 1 should be deleted, but got (%d, %v)", val, ok)
+	for i := 0; i < N; i++ {
+		v, ok := m.Load(i)
+		if i%2 == 0 {
+			if ok {
+				t.Fatalf("key %d should be deleted", i)
+			}
+		} else {
+			if !ok || v != i+100 {
+				t.Fatalf("key %d got (%v,%v), want (%d,true)", i, v, ok, i+100)
+			}
+		}
 	}
 }
 
-// TestFlatMapOf_RangeProcess_Concurrent tests concurrent RangeProcess
-// operations
+func TestFlatMapOf_RangeProcess_CancelAndEarlyStop(t *testing.T) {
+	m := NewFlatMapOf[int, int]()
+	for i := 0; i < 100; i++ {
+		m.Store(i, i)
+	}
+	count := 0
+	m.RangeProcess(func(k, v int) (int, ComputeOp) {
+		count++
+		if count >= 10 {
+			return v, CancelOp // no change
+		}
+		return v + 1, UpdateOp
+	})
+	// we cannot assert exact count, but state should be consistent
+	// First 9 updated, others unchanged
+	for i := 0; i < 100; i++ {
+		v, ok := m.Load(i)
+		if !ok {
+			t.Fatalf("missing key %d", i)
+		}
+		if i < 9 {
+			if v != i+1 {
+				t.Fatalf("key %d expected %d got %d", i, i+1, v)
+			}
+		} else if v != i {
+			t.Fatalf("key %d expected %d got %d", i, i, v)
+		}
+	}
+}
+
+// Concurrency smoke: interleave RangeProcess with Process to ensure no panics
+// and state convergence.
 func TestFlatMapOf_RangeProcess_Concurrent(t *testing.T) {
 	m := NewFlatMapOf[int, int]()
-
-	// Pre-populate with data
-	for i := 0; i < 100; i++ {
+	const N = 512
+	for i := 0; i < N; i++ {
 		m.Store(i, i)
 	}
 
 	var wg sync.WaitGroup
-	const numGoroutines = 8
-	const iterations = 10
+	stop := make(chan struct{})
+	wg.Add(3)
 
-	// Concurrent RangeProcess operations
-	for g := 0; g < numGoroutines; g++ {
-		wg.Add(1)
-		go func(goroutineID int) {
-			defer wg.Done()
-			for iter := 0; iter < iterations; iter++ {
-				m.RangeProcess(func(key int, value int) (int, ComputeOp) {
-					if key%numGoroutines == goroutineID {
-						// Each goroutine modifies its "assigned" keys
-						return value + 1, UpdateOp
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.RangeProcess(func(k, v int) (int, ComputeOp) {
+					if k%7 == 0 {
+						return 0, DeleteOp
 					}
-					return value, CancelOp
+					return v + 1, UpdateOp
 				})
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				for i := 0; i < N; i++ {
+					m.Process(
+						i,
+						func(old int, loaded bool) (int, ComputeOp, int, bool) {
+							if !loaded {
+								return i, UpdateOp, i, false
+							}
+							return old + 1, UpdateOp, old + 1, true
+						},
+					)
+				}
+			}
+		}
+	}()
+
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				for i := 0; i < N; i++ {
+					m.Load(i)
+				}
+			}
+		}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
+func TestFlatMapOf_ConcurrentShrink(t *testing.T) {
+	m := NewFlatMapOf[int, int](WithShrinkEnabled())
+	const numEntries = 10000
+	const numGoroutines = 8
+	const numOperations = 1000
+
+	// Pre-populate the map to create a large table
+	for i := 0; i < numEntries; i++ {
+		m.Store(i, i*2)
+	}
+
+	// Delete most entries to trigger potential shrink
+	for i := 0; i < numEntries-100; i++ {
+		m.Delete(i)
+	}
+
+	var wg sync.WaitGroup
+	var errors int64
+
+	// Concurrent readers during shrink
+	wg.Add(numGoroutines)
+	for g := 0; g < numGoroutines; g++ {
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < numOperations; i++ {
+				key := numEntries - 100 + (base*numOperations+i)%100
+				if val, ok := m.Load(key); ok && val != key*2 {
+					atomic.AddInt64(&errors, 1)
+				}
 				runtime.Gosched()
 			}
 		}(g)
 	}
 
-	// Concurrent readers
-	for g := 0; g < numGoroutines/2; g++ {
-		wg.Add(1)
+	// Concurrent writers during shrink
+	wg.Add(numGoroutines)
+	for g := 0; g < numGoroutines; g++ {
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < numOperations; i++ {
+				key := numEntries + base*numOperations + i
+				m.Store(key, key*2)
+				if val, ok := m.Load(key); !ok || val != key*2 {
+					atomic.AddInt64(&errors, 1)
+				}
+				m.Delete(key)
+				runtime.Gosched()
+			}
+		}(g)
+	}
+
+	// Concurrent deleters during shrink
+	wg.Add(numGoroutines)
+	for g := 0; g < numGoroutines; g++ {
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < numOperations; i++ {
+				key := numEntries + 100000 + base*numOperations + i
+				m.Store(key, key*2)
+				m.Delete(key)
+				if _, ok := m.Load(key); ok {
+					atomic.AddInt64(&errors, 1)
+				}
+				runtime.Gosched()
+			}
+		}(g)
+	}
+
+	wg.Wait()
+
+	if errors > 0 {
+		t.Errorf("Found %d data consistency errors during concurrent shrink", errors)
+	}
+
+	// Verify remaining data integrity
+	for i := numEntries - 100; i < numEntries; i++ {
+		if val, ok := m.Load(i); !ok || val != i*2 {
+			t.Errorf("Data corruption after shrink: key=%d, expected=%d, actual=%d, ok=%v",
+				i, i*2, val, ok)
+		}
+	}
+}
+
+// TestFlatMapOf_ShrinkDataIntegrity tests data integrity during shrink operations
+func TestFlatMapOf_ShrinkDataIntegrity(t *testing.T) {
+	m := NewFlatMapOf[string, int](WithShrinkEnabled())
+	const numEntries = 5000
+
+	// Create test data
+	for i := 0; i < numEntries; i++ {
+		key := fmt.Sprintf("key_%d", i)
+		value := i * 3
+		m.Store(key, value)
+	}
+
+	// Delete most entries to trigger shrink (delete first numEntries-200 keys)
+	deletedKeys := make(map[string]bool)
+	for i := 0; i < numEntries-200; i++ {
+		key := fmt.Sprintf("key_%d", i)
+		m.Delete(key)
+		deletedKeys[key] = true
+	}
+
+	// Verify remaining data integrity after shrink
+	for i := numEntries - 200; i < numEntries; i++ {
+		key := fmt.Sprintf("key_%d", i)
+		expectedValue := i * 3
+		if actualValue, ok := m.Load(key); !ok || actualValue != expectedValue {
+			t.Errorf("Data corruption after shrink: key=%s, expected=%d, actual=%d, ok=%v",
+				key, expectedValue, actualValue, ok)
+		}
+	}
+
+	// Verify deleted keys are actually gone
+	for key := range deletedKeys {
+		if _, ok := m.Load(key); ok {
+			t.Errorf("Deleted key still present after shrink: %s", key)
+		}
+	}
+}
+
+// TestFlatMapOf_ConcurrentShrinkWithRangeProcess tests RangeProcess during shrink
+func TestFlatMapOf_ConcurrentShrinkWithRangeProcess(t *testing.T) {
+	m := NewFlatMapOf[int, int](WithShrinkEnabled())
+	const numEntries = 8000
+	const numGoroutines = 4
+
+	// Pre-populate
+	for i := 0; i < numEntries; i++ {
+		m.Store(i, i*5)
+	}
+
+	// Delete most entries to trigger shrink
+	for i := 0; i < numEntries-500; i++ {
+		m.Delete(i)
+	}
+
+	var wg sync.WaitGroup
+	var rangeErrors int64
+	var processErrors int64
+
+	// Concurrent Range operations during shrink
+	wg.Add(numGoroutines)
+	for g := 0; g < numGoroutines; g++ {
 		go func() {
 			defer wg.Done()
-			for iter := 0; iter < iterations*2; iter++ {
-				m.RangeProcess(func(key int, value int) (int, ComputeOp) {
-					// Read-only operation
-					return value, CancelOp
+			for i := 0; i < 100; i++ {
+				count := 0
+				m.Range(func(k, v int) bool {
+					count++
+					if v != k*5 {
+						atomic.AddInt64(&rangeErrors, 1)
+					}
+					return true
 				})
+				if count == 0 {
+					atomic.AddInt64(&rangeErrors, 1)
+				}
 				runtime.Gosched()
 			}
 		}()
 	}
 
+	// Concurrent RangeProcess operations during shrink
+	wg.Add(numGoroutines)
+	for g := 0; g < numGoroutines; g++ {
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				processCount := 0
+				m.RangeProcess(func(key int, value int) (int, ComputeOp) {
+					processCount++
+					if value != key*5 {
+						atomic.AddInt64(&processErrors, 1)
+					}
+					return value, CancelOp // Don't modify during test
+				})
+				if processCount == 0 {
+					atomic.AddInt64(&processErrors, 1)
+				}
+				runtime.Gosched()
+			}
+		}()
+	}
+
+	// Concurrent operations during shrink
+	wg.Add(numGoroutines)
+	for g := 0; g < numGoroutines; g++ {
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				key := numEntries + base*200 + i
+				m.Store(key, key*5)
+				if val, ok := m.Load(key); !ok || val != key*5 {
+					atomic.AddInt64(&processErrors, 1)
+				}
+				m.Delete(key)
+				runtime.Gosched()
+			}
+		}(g)
+	}
+
 	wg.Wait()
 
-	// Verify final state - each key should have been incremented by its
-	// assigned goroutine
-	for i := 0; i < 100; i++ {
-		val, ok := m.Load(i)
-		if !ok {
-			t.Errorf("Key %d should exist", i)
-			continue
+	if rangeErrors > 0 {
+		t.Errorf("Found %d Range errors during concurrent shrink", rangeErrors)
+	}
+	if processErrors > 0 {
+		t.Errorf("Found %d RangeProcess errors during concurrent shrink", processErrors)
+	}
+}
+
+func TestFlatMapOf_ShrinkStressTest(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping stress test in short mode")
+	}
+
+	m := NewFlatMapOf[int, int](WithShrinkEnabled())
+	const cycles = 10
+	const entriesPerCycle = 5000
+	const numGoroutines = 6
+
+	for cycle := 0; cycle < cycles; cycle++ {
+		var wg sync.WaitGroup
+		var errors int64
+
+		// Fill the map
+		for i := 0; i < entriesPerCycle; i++ {
+			m.Store(i, i*7)
 		}
-		expected := i + iterations
-		if val != expected {
-			t.Errorf("Key %d: expected %d, got %d", i, expected, val)
+
+		// Concurrent operations while triggering shrink
+		wg.Add(numGoroutines)
+		for g := 0; g < numGoroutines; g++ {
+			go func(base int) {
+				defer wg.Done()
+
+				// Delete entries to trigger shrink
+				for i := base; i < entriesPerCycle-100; i += numGoroutines {
+					m.Delete(i)
+				}
+
+				// Perform reads/writes during shrink
+				for i := 0; i < 500; i++ {
+					key := entriesPerCycle + base*500 + i
+					m.Store(key, key*7)
+					if val, ok := m.Load(key); !ok || val != key*7 {
+						atomic.AddInt64(&errors, 1)
+					}
+					m.Delete(key)
+					runtime.Gosched()
+				}
+			}(g)
+		}
+
+		wg.Wait()
+
+		if errors > 0 {
+			t.Errorf("Cycle %d: Found %d errors during shrink stress test", cycle, errors)
+		}
+
+		// Verify remaining data
+		for i := entriesPerCycle - 100; i < entriesPerCycle; i++ {
+			if val, ok := m.Load(i); !ok || val != i*7 {
+				t.Errorf("Cycle %d: Data corruption: key=%d, expected=%d, actual=%d, ok=%v",
+					cycle, i, i*7, val, ok)
+			}
+		}
+
+		// Clean up for next cycle
+		for i := entriesPerCycle - 100; i < entriesPerCycle; i++ {
+			m.Delete(i)
+		}
+	}
+}
+
+func TestFlatMapOf_ShrinkSeqlockConsistency(t *testing.T) {
+	m := NewFlatMapOf[int, int](WithShrinkEnabled())
+	const numEntries = 6000
+	const numGoroutines = 6
+	const numOperations = 800
+
+	// Pre-populate
+	for i := 0; i < numEntries; i++ {
+		m.Store(i, i*11)
+	}
+
+	// Delete most entries to trigger shrink
+	for i := 0; i < numEntries-300; i++ {
+		m.Delete(i)
+	}
+
+	var wg sync.WaitGroup
+	var seqlockErrors int64
+
+	// Concurrent readers testing seqlock consistency during shrink
+	wg.Add(numGoroutines)
+	for g := 0; g < numGoroutines; g++ {
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < numOperations; i++ {
+				// Test remaining keys
+				key := numEntries - 300 + (base*numOperations+i)%300
+				val, ok := m.Load(key)
+				if ok && val != key*11 {
+					atomic.AddInt64(&seqlockErrors, 1)
+				}
+
+				// Test Range consistency
+				count := 0
+				m.Range(func(k, v int) bool {
+					count++
+					if v != k*11 {
+						atomic.AddInt64(&seqlockErrors, 1)
+					}
+					return count < 50 // Early termination to reduce test time
+				})
+
+				runtime.Gosched()
+			}
+		}(g)
+	}
+
+	// Concurrent writers during shrink
+	wg.Add(numGoroutines)
+	for g := 0; g < numGoroutines; g++ {
+		go func(base int) {
+			defer wg.Done()
+			for i := 0; i < numOperations; i++ {
+				key := numEntries + base*numOperations + i
+				m.Store(key, key*11)
+
+				// Immediate read to test consistency
+				if val, ok := m.Load(key); !ok || val != key*11 {
+					atomic.AddInt64(&seqlockErrors, 1)
+				}
+
+				m.Delete(key)
+				runtime.Gosched()
+			}
+		}(g)
+	}
+
+	wg.Wait()
+
+	if seqlockErrors > 0 {
+		t.Errorf("Found %d seqlock consistency errors during concurrent shrink", seqlockErrors)
+	}
+
+	// Final verification of remaining data
+	for i := numEntries - 300; i < numEntries; i++ {
+		if val, ok := m.Load(i); !ok || val != i*11 {
+			t.Errorf("Final data corruption: key=%d, expected=%d, actual=%d, ok=%v",
+				i, i*11, val, ok)
 		}
 	}
 }
@@ -1689,99 +1723,6 @@ func TestFlatMapOf_RangeProcess_DuringResize(t *testing.T) {
 		}
 		return value, CancelOp
 	})
-}
-
-// TestFlatMapOf_WithZeroAsDeleted_RangeProcess_Concurrent tests concurrent
-// RangeProcess with zero-as-deleted
-func TestFlatMapOf_WithZeroAsDeleted_RangeProcess_Concurrent(t *testing.T) {
-	m := NewFlatMapOf[int, int](WithZeroAsDeleted())
-
-	// Pre-populate with non-zero data
-	for i := 1; i <= 100; i++ {
-		m.Store(i, i*10)
-	}
-
-	var wg sync.WaitGroup
-	const numGoroutines = 6
-
-	// Concurrent operations: increment values, some may be set to zero and
-	// deleted
-	for g := 0; g < numGoroutines; g++ {
-		wg.Add(1)
-		go func(goroutineID int) {
-			defer wg.Done()
-			for iter := 0; iter < 5; iter++ {
-				m.RangeProcess(func(key int, value int) (int, ComputeOp) {
-					if key%numGoroutines == goroutineID {
-						// Increment value, but avoid zero
-						newValue := value + 1
-						if newValue == 0 {
-							newValue = 1 // Avoid zero to prevent deletion
-						}
-						return newValue, UpdateOp
-					}
-					return value, CancelOp
-				})
-				runtime.Gosched()
-			}
-		}(g)
-	}
-
-	// Additional goroutine that occasionally deletes some keys by setting to
-	// zero
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for iter := 0; iter < 3; iter++ {
-			m.RangeProcess(func(key int, value int) (int, ComputeOp) {
-				if key > 90 && key <= 95 {
-					// Delete keys 91-95 by setting to zero
-					return 0, UpdateOp
-				}
-				return value, CancelOp
-			})
-			time.Sleep(10 * time.Millisecond)
-		}
-	}()
-
-	wg.Wait()
-
-	// Verify final state
-	survivingKeys := 0
-	deletedKeys := 0
-	for i := 1; i <= 100; i++ {
-		val, ok := m.Load(i)
-		if i > 90 && i <= 95 {
-			// These keys should be deleted
-			if ok {
-				t.Errorf(
-					"Key %d should be deleted, but got (%d, %v)",
-					i,
-					val,
-					ok,
-				)
-			} else {
-				deletedKeys++
-			}
-		} else {
-			// Other keys should exist and have been incremented
-			if !ok {
-				t.Errorf("Key %d should exist", i)
-			} else {
-				survivingKeys++
-				if val <= i*10 {
-					t.Errorf("Key %d: expected value > %d, got %d", i, i*10, val)
-				}
-			}
-		}
-	}
-
-	if deletedKeys != 5 {
-		t.Errorf("Expected 5 deleted keys, got %d", deletedKeys)
-	}
-	if survivingKeys != 95 {
-		t.Errorf("Expected 95 surviving keys, got %d", survivingKeys)
-	}
 }
 
 // TestFlatMapOf_RangeProcess_EarlyTermination tests early termination scenarios

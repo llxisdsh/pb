@@ -1048,7 +1048,7 @@ func TestMapOf_Interfaces(t *testing.T) {
 		val2 := SmartValue{
 			Value:   100,
 			Ignored: "ignore2",
-		}                                                  // same Value, different Ignored
+		} // same Value, different Ignored
 		val3 := SmartValue{Value: 200, Ignored: "ignore1"} // different Value
 
 		m.Store(key, val1)
@@ -3383,7 +3383,7 @@ func TestNewMapOfPresized_DoesNotShrinkBelowMinLen(t *testing.T) {
 func TestNewMapOfGrowOnly_OnlyShrinksOnClear(t *testing.T) {
 	const minLen = 128
 	const numEntries = minLen * entriesPerBucket
-	m := NewMapOf[int, int](WithPresize(numEntries), WithGrowOnly())
+	m := NewMapOf[int, int](WithPresize(numEntries))
 
 	stats := m.Stats()
 	initialTableLen := stats.RootBuckets

@@ -15,14 +15,6 @@ compared to sync.Map in read-heavy workloads, while also providing competitive
 write performance. The actual performance gain varies depending on workload
 characteristics, key types, and concurrency patterns.
 
-Quick Benchmark Comparison:
-
-| Implementation  | Load (ns/op) | Store (ns/op) | Throughput (M ops/s) |
-|-----------------|-------------:|--------------:|---------------------:|
-| **pb.MapOf** 🏆 |     **0.18** |      **0.58** |            **94.21** |
-| sync.Map        |         3.66 |         24.27 |                21.84 |
-
-
 ## 🎯 Use Cases
 
 pb.MapOf excels in scenarios requiring:
@@ -175,18 +167,22 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 
 | Implementation                 | Operation   |       Ops/sec |   ns/op | B/op | Allocs/op |
 |--------------------------------|-------------|--------------:|--------:|-----:|----------:|
-| `original_syncMap`             | Store       |    47,236,741 |   24.27 |   64 |         3 |
-|                                | LoadOrStore |    56,023,192 |   19.03 |   17 |         2 |
-|                                | Load        |   404,771,172 |    3.66 |    0 |         0 |
-|                                | Mixed       |   142,293,642 |    8.60 |   10 |         0 |
+| `original_syncMap`             | Store       |    43,408,107 |   26.24 |   64 |         3 |
+|                                | LoadOrStore |    64,053,295 |   19.23 |   17 |         2 |
+|                                | Load        |   387,208,314 |    3.80 |    0 |         0 |
+|                                | Mixed       |   153,055,444 |    8.24 |   10 |         0 |
 | `pb_MapOf` 🏆                  | Store       | 1,000,000,000 |    0.58 |    0 |         0 |
-|                                | LoadOrStore | 1,000,000,000 |    0.49 |    0 |         0 |
+|                                | LoadOrStore | 1,000,000,000 |    0.47 |    0 |         0 |
 |                                | Load        | 1,000,000,000 |    0.18 |    0 |         0 |
-|                                | Mixed       | 1,000,000,000 |    0.44 |    0 |         0 |
-| `xsync_MapOf`                  | Store       |   142,851,074 |    7.60 |   16 |         1 |
-|                                | LoadOrStore |   293,945,829 |    3.64 |    0 |         0 |
-|                                | Load        |   729,350,713 |    1.64 |    0 |         0 |
-|                                | Mixed       |   491,628,387 |    2.20 |    2 |         0 |
+|                                | Mixed       | 1,000,000,000 |    0.42 |    0 |         0 |
+| `pb_FlatMapOf` 🥈              | Store       | 1,000,000,000 |    0.93 |    0 |         0 |
+|                                | LoadOrStore | 1,000,000,000 |    0.61 |    0 |         0 |
+|                                | Load        | 1,000,000,000 |    0.22 |    0 |         0 |
+|                                | Mixed       | 1,000,000,000 |    0.65 |    0 |         0 |
+| `xsync_MapOf`                  | Store       |   136,297,424 |    8.47 |   16 |         1 |
+|                                | LoadOrStore |   27,398,7921 |    4.00 |    0 |         0 |
+|                                | Load        |   74,548,1913 |    1.59 |    0 |         0 |
+|                                | Mixed       |   47,340,9570 |    2.27 |    2 |         0 |
 | `pb_HashTrieMap`               | Store       |    62,662,484 |   18.30 |   48 |         1 |
 |                                | LoadOrStore |    86,982,994 |   11.95 |    1 |         0 |
 |                                | Load        |   463,348,550 |    3.58 |    0 |         0 |
@@ -234,7 +230,7 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 
 
 <details>
-<summary> Store Throughput Test (09/15/2025) </summary>
+<summary> Store Throughput Test (09/23/2025) </summary>
 
 ```go
 
@@ -312,34 +308,31 @@ func TestInsert_pb_MapOf(t *testing.T) {
 
 | Implementation & Case       | Throughput<br>(M ops/s) | Performance Scale        |
 |-----------------------------|------------------------:|--------------------------|
-| pb_FlatMapOf (64/pre)       |                  293.67 | ━━━━━━━━━━━━━━━━━━━━━━━━ |
-| pb_FlatMapOf (64)           |                  103.16 | ━━━━━━━━━━━━━            |
-| pb_FlatMapOf (1/pre)        |                   49.63 | ━━━━━━━━                 |
-| pb_FlatMapOf (1)            |                   30.81 | ━━━━━                    |
-| pb_SeqFlatMapOf (64/pre)    |                  289.86 | ━━━━━━━━━━━━━━━━━━━━━━━━ |
-| pb_SeqFlatMapOf (64)        |                   97.40 | ━━━━━━━━━━━━             |
-| pb_SeqFlatMapOf (1/pre)     |                   34.64 | ━━━━━                    |
-| pb_SeqFlatMapOf (1)         |                   24.46 | ━━━━                     |
-| pb_MapOf (64/pre)           |                  178.09 | ━━━━━━━━━━━━━━━━         |
+| pb_FlatMapOf (64/pre)       |                  262.42 | ━━━━━━━━━━━━━━━━━━━━━━━━ |
+| pb_FlatMapOf (64)           |                  108.37 | ━━━━━━━━━━━━━━━          |
+| pb_FlatMapOf (1/pre)        |                   31.44 | ━━━━━━━━                 |
+| pb_FlatMapOf (1)            |                   22.93 | ━━━━━━                   |
+| pb_MapOf (64/pre)           |                  178.09 | ━━━━━━━━━━━━━━━━━        |
 | pb_MapOf (64)               |                   94.21 | ━━━━━━━━━━━              |
-| pb_MapOf (1/pre)            |                   26.83 | ━━━━                     |
-| pb_MapOf (1)                |                   21.45 | ━━━                      |
+| pb_MapOf (1/pre)            |                   26.83 | ━━━━━━━                  |
+| pb_MapOf (1)                |                   21.45 | ━━━━━                    |
 | xsync_MapV4 (64/pre)        |                   91.83 | ━━━━━━━━━━━              |
-| xsync_MapV4 (64)            |                   25.47 | ━━━━                     |
-| xsync_MapV4 (1/pre)         |                    5.86 | ━                        |
-| xsync_MapV4 (1)             |                    3.23 | ━                        |
-| pb_HashTrieMap (64)         |                   25.54 | ━━━━                     |
-| pb_HashTrieMap (1)          |                    1.73 |                          |
-| zhangyunhao116_skipmap (64) |                   25.37 | ━━━━                     |
-| zhangyunhao116_skipmap (1)  |                    3.38 | ━                        |
-| RWLockShardedMap_256 (64)   |                   21.92 | ━━━                      |
-| RWLockShardedMap_256 (1)    |                    3.47 | ━                        |
-| original_syncMap (64)       |                   21.84 | ━━━                      |
-| original_syncMap (1)        |                    1.42 |                          |
+| xsync_MapV4 (64)            |                   25.47 | ━━━━━━━                  |
+| xsync_MapV4 (1/pre)         |                    5.86 | ━━                       |
+| xsync_MapV4 (1)             |                    3.23 | ━━                       |
+| pb_HashTrieMap (64)         |                   25.54 | ━━━━━━━                  |
+| pb_HashTrieMap (1)          |                    1.73 | ━                        |
+| zhangyunhao116_skipmap (64) |                   25.37 | ━━━━━━━                  |
+| zhangyunhao116_skipmap (1)  |                    3.38 | ━━                       |
+| RWLockShardedMap_256 (64)   |                   21.92 | ━━━━━                    |
+| RWLockShardedMap_256 (1)    |                    3.47 | ━━                       |
+| original_syncMap (64)       |                   21.84 | ━━━━━                    |
+| original_syncMap (1)        |                    1.42 | ━                        |
 | alphadose_haxmap (64/pre)   |                    2.88 | ━                        |
 | alphadose_haxmap (64)       |                    0.57 |                          |
-| alphadose_haxmap (1/pre)    |                    1.00 |                          |
-| alphadose_haxmap (1)        |                    0.92 |                          |
+| alphadose_haxmap (1/pre)    |                    1.00 | ━                        |
+| alphadose_haxmap (1)        |                    0.92 | ━                        |
+
 
 - (1): 1 goroutine without pre-allocation
 - (1/pre): 1 goroutine with pre-allocation
@@ -428,18 +421,18 @@ go get golang.org/x/sys@latest
 package main
 
 import (
-	"github.com/llxisdsh/pb"
+    "github.com/llxisdsh/pb"
 )
 
 func main() {
-	// Zero-value initialization with lazy loading
-	var cache pb.MapOf[string, int]
+    // Zero-value initialization with lazy loading
+    var cache pb.MapOf[string, int]
 
-	// Optional initialization, Must be called once before use.
-	cache.InitWithOptions(pb.WithPresize(1000000))
+    // Optional initialization, Must be called once before use.
+    cache.InitWithOptions(pb.WithPresize(1000000))
 
-	// Direct initialization with options
-	cache2 := pb.NewMapOf[string, int](pb.WithPresize(1000000), pb.WithShrinkEnabled())
+    // Direct initialization with options
+    cache2 := pb.NewMapOf[string, int](pb.WithPresize(1000000), pb.WithShrinkEnabled())
 }
 ```
 
@@ -447,31 +440,31 @@ func main() {
 
 ```go
 import (
-	"fmt"
-	"github.com/llxisdsh/pb"
+    "fmt"
+    "github.com/llxisdsh/pb"
 )
 
 func basicOperations() {
-	cache := pb.NewMapOf[string, int]()
+    cache := pb.NewMapOf[string, int]()
 
-	// Store and load values
-	cache.Store("key1", 100)
-	cache.Store("key2", 200)
+    // Store and load values
+    cache.Store("key1", 100)
+    cache.Store("key2", 200)
 
-	value, exists := cache.Load("key1")
-	if exists {
-		fmt.Printf("key1: %d\n", value)
-	}
+    value, exists := cache.Load("key1")
+    if exists {
+        fmt.Printf("key1: %d\n", value)
+    }
 
-	// Load or store atomically
-	actual, loaded := cache.LoadOrStore("key3", 300)
-	if loaded {
-		fmt.Printf("key3 already exists: %d\n", actual)
-	} else {
-		fmt.Printf("key3 stored: %d\n", actual)
-	}
+    // Load or store atomically
+    actual, loaded := cache.LoadOrStore("key3", 300)
+    if loaded {
+        fmt.Printf("key3 already exists: %d\n", actual)
+    } else {
+        fmt.Printf("key3 stored: %d\n", actual)
+    }
 
-	cache.Delete("key2")
+    cache.Delete("key2")
 }
 ```
 
@@ -479,57 +472,57 @@ func basicOperations() {
 
 ```go
 import (
-	"fmt"
-	"github.com/llxisdsh/pb"
+    "fmt"
+    "github.com/llxisdsh/pb"
 )
 
 func atomicOperations() {
-	cache := pb.NewMapOf[string, int]()
-	cache.Store("key1", 100)
+    cache := pb.NewMapOf[string, int]()
+    cache.Store("key1", 100)
 
-	// Atomic swap
-	oldValue, swapped := cache.Swap("key1", 150)
-	if swapped {
-		fmt.Printf("Swapped key1 from %d to 150\n", oldValue)
-	}
+    // Atomic swap
+    oldValue, swapped := cache.Swap("key1", 150)
+    if swapped {
+        fmt.Printf("Swapped key1 from %d to 150\n", oldValue)
+    }
 
-	// Compare and swap
-	swapped = cache.CompareAndSwap("key1", 150, 175)
-	if swapped {
-		fmt.Println("Successfully swapped key1 from 150 to 175")
-	}
+    // Compare and swap
+    swapped = cache.CompareAndSwap("key1", 150, 175)
+    if swapped {
+        fmt.Println("Successfully swapped key1 from 150 to 175")
+    }
 
-	// Compare and delete
-	deleted := cache.CompareAndDelete("key1", 175)
-	if deleted {
-		fmt.Println("Successfully deleted key1 with value 175")
-	}
+    // Compare and delete
+    deleted := cache.CompareAndDelete("key1", 175)
+    if deleted {
+        fmt.Println("Successfully deleted key1 with value 175")
+    }
 
-	// Lazy value generation
-	result, loaded := cache.LoadOrStoreFn("computed:key", func() int {
-		fmt.Println("Computing expensive value...")
-		return 43
-	})
-	fmt.Printf("Result: %d, Loaded: %t\n", result, loaded)
+    // Lazy value generation
+    result, loaded := cache.LoadOrStoreFn("computed:key", func() int {
+        fmt.Println("Computing expensive value...")
+        return 43
+    })
+    fmt.Printf("Result: %d, Loaded: %t\n", result, loaded)
 
-	// ProcessEntry: Atomic conditional processing with complex business logic
-	cache.ProcessEntry("user:789", func(entry *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
-		if entry != nil {
-			// Update existing entry
-			newEntry := &pb.EntryOf[string, int]{Value: entry.Value + 1}
-			return newEntry, entry.Value, true
-		}
-		// Create new entry
-		return &pb.EntryOf[string, int]{Value: 1}, 0, false
-	})
+    // ProcessEntry: Atomic conditional processing with complex business logic
+    cache.ProcessEntry("user:789", func(entry *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
+        if entry != nil {
+            // Update existing entry
+            newEntry := &pb.EntryOf[string, int]{Value: entry.Value + 1}
+            return newEntry, entry.Value, true
+        }
+        // Create new entry
+        return &pb.EntryOf[string, int]{Value: 1}, 0, false
+    })
 
-	// LoadAndDelete: Atomic read-and-delete operation
-	deletedValue, wasPresent := cache.LoadAndDelete("user:456")
-	fmt.Printf("Deleted value: %d, Was present: %t\n", deletedValue, wasPresent)
+    // LoadAndDelete: Atomic read-and-delete operation
+    deletedValue, wasPresent := cache.LoadAndDelete("user:456")
+    fmt.Printf("Deleted value: %d, Was present: %t\n", deletedValue, wasPresent)
 
-	// LoadAndUpdate: Atomic read-and-update operation
-	previousValue, wasUpdated := cache.LoadAndUpdate("counter", 1)
-	fmt.Printf("Previous: %d, Updated: %t\n", previousValue, wasUpdated)
+    // LoadAndUpdate: Atomic read-and-update operation
+    previousValue, wasUpdated := cache.LoadAndUpdate("counter", 1)
+    fmt.Printf("Previous: %d, Updated: %t\n", previousValue, wasUpdated)
 }
 ```
 
@@ -537,55 +530,55 @@ func atomicOperations() {
 
 ```go
 import (
-	"slices"
-	"github.com/llxisdsh/pb"
+    "slices"
+    "github.com/llxisdsh/pb"
 )
 
 func customOptimizations() {
-	// Configuration Priority (highest to lowest):
-	//   - Explicit With* functions (WithKeyHasher, WithValueEqual)
-	//   - Interface implementations (IHashCode, IHashOpts, IEqual)
-	//   - Default built-in implementations (defaultHasher) - fallback
-	
-	// Method 1: Using With* functions for runtime configuration
+    // Configuration Priority (highest to lowest):
+    //   - Explicit With* functions (WithKeyHasher, WithValueEqual)
+    //   - Interface implementations (IHashCode, IHashOpts, IEqual)
+    //   - Default built-in implementations (defaultHasher) - fallback
+    
+    // Method 1: Using With* functions for runtime configuration
 
-	// Built-in hasher: better for long strings (lower collisions) but slower for short strings (2-3x)
-	stringCache := pb.NewMapOf[string, int](pb.WithBuiltInHasher[string]())
+    // Built-in hasher: better for long strings (lower collisions) but slower for short strings (2-3x)
+    stringCache := pb.NewMapOf[string, int](pb.WithBuiltInHasher[string]())
 
-	// Custom hash function for pointer keys
-	type UserID struct {
-		UserID   int64
-		TenantID int64
-	}
-	userCache := pb.NewMapOf[UserID, string](pb.WithKeyHasher(func(key UserID, seed uintptr) uintptr {
-		return uintptr(key.UserID) ^ seed
-	}))
+    // Custom hash function for pointer keys
+    type UserID struct {
+        UserID   int64
+        TenantID int64
+    }
+    userCache := pb.NewMapOf[UserID, string](pb.WithKeyHasher(func(key UserID, seed uintptr) uintptr {
+        return uintptr(key.UserID) ^ seed
+    }))
 
-	// Method 2: Interface-based (runtime init check)
-	type CustomKey struct {
-		ID   int64
-		Name string
-	}
+    // Method 2: Interface-based (runtime init check)
+    type CustomKey struct {
+        ID   int64
+        Name string
+    }
 
-	// Implement IHashCode for custom hashing
-	func (c *CustomKey) HashCode(uintptr) uintptr {
-		return uintptr(c.ID)
-	}
+    // Implement IHashCode for custom hashing
+    func (c *CustomKey) HashCode(uintptr) uintptr {
+        return uintptr(c.ID)
+    }
 
-	// Custom value type with IEqual for non-comparable types
-	type UserProfile struct {
-		Name string
-		Tags []string // slice makes this non-comparable
-	}
+    // Custom value type with IEqual for non-comparable types
+    type UserProfile struct {
+        Name string
+        Tags []string // slice makes this non-comparable
+    }
 
-	func (u *UserProfile) Equal(other UserProfile) bool {
-		return u.Name == other.Name && slices.Equal(u.Tags, other.Tags)
-	}
+    func (u *UserProfile) Equal(other UserProfile) bool {
+        return u.Name == other.Name && slices.Equal(u.Tags, other.Tags)
+    }
 
-	// Automatically detects and uses interfaces
-	var interfaceCache MapOf[CustomKey, UserProfile]
-	// Or
-	interfaceCache2 := pb.NewMapOf[CustomKey, UserProfile]()
+    // Automatically detects and uses interfaces
+    var interfaceCache MapOf[CustomKey, UserProfile]
+    // Or
+    interfaceCache2 := pb.NewMapOf[CustomKey, UserProfile]()
 }
 ```
 
@@ -593,32 +586,32 @@ func customOptimizations() {
 
 ```go
 import (
-	"fmt"
-	"github.com/llxisdsh/pb"
+    "fmt"
+    "github.com/llxisdsh/pb"
 )
 
 func iterationOperations() {
-	cache := pb.NewMapOf[string, int]()
-	cache.Store("key1", 100)
-	cache.Store("key2", 200)
+    cache := pb.NewMapOf[string, int]()
+    cache.Store("key1", 100)
+    cache.Store("key2", 200)
 
-	// Range over all key-value pairs
-	cache.Range(func(key string, value int) bool {
-		fmt.Printf("Key: %s, Value: %d\n", key, value)
-		return true // continue iteration
-	})
+    // Range over all key-value pairs
+    cache.Range(func(key string, value int) bool {
+        fmt.Printf("Key: %s, Value: %d\n", key, value)
+        return true // continue iteration
+    })
 
-	// RangeEntry: Iterate over all entry pointers (more efficient)
+    // RangeEntry: Iterate over all entry pointers (more efficient)
     // Note: loaded parameter is guaranteed to be non-nil during iteration
-	cache.RangeEntry(func(loaded *pb.EntryOf[string, int]) bool {
-		fmt.Printf("%s: %d\n", loaded.Key, loaded.Value)
-		return true
-	})
+    cache.RangeEntry(func(loaded *pb.EntryOf[string, int]) bool {
+        fmt.Printf("%s: %d\n", loaded.Key, loaded.Value)
+        return true
+    })
 
-	// All: Go 1.23+ iterator support
-	for key, value := range cache.All() {
-		fmt.Printf("%s: %d\n", key, value)
-	}
+    // All: Go 1.23+ iterator support
+    for key, value := range cache.All() {
+        fmt.Printf("%s: %d\n", key, value)
+    }
 }
 ```
 
@@ -626,69 +619,69 @@ func iterationOperations() {
 
 ```go
 import (
-	"fmt"
-	"maps"
-	"github.com/llxisdsh/pb"
+    "fmt"
+    "maps"
+    "github.com/llxisdsh/pb"
 )
 
 func batchOperations() {
-	cache := pb.NewMapOf[string, int]()
+    cache := pb.NewMapOf[string, int]()
 
-	// Store multiple values
-	batchData := map[string]int{
-		"batch1": 1000,
-		"batch2": 2000,
-		"batch3": 3000,
-	}
-	cache.FromMap(batchData)
+    // Store multiple values
+    batchData := map[string]int{
+        "batch1": 1000,
+        "batch2": 2000,
+        "batch3": 3000,
+    }
+    cache.FromMap(batchData)
 
-	// Load multiple values
-	keys := []string{"batch1", "batch2", "nonexistent"}
-	for _, key := range keys {
-		if value, ok := cache.Load(key); ok {
-			fmt.Printf("%s: %d\n", key, value)
-		} else {
-			fmt.Printf("%s: not found\n", key)
-		}
-	}
+    // Load multiple values
+    keys := []string{"batch1", "batch2", "nonexistent"}
+    for _, key := range keys {
+        if value, ok := cache.Load(key); ok {
+            fmt.Printf("%s: %d\n", key, value)
+        } else {
+            fmt.Printf("%s: not found\n", key)
+        }
+    }
 
-	// Delete multiple values using BatchDelete
-	cache.BatchDelete([]string{"batch1", "batch2"})
+    // Delete multiple values using BatchDelete
+    cache.BatchDelete([]string{"batch1", "batch2"})
 
-	// Batch process all entries
-	// Note: loaded parameter is guaranteed to be non-nil during iteration
-	cache.RangeProcessEntry(func(loaded *pb.EntryOf[string, int]) *pb.EntryOf[string, int] {
-		if loaded.Value < 100 {
-			// Double all values less than 100
-			return &pb.EntryOf[string, int]{Value: loaded.Value * 2}
-		}
-		return loaded // Keep unchanged
-	})
+    // Batch process all entries
+    // Note: loaded parameter is guaranteed to be non-nil during iteration
+    cache.RangeProcessEntry(func(loaded *pb.EntryOf[string, int]) *pb.EntryOf[string, int] {
+        if loaded.Value < 100 {
+            // Double all values less than 100
+            return &pb.EntryOf[string, int]{Value: loaded.Value * 2}
+        }
+        return loaded // Keep unchanged
+    })
 
-	// Process all entries with callback (Go 1.23+ iterator support)
-	for e := range cache.ProcessAll() {
-		switch e.Key() {
-			case "batch1":
-				e.Update(e.Value() + 500)
-			case "batch2":
-				e.Delete()
-			default:
-				// no-op
-		}
-	}
+    // Process all entries with callback (Go 1.23+ iterator support)
+    for e := range cache.ProcessAll() {
+        switch e.Key() {
+            case "batch1":
+                e.Update(e.Value() + 500)
+            case "batch2":
+                e.Delete()
+            default:
+                // no-op
+        }
+    }
 
     // Process entries with specified keys (Go 1.23+ iterator support)
     for e := range cache.ProcessSpecified("batch1", "batch4") {
         if e.Loaded() && e.Value() < 1000 {
             e.Delete()
         }
-	}
+    }
 
-	// BatchProcess: Batch process iterator data
-	data := map[string]int{"a": 1, "b": 2, "c": 3}
-	cache.BatchProcess(maps.All(data), func(_ string, v int, loaded *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
-		return &pb.EntryOf[string, int]{Value: v * 10}, v, true
-	})
+    // BatchProcess: Batch process iterator data
+    data := map[string]int{"a": 1, "b": 2, "c": 3}
+    cache.BatchProcess(maps.All(data), func(_ string, v int, loaded *pb.EntryOf[string, int]) (*pb.EntryOf[string, int], int, bool) {
+        return &pb.EntryOf[string, int]{Value: v * 10}, v, true
+    })
 }
 ```
 
@@ -696,30 +689,30 @@ func batchOperations() {
 
 ```go
 import (
-	"fmt"
-	"github.com/llxisdsh/pb"
+    "fmt"
+    "github.com/llxisdsh/pb"
 )
 
 func capacityManagement() {
-	cache := pb.NewMapOf[string, int]()
+    cache := pb.NewMapOf[string, int]()
 
-	// Get current size
-	size := cache.Size()
-	fmt.Printf("Current size: %d\n", size)
+    // Get current size
+    size := cache.Size()
+    fmt.Printf("Current size: %d\n", size)
 
-	// Check if map is zero-value
-	if cache.IsZero() {
-		fmt.Println("Cache is empty")
-	}
+    // Check if map is zero-value
+    if cache.IsZero() {
+        fmt.Println("Cache is empty")
+    }
 
-	// Pre-allocate capacity to avoid frequent resizing
-	cache.Grow(10000)
+    // Pre-allocate capacity to avoid frequent resizing
+    cache.Grow(10000)
 
-	// Manual shrink
-	cache.Shrink()
+    // Manual shrink
+    cache.Shrink()
 
-	// Clear all entries
-	cache.Clear()
+    // Clear all entries
+    cache.Clear()
 }
 ```
 
@@ -727,51 +720,51 @@ func capacityManagement() {
 
 ```go
 import (
-	"encoding/json"
-	"fmt"
-	"github.com/llxisdsh/pb"
+    "encoding/json"
+    "fmt"
+    "github.com/llxisdsh/pb"
 )
 
 func dataConversionAndSerialization() {
-	cache := pb.NewMapOf[string, int]()
-	cache.Store("key1", 100)
-	cache.Store("key2", 200)
+    cache := pb.NewMapOf[string, int]()
+    cache.Store("key1", 100)
+    cache.Store("key2", 200)
 
-	// Clone: Deep copy the entire map
-	clonedCache := cache.Clone()
-	fmt.Printf("Cloned size: %d\n", clonedCache.Size())
+    // Clone: Deep copy the entire map
+    clonedCache := cache.Clone()
+    fmt.Printf("Cloned size: %d\n", clonedCache.Size())
 
-	// Convert to Go map
-	goMap := cache.ToMap()
-	fmt.Printf("Go map: %+v\n", goMap)
+    // Convert to Go map
+    goMap := cache.ToMap()
+    fmt.Printf("Go map: %+v\n", goMap)
 
-	// Load from Go map
-	newData := map[string]int{
-		"new1": 100,
-		"new2": 200,
-	}
-	cache.FromMap(newData)
+    // Load from Go map
+    newData := map[string]int{
+        "new1": 100,
+        "new2": 200,
+    }
+    cache.FromMap(newData)
 
-	// JSON serialization
-	jsonData, err := json.Marshal(&cache)
-	if err == nil {
-		fmt.Printf("JSON: %s\n", jsonData)
-	}
+    // JSON serialization
+    jsonData, err := json.Marshal(&cache)
+    if err == nil {
+        fmt.Printf("JSON: %s\n", jsonData)
+    }
 
-	// JSON deserialization
-	var newCache pb.MapOf[string, int]
-	err = json.Unmarshal(jsonData, &newCache)
-	if err == nil {
-		fmt.Println("Successfully deserialized from JSON")
-	}
+    // JSON deserialization
+    var newCache pb.MapOf[string, int]
+    err = json.Unmarshal(jsonData, &newCache)
+    if err == nil {
+        fmt.Println("Successfully deserialized from JSON")
+    }
 
-	// String representation
-	fmt.Printf("Cache contents: %s\n", cache.String())
+    // String representation
+    fmt.Printf("Cache contents: %s\n", cache.String())
 
-	// Stats: Get detailed performance statistics
-	stats := cache.Stats()
-	fmt.Printf("Stats: Buckets=%d, Growths=%d, Shrinks=%d\n",
-		stats.RootBuckets, stats.TotalGrowths, stats.TotalShrinks)
+    // Stats: Get detailed performance statistics
+    stats := cache.Stats()
+    fmt.Printf("Stats: Buckets=%d, Growths=%d, Shrinks=%d\n",
+        stats.RootBuckets, stats.TotalGrowths, stats.TotalShrinks)
 }
 ```
 
@@ -855,57 +848,66 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 
 # pb.FlatMapOf
 
-`FlatMapOf` is a cache-friendly flat hash map for small key/value pairs.
-It inlines keys and stores per-slot values to minimize pointer chasing
-and reduce GC roots. Reads are lock-free. Writers serialize per-bucket
-for consistency.
+`FlatMapOf` is a seqlock-based, flat-layout concurrent hash table. The table and key/value entries are stored inline to minimize pointer chasing and cache misses, providing more stable latency and throughput even for cold working sets. This implementation is experimental; both APIs and concurrency semantics may evolve. Prefer creating instances via `NewFlatMapOf` and configure via options.
 
-Why choose it
-- Very fast for small K/V with great cache locality.
-- GC-friendly: fewer pointers and compact layout reduce GC pressure.
-- Familiar API: supports pre-sizing and custom hash/equality like `MapOf`.
+Design and concurrency semantics (overview)
+- Read path (seqlock validation): Each bucket maintains a sequence. Readers load s1; if s1 is even, they read metadata/entries and then load s2. If s1==s2 (and even), the read is consistent; otherwise, readers spin and retry, and, if needed, fall back to a short locked slow path.
+- Write path (ordered publication): While holding the root-bucket lock (opLock), flip the bucket sequence to odd (enter write state) → apply modifications → flip back to even (publish a consistent view), and finally release the root lock.
+- Resizing (parallel copy): A help–copy–publish protocol partitions the table and migrates buckets in parallel. When migration completes, the new table is atomically published. Ongoing reads/writes are minimally affected.
 
-Trade-offs
-- No shrinking (`WithShrinkEnabled` is not supported).
-- Only supports value type V with a size <= 8 bytes; for larger values, please use `MapOf`.
-- Per-bucket metadata and inline keys increase bucket footprint.
+Memory layout and cache behavior
+- Inlined K/V entries: Entries are laid out contiguously with their bucket, reducing extra pointer dereferences and cross-line accesses. Under cold data and low cache-hit scenarios, this significantly reduces p99/p999 latency jitter.
+- Value size: V is not limited by machine word size; any value type is supported. Note that large V increases the per-bucket footprint (see “Limitations”).
 
-Behavior notes
-- Publication ordering prevents torn key/value reads under concurrency.
-- Optional zero-as-deleted read semantics via `WithZeroAsDeleted`.
-  Default is disabled; zero values are treated as normal values.
+Time and space characteristics (intuition)
+- Expected complexity: Load/Store are amortized O(1) under uniform hashing and a reasonable load factor.
+- Progress guarantees: Reads are lock-free in the absence of write contention; under contention, they use spin + backoff and fall back to a short locked slow path to avoid livelock. Writes are protected by fine-grained, bucket-level mutual exclusion.
 
-When to use which
-- Pick `FlatMapOf` for small K/V, write-heavy or read-mostly workloads
-  where cache locality and GC overhead matter.
-- Pick `MapOf` when memory efficiency and shrinking support are more
-  important, or values are large.
+Systematic comparison with pb.MapOf
+- Concurrency control model:
+  - FlatMapOf: bucket-level seqlock + root-bucket mutual exclusion; reads are “optimistic + sequence validation,” writes are “odd/even sequence toggle + ordered publication.”
+  - MapOf: CLHT-inspired design; read path performs no writes (lock-free) and uses SWAR metadata for fast matching; writes use fine-grained synchronization at the bucket level.
+- Read latency and cold data:
+  - FlatMapOf: the inline layout avoids multi-hop pointer chasing under cold states, yielding more predictable hit latency and smoother tail latency.
+  - MapOf: extremely fast for hot data; with colder data and more cross-object pointer traversals, latency stability can be slightly worse than FlatMapOf.
+- Writes and contention:
+  - FlatMapOf: writes toggle bucket sequences and hold the root lock; under sustained high write contention, reads may experience bounded retries or slow-path fallbacks, and throughput may degrade earlier than in a read-optimized MapOf.
+  - MapOf: pointer-level updates with a mature write path; often easier to sustain throughput in write-heavy scenarios.
+- Memory footprint and density:
+  - FlatMapOf: inline entries avoid “one allocation per entry,” but incur “hole cost” (reserved space in partially filled buckets); when V is large or occupancy is sparse, bucket size inflation increases baseline memory usage.
+  - MapOf: buckets store pointers and entries are separate objects; with automatic shrinking (WithShrinkEnabled), MapOf is typically more memory-elastic and efficient, especially for large V or underutilized tables.
+- API capabilities and ecosystem:
+  - FlatMapOf: provides core operations (Load/Store/Delete/LoadOrStore/LoadOrStoreFn/Range/Process/RangeProcess/Size/IsZero). It does not currently offer dedicated convenience APIs such as CompareAndSwap/CompareAndDelete/LoadAndUpdate/Swap, but such semantics can be expressed using Process.
+  - MapOf: a more complete API surface including multiple CompareAnd*, Swap, and batch operations, plus richer customization of equality and hashing, making it more mature for migration and production use.
+- Hashing and optimizations:
+  - Both support WithKeyHasher/IHashCode/IHashOpts; FlatMapOf also supports WithPresize and WithShrinkEnabled.
 
----
+Advantages (FlatMapOf)
+- More stable hit latency and tail behavior in cold working sets and random-access workloads.
+- Inline layout reduces pointer chasing and cache misses; Range/scan-style operations benefit from better sequential locality.
+- Parallel resize support; arbitrary value sizes are supported.
 
-# pb.SeqFlatMapOf
+Limitations and caveats (FlatMapOf)
+- Large V or sparse occupancy amplifies the “hole cost,” increasing memory consumption.
+- Under sustained write contention with longer critical sections, reads may retry or fall back to the slow path, reducing throughput.
+- Dedicated CompareAnd* convenience APIs are currently unavailable; use Process to compose equivalent atomic semantics.
+- Experimental implementation; future APIs and semantics may be refined. Prefer NewFlatMapOf for initialization and explicit configuration.
 
-`SeqFlatMapOf` is a seqlock-based flat hash map. Both the table and K/V are stored inline (fully flat layout) to minimize cache misses. This design delivers stable hit latency and throughput even on cold working sets, which differs from the other concurrent maps’ memory layouts and access paths.
+Usage guidance and boundaries
+- Prefer `FlatMapOf` for:
+  - Read-dominant or mixed workloads with strong p99/p999 latency requirements on the online path;
+  - Cold or low-cache-hit distributions where predictable hit latency is critical;
+  - Small-to-medium value types where modest space trade-offs improve latency and throughput;
+  - Range/scan tasks that benefit from improved sequential locality.
+- Prefer `MapOf` for:
+  - Memory efficiency under resource constraints, or large value types with sparse occupancy;
+  - A full set of CompareAnd* / Swap / LoadAndUpdate convenience APIs;
+  - Write-heavy or high-contention workloads where a more mature write path is desirable.
 
-Key highlights
-- Bucket-level seqlock: readers perform optimistic validation (s1 even → read → s2 equal means stable). On conflict, they retry quickly and, if necessary, fall back to a short locked slow path.
-- Ordered publication for writes: with the root-bucket lock held, flip the bucket sequence to odd → apply changes → flip to even to publish a consistent view.
-- Fully flat storage: inlined table and K/V greatly reduce pointer chasing and cache misses; performance remains strong even with cold data.
-- No value-size limit: V is not constrained by machine word size; arbitrary-sized value types are supported.
-- Parallel resizing: follows a help–copy–publish protocol and can proceed in parallel with minimal impact to ongoing reads/writes.
-- API parity: largely matches MapOf/FlatMapOf (Load, Store, LoadOrStore, Range, Process, etc.).
-
-Trade-offs
-- No automatic shrinking (same as FlatMapOf).
-- Consistency is bucket-local (not a global snapshot).
-- Slightly higher per-bucket overhead than MapOf due to seqlock/metadata.
-
-How it differs
-- Versus `FlatMapOf`: more stable on cold/irregular access patterns but includes seqlock validation and occasional slow-path; supports arbitrarily large V; also no automatic shrinking.
-- Versus `MapOf`: typically more predictable hit latency on read-heavy/mixed workloads; MapOf generally wins on memory efficiency and features (e.g., shrinking).
-
-When to use
-- Read-heavy or mixed workloads; small value types; require stable performance even with cold data.
+API overview
+- Provided: Load, Store, Delete, LoadOrStore, LoadOrStoreFn, Range, Process, RangeProcess, Size, IsZero.
+- Compositional semantics: Process can express atomic read-modify-write, conditional updates, and conditional deletes.
+- Construction and configuration: supports WithPresize and WithShrinkEnabled for capacity and shrinking; supports custom hashing and distribution via IHashCode/IHashOpts/WithKeyHasher.
 
 ---
 
