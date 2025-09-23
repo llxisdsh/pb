@@ -5,9 +5,9 @@
 [![Codecov](https://codecov.io/gh/llxisdsh/pb/branch/main/graph/badge.svg)](https://codecov.io/gh/llxisdsh/pb)
 -->
 
-# pb.MapOf
+# MapOf
 
-pb.MapOf is a high-performance concurrent map optimized for read-dominant and mixed read/write workloads, outperforming sync.Map in many common scenarios. Its core design combines lock-free reads with bucket-level fine-grained synchronization on writes, together with cache-line–aware layout, parallel resizing, and pluggable hashing/equality. This yields high throughput with markedly improved tail-latency stability.
+`MapOf` is a high-performance concurrent map optimized for read-dominant and mixed read/write workloads, outperforming sync.Map in many common scenarios. Its core design combines lock-free reads with bucket-level fine-grained synchronization on writes, together with cache-line–aware layout, parallel resizing, and pluggable hashing/equality. This yields high throughput with markedly improved tail-latency stability.
 
 Design highlights
 - Lock-free read path; the write path employs bucket-level fine-grained synchronization and backoff to ensure forward progress under high contention.
@@ -341,13 +341,13 @@ func Test_MemoryPeakReduction(t *testing.T) {
 ```
 </details>
 
-Benchmark results indicate that pb.MapOf matches the native Go map in memory efficiency, and even outperforms it in most scenarios.
+Benchmark results indicate that MapOf matches the native Go map in memory efficiency, and even outperforms it in most scenarios.
 ![Memory Usage Comparison (log scale)](./res/memory_usage_comparison_log_scale.png)
 ![Memory Usage Comparison (Linear scale)](./res/memory_usage_comparison_linear_scale.png)
 
 ## ⚡ Performance Tips
 
-To achieve exceptional performance, pb.MapOf employs multiple optimization strategies:
+To achieve exceptional performance, MapOf employs multiple optimization strategies:
 
 ### Optimization Strategies
 
@@ -380,7 +380,7 @@ go get github.com/llxisdsh/pb@latest
 
 ### Prerequisites
 
-The `pb.Map` implementation uses `golang.org/x/sys` to determine the system's `CacheLineSize`.
+The `MapOf` implementation uses `golang.org/x/sys` to determine the system's `CacheLineSize`.
 For optimal performance, ensure your build environment has the latest version of this dependency:
 ```
 go get golang.org/x/sys@latest
@@ -819,7 +819,7 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 
 ---
 
-# pb.FlatMapOf
+# FlatMapOf
 
 `FlatMapOf` is a seqlock-based, flat-layout concurrent hash table. The table and key/value entries are stored inline to minimize pointer chasing and cache misses, providing more stable latency and throughput even for cold working sets. This implementation is experimental; both APIs and concurrency semantics may evolve. Prefer creating instances via `NewFlatMapOf` and configure via options.
 
@@ -836,7 +836,7 @@ Time and space characteristics (intuition)
 - Expected complexity: Load/Store are amortized O(1) under uniform hashing and a reasonable load factor.
 - Progress guarantees: Reads are lock-free in the absence of write contention; under contention, they use spin + backoff and fall back to a short locked slow path to avoid livelock. Writes are protected by fine-grained, bucket-level mutual exclusion.
 
-Systematic comparison with pb.MapOf
+Systematic comparison with `MapOf`
 - Concurrency control model:
   - FlatMapOf: bucket-level seqlock + root-bucket mutual exclusion; reads are “optimistic + sequence validation,” writes are “odd/even sequence toggle + ordered publication.”
   - MapOf: CLHT-inspired design; read path performs no writes (lock-free) and uses SWAR metadata for fast matching; writes use fine-grained synchronization at the bucket level.
@@ -867,12 +867,12 @@ Limitations and caveats (FlatMapOf)
 - Experimental implementation; future APIs and semantics may be refined. Prefer NewFlatMapOf for initialization and explicit configuration.
 
 Usage guidance and boundaries
-- Prefer `FlatMapOf` for:
+- Prefer FlatMapOf for:
   - Read-dominant or mixed workloads with strong p99/p999 latency requirements on the online path;
   - Cold or low-cache-hit distributions where predictable hit latency is critical;
   - Small-to-medium value types where modest space trade-offs improve latency and throughput;
   - Range/scan tasks that benefit from improved sequential locality.
-- Prefer `MapOf` for:
+- Prefer MapOf for:
   - Memory efficiency under resource constraints, or large value types with sparse occupancy;
   - A full set of CompareAnd* / Swap / LoadAndUpdate convenience APIs;
   - Write-heavy or high-contention workloads where a more mature write path is desirable.
@@ -884,10 +884,10 @@ API overview
 
 ---
 
-# pb.HashTrieMap
+# HashTrieMap
 
 
-**pb.HashTrieMap** is a highly optimized implementation of Go's built-in `HashTrieMap`, delivering **50%+ performance improvements** while maintaining full compatibility.
+**HashTrieMap** is a highly optimized implementation of Go's built-in `HashTrieMap`, delivering **50%+ performance improvements** while maintaining full compatibility.
 
 ## 🎯 Key Improvements
 
