@@ -7,50 +7,23 @@
 
 # pb.MapOf
 
-MapOf is a high-performance concurrent map implementation that offers significant
-performance improvements over sync.Map in many common scenarios.
+pb.MapOf is a high-performance concurrent map optimized for read-dominant and mixed read/write workloads, outperforming sync.Map in many common scenarios. Its core design combines lock-free reads with bucket-level fine-grained synchronization on writes, together with cache-line–aware layout, parallel resizing, and pluggable hashing/equality. This yields high throughput with markedly improved tail-latency stability.
 
-Benchmarks show that MapOf can achieve several times better read performance
-compared to sync.Map in read-heavy workloads, while also providing competitive
-write performance. The actual performance gain varies depending on workload
-characteristics, key types, and concurrency patterns.
+Design highlights
+- Lock-free read path; the write path employs bucket-level fine-grained synchronization and backoff to ensure forward progress under high contention.
+- Cache-line alignment and suppression of false sharing to reduce cross-line accesses and hot-spot interference.
+- CPU cache-line size adaptation (optionally specified at build time), with counter padding to reduce contention overhead.
+- Supports preallocation (WithPresize) and automatic shrinking (WithShrinkEnabled) to enhance memory elasticity and cold-start performance.
+- Zero-value usability and lazy initialization to reduce integration complexity.
+- Full sync.Map API compatibility, plus extensions: LoadOrStoreFn, ProcessEntry, Size, IsZero, Clone, and batch operations.
+- Parallel resizing to lower resize tail latency and improve scalability.
+- Pluggable hashing and equality: WithKeyHasher / IHashCode / IHashOpts / WithValueEqual / IEqual, enabling domain-specific tuning for keys/values.
+- Defaults to Go’s built-in hashing; when hash computation is expensive, embedded hash caching can be enabled via mapof_opt_embeddedhash.
 
-## 🎯 Use Cases
+Applicability (overview)
+- Suitable for read-intensive caches, online low-latency key–value access, and shared-state management requiring atomic conditional updates; under resource constraints, shrinking and custom hashing can further improve space efficiency and stability.
 
-pb.MapOf excels in scenarios requiring:
-
-- **High-frequency caching** with read-heavy workloads
-- **Real-time data processing** with concurrent access patterns
-- **Microservices** requiring low-latency key-value operations
-- **Gaming backends** with high-concurrency player state management
-- **Financial systems** needing atomic operations on shared data
-- **IoT applications** with massive concurrent sensor data updates
-
-
-## 🔧 Key Features
-
-- Uses cache-line aligned structures to prevent false sharing
-- Automatic CPU Cache Line Size Adaptation.  
-  The library automatically adapts to the CPU's cache line size.
-  You can also manually specify it using compile-time options like `mapof_opt_cachelinesize_64, 128, 256` etc.
-- Enhanced the lock mechanism to ensure consistent performance under highly contended concurrent access
-- Counter Performance Optimization.  
-  For improved counter performance, use `mapof_opt_enablepadding` to force padding around counters, reducing false sharing.
-- Compatibility
-  - Automatically detects and optimizes for strong memory model CPUs (e.g., x86 TSO).
-  - Tested/Validated CPUs with default configurations:
-    AMD Ryzen ThreadRipper 3970X, ARM Neoverse-N2, Apple M3 Ultra, Qualcomm Snapdragon 636 (32bit)
-- Implements zero-value usability for convenient initialization
-- Provides lazy initialization for better performance
-- Defaults to Go's built-in hash function, customizable on creation or initialization.  
-  For high hash computation costs, use `mapof_opt_embeddedhash` to enable hash caching (disabled by default as Go's built-in hashing is generally efficient)
-- Offers complete sync.Map API compatibility
-- Specially optimized for read operations
-- Supports parallel resizing for better scalability
-- Includes rich functional extensions such as LoadOrStoreFn, ProcessEntry, Size, IsZero,
-  Clone, and batch processing functions
-- Thoroughly tested with comprehensive test coverage
-- Delivers exceptional performance (see benchmark results below)
+Validated across multiple platforms with adaptive optimizations for strong memory models (e.g., x86 TSO). See the benchmarks below for details.
 
 ## 📊 Comprehensive Benchmarks
 
@@ -165,64 +138,64 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 ```
 </details>
 
-| Implementation                 | Operation   |       Ops/sec |   ns/op | B/op | Allocs/op |
-|--------------------------------|-------------|--------------:|--------:|-----:|----------:|
-| `original_syncMap`             | Store       |    43,408,107 |   26.24 |   64 |         3 |
-|                                | LoadOrStore |    64,053,295 |   19.23 |   17 |         2 |
-|                                | Load        |   387,208,314 |    3.80 |    0 |         0 |
-|                                | Mixed       |   153,055,444 |    8.24 |   10 |         0 |
-| `pb_MapOf` 🏆                  | Store       | 1,000,000,000 |    0.58 |    0 |         0 |
-|                                | LoadOrStore | 1,000,000,000 |    0.47 |    0 |         0 |
-|                                | Load        | 1,000,000,000 |    0.18 |    0 |         0 |
-|                                | Mixed       | 1,000,000,000 |    0.42 |    0 |         0 |
-| `pb_FlatMapOf` 🥈              | Store       | 1,000,000,000 |    0.93 |    0 |         0 |
-|                                | LoadOrStore | 1,000,000,000 |    0.61 |    0 |         0 |
-|                                | Load        | 1,000,000,000 |    0.22 |    0 |         0 |
-|                                | Mixed       | 1,000,000,000 |    0.65 |    0 |         0 |
-| `xsync_MapOf`                  | Store       |   136,297,424 |    8.47 |   16 |         1 |
-|                                | LoadOrStore |   27,398,7921 |    4.00 |    0 |         0 |
-|                                | Load        |   74,548,1913 |    1.59 |    0 |         0 |
-|                                | Mixed       |   47,340,9570 |    2.27 |    2 |         0 |
-| `pb_HashTrieMap`               | Store       |    62,662,484 |   18.30 |   48 |         1 |
-|                                | LoadOrStore |    86,982,994 |   11.95 |    1 |         0 |
-|                                | Load        |   463,348,550 |    3.58 |    0 |         0 |
-|                                | Mixed       |   198,404,397 |    6.16 |    6 |         0 |
-| `alphadose_haxmap`             | Store       |    80,418,174 |   14.01 |    9 |         1 |
-|                                | LoadOrStore |    75,698,793 |   14.39 |    9 |         1 |
-|                                | Load        |   767,338,982 |    1.92 |    0 |         0 |
-|                                | Mixed       |   186,024,159 |    5.52 |    2 |         0 |
-| `zhangyunhao116_skipmap`       | Store       |    29,587,840 |   39.17 |    9 |         1 |
-|                                | LoadOrStore |    37,524,507 |   30.38 |    1 |         0 |
-|                                | Load        |   527,466,034 |    2.27 |    0 |         0 |
-|                                | Mixed       |   183,319,764 |    6.22 |    1 |         0 |
-| `riraccuia_ash`                | Store       |    51,692,203 |   21.81 |   62 |         4 |
-|                                | LoadOrStore |    28,938,676 |   41.67 |   94 |         3 |
-|                                | Load        |   269,917,735 |    4.64 |    7 |         0 |
-|                                | Mixed       |   124,839,320 |    9.94 |   18 |         1 |
-| `fufuok_cmap`                  | Store       |    29,590,686 |   38.21 |    1 |         0 |
-|                                | LoadOrStore |    43,682,427 |   27.92 |    0 |         0 |
-|                                | Load        |   151,875,836 |    7.74 |    0 |         0 |
-|                                | Mixed       |    25,265,125 |   46.51 |    0 |         0 |
-| `mhmtszr_concurrent_swiss_map` | Store       |    29,849,112 |   40.21 |    1 |         0 |
-|                                | LoadOrStore |    27,447,705 |   45.02 |    0 |         0 |
-|                                | Load        |   163,669,803 |    7.66 |    0 |         0 |
-|                                | Mixed       |    30,439,160 |   36.53 |    0 |         0 |
-| `orcaman_concurrent_map`       | Store       |    34,420,544 |   33.46 |    1 |         0 |
-|                                | LoadOrStore |    50,175,614 |   25.41 |    1 |         0 |
-|                                | Load        |   145,646,887 |    8.70 |    0 |         0 |
-|                                | Mixed       |    48,974,994 |   26.18 |    0 |         0 |
-| `RWLockShardedMap_256`         | Store       |    69,052,428 |   15.79 |    1 |         0 |
-|                                | LoadOrStore |   119,077,255 |    9.45 |    0 |         0 |
-|                                | Load        |   287,863,598 |    4.17 |    0 |         0 |
-|                                | Mixed       |   172,448,331 |    6.98 |    0 |         0 |
-| `RWLockMap`                    | Store       |     4,238,468 |  269.00 |    1 |         0 |
-|                                | LoadOrStore |     9,066,169 |  163.10 |    1 |         0 |
-|                                | Load        |    33,225,810 |   36.11 |    0 |         0 |
-|                                | Mixed       |     9,591,573 |  127.70 |    0 |         0 |
-| `snawoot_lfmap`                | Store       |       364,705 | 3153.00 | 7754 |        48 |
-|                                | LoadOrStore |     8,887,498 |  205.60 |  518 |         2 |
-|                                | Load        |   281,609,623 |    4.22 |    0 |         0 |
-|                                | Mixed       |     1,899,039 |  630.00 | 2453 |        10 |
+| Implementation               | Operation   |       Ops/sec |   ns/op | B/op | Allocs/op |
+|------------------------------|-------------|--------------:|--------:|-----:|----------:|
+| original_syncMap             | Store       |    43,408,107 |   26.24 |   64 |         3 |
+|                              | LoadOrStore |    64,053,295 |   19.23 |   17 |         2 |
+|                              | Load        |   387,208,314 |    3.80 |    0 |         0 |
+|                              | Mixed       |   153,055,444 |    8.24 |   10 |         0 |
+| pb_MapOf 🏆                  | Store       | 1,000,000,000 |    0.58 |    0 |         0 |
+|                              | LoadOrStore | 1,000,000,000 |    0.47 |    0 |         0 |
+|                              | Load        | 1,000,000,000 |    0.18 |    0 |         0 |
+|                              | Mixed       | 1,000,000,000 |    0.42 |    0 |         0 |
+| pb_FlatMapOf 🥈              | Store       | 1,000,000,000 |    0.93 |    0 |         0 |
+|                              | LoadOrStore | 1,000,000,000 |    0.61 |    0 |         0 |
+|                              | Load        | 1,000,000,000 |    0.22 |    0 |         0 |
+|                              | Mixed       | 1,000,000,000 |    0.65 |    0 |         0 |
+| xsync_MapOf                  | Store       |   136,297,424 |    8.47 |   16 |         1 |
+|                              | LoadOrStore |   27,398,7921 |    4.00 |    0 |         0 |
+|                              | Load        |   74,548,1913 |    1.59 |    0 |         0 |
+|                              | Mixed       |   47,340,9570 |    2.27 |    2 |         0 |
+| pb_HashTrieMap               | Store       |    62,662,484 |   18.30 |   48 |         1 |
+|                              | LoadOrStore |    86,982,994 |   11.95 |    1 |         0 |
+|                              | Load        |   463,348,550 |    3.58 |    0 |         0 |
+|                              | Mixed       |   198,404,397 |    6.16 |    6 |         0 |
+| alphadose_haxmap             | Store       |    80,418,174 |   14.01 |    9 |         1 |
+|                              | LoadOrStore |    75,698,793 |   14.39 |    9 |         1 |
+|                              | Load        |   767,338,982 |    1.92 |    0 |         0 |
+|                              | Mixed       |   186,024,159 |    5.52 |    2 |         0 |
+| zhangyunhao116_skipmap       | Store       |    29,587,840 |   39.17 |    9 |         1 |
+|                              | LoadOrStore |    37,524,507 |   30.38 |    1 |         0 |
+|                              | Load        |   527,466,034 |    2.27 |    0 |         0 |
+|                              | Mixed       |   183,319,764 |    6.22 |    1 |         0 |
+| riraccuia_ash                | Store       |    51,692,203 |   21.81 |   62 |         4 |
+|                              | LoadOrStore |    28,938,676 |   41.67 |   94 |         3 |
+|                              | Load        |   269,917,735 |    4.64 |    7 |         0 |
+|                              | Mixed       |   124,839,320 |    9.94 |   18 |         1 |
+| fufuok_cmap                  | Store       |    29,590,686 |   38.21 |    1 |         0 |
+|                              | LoadOrStore |    43,682,427 |   27.92 |    0 |         0 |
+|                              | Load        |   151,875,836 |    7.74 |    0 |         0 |
+|                              | Mixed       |    25,265,125 |   46.51 |    0 |         0 |
+| mhmtszr_concurrent_swiss_map | Store       |    29,849,112 |   40.21 |    1 |         0 |
+|                              | LoadOrStore |    27,447,705 |   45.02 |    0 |         0 |
+|                              | Load        |   163,669,803 |    7.66 |    0 |         0 |
+|                              | Mixed       |    30,439,160 |   36.53 |    0 |         0 |
+| orcaman_concurrent_map       | Store       |    34,420,544 |   33.46 |    1 |         0 |
+|                              | LoadOrStore |    50,175,614 |   25.41 |    1 |         0 |
+|                              | Load        |   145,646,887 |    8.70 |    0 |         0 |
+|                              | Mixed       |    48,974,994 |   26.18 |    0 |         0 |
+| RWLockShardedMap_256         | Store       |    69,052,428 |   15.79 |    1 |         0 |
+|                              | LoadOrStore |   119,077,255 |    9.45 |    0 |         0 |
+|                              | Load        |   287,863,598 |    4.17 |    0 |         0 |
+|                              | Mixed       |   172,448,331 |    6.98 |    0 |         0 |
+| RWLockMap                    | Store       |     4,238,468 |  269.00 |    1 |         0 |
+|                              | LoadOrStore |     9,066,169 |  163.10 |    1 |         0 |
+|                              | Load        |    33,225,810 |   36.11 |    0 |         0 |
+|                              | Mixed       |     9,591,573 |  127.70 |    0 |         0 |
+| snawoot_lfmap                | Store       |       364,705 | 3153.00 | 7754 |        48 |
+|                              | LoadOrStore |     8,887,498 |  205.60 |  518 |         2 |
+|                              | Load        |   281,609,623 |    4.22 |    0 |         0 |
+|                              | Mixed       |     1,899,039 |  630.00 | 2453 |        10 |
 
 
 - RWLockShardedMap_256: A 256-shard concurrent map using Go's native map + RWMutex per shard (benchmark reference). 
