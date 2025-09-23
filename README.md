@@ -821,7 +821,7 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 
 # FlatMapOf
 
-FlatMapOf is a seqlock-based, flat-layout concurrent hash table. The table and key/value entries are stored inline to minimize pointer chasing and cache misses, providing more stable latency and throughput even for cold working sets. This implementation is experimental; both APIs and concurrency semantics may evolve. Prefer creating instances via `NewFlatMapOf` and configure via options.
+FlatMapOf is a seqlock-based, flat-layout concurrent hash table. The table and key/value entries are stored inline to minimize pointer chasing and cache misses, providing more stable latency and throughput even for cold working sets. Prefer creating instances via `NewFlatMapOf` and configure via options.
 
 Design and concurrency semantics (overview)
 - Read path (seqlock validation): Each bucket maintains a sequence. Readers load s1; if s1 is even, they read metadata/entries and then load s2. If s1==s2 (and even), the read is consistent; otherwise, readers spin and retry, and, if needed, fall back to a short locked slow path.
