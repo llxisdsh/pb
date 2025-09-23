@@ -7,7 +7,7 @@
 
 # MapOf
 
-`MapOf` is a high-performance concurrent map optimized for read-dominant and mixed read/write workloads, outperforming sync.Map in many common scenarios. Its core design combines lock-free reads with bucket-level fine-grained synchronization on writes, together with cache-line–aware layout, parallel resizing, and pluggable hashing/equality. This yields high throughput with markedly improved tail-latency stability.
+MapOf is a high-performance concurrent map optimized for read-dominant and mixed read/write workloads, outperforming sync.Map in many common scenarios. Its core design combines lock-free reads with bucket-level fine-grained synchronization on writes, together with cache-line–aware layout, parallel resizing, and pluggable hashing/equality. This yields high throughput with markedly improved tail-latency stability.
 
 Design highlights
 - Lock-free read path; the write path employs bucket-level fine-grained synchronization and backoff to ensure forward progress under high contention.
@@ -27,7 +27,7 @@ Validated across multiple platforms with adaptive optimizations for strong memor
 
 ## 📊 Comprehensive Benchmarks
 
-Benchmark results consistently show `pb.MapOf` outperforms other implementations with the fastest operations across Store, 
+Benchmark results consistently show MapOf outperforms other implementations with the fastest operations across Store, 
 LoadOrStore, Load, and Mixed workloads.
 
 ```
@@ -380,7 +380,7 @@ go get github.com/llxisdsh/pb@latest
 
 ### Prerequisites
 
-The `MapOf` implementation uses `golang.org/x/sys` to determine the system's `CacheLineSize`.
+The MapOf implementation uses `golang.org/x/sys` to determine the system's `CacheLineSize`.
 For optimal performance, ensure your build environment has the latest version of this dependency:
 ```
 go get golang.org/x/sys@latest
@@ -821,7 +821,7 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 
 # FlatMapOf
 
-`FlatMapOf` is a seqlock-based, flat-layout concurrent hash table. The table and key/value entries are stored inline to minimize pointer chasing and cache misses, providing more stable latency and throughput even for cold working sets. This implementation is experimental; both APIs and concurrency semantics may evolve. Prefer creating instances via `NewFlatMapOf` and configure via options.
+FlatMapOf is a seqlock-based, flat-layout concurrent hash table. The table and key/value entries are stored inline to minimize pointer chasing and cache misses, providing more stable latency and throughput even for cold working sets. This implementation is experimental; both APIs and concurrency semantics may evolve. Prefer creating instances via `NewFlatMapOf` and configure via options.
 
 Design and concurrency semantics (overview)
 - Read path (seqlock validation): Each bucket maintains a sequence. Readers load s1; if s1 is even, they read metadata/entries and then load s2. If s1==s2 (and even), the read is consistent; otherwise, readers spin and retry, and, if needed, fall back to a short locked slow path.
@@ -836,7 +836,7 @@ Time and space characteristics (intuition)
 - Expected complexity: Load/Store are amortized O(1) under uniform hashing and a reasonable load factor.
 - Progress guarantees: Reads are lock-free in the absence of write contention; under contention, they use spin + backoff and fall back to a short locked slow path to avoid livelock. Writes are protected by fine-grained, bucket-level mutual exclusion.
 
-Systematic comparison with `MapOf`
+Systematic comparison with MapOf
 - Concurrency control model:
   - FlatMapOf: bucket-level seqlock + root-bucket mutual exclusion; reads are “optimistic + sequence validation,” writes are “odd/even sequence toggle + ordered publication.”
   - MapOf: CLHT-inspired design; read path performs no writes (lock-free) and uses SWAR metadata for fast matching; writes use fine-grained synchronization at the bucket level.
