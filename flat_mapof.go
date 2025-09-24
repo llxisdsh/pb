@@ -68,8 +68,8 @@ type flatTable[K comparable, V any] struct {
 }
 
 type flatBucket[K comparable, V any] struct {
-	meta    atomicUint64   // op byte + h2 bytes
 	seq     atomicUint64   // seqlock of bucket (even=stable, odd=write)
+	meta    atomicUint64   // op byte + h2 bytes
 	next    unsafe.Pointer // *flatBucket[K,V]
 	entries [entriesPerBucket]flatEntry[K, V]
 }
@@ -921,4 +921,22 @@ func trySpin(spins *int) bool {
 		return true
 	}
 	return false
+}
+
+// atomicUint64 wraps atomic.Uint64 to leverage its built-in
+// alignment capabilities. The primary purpose is to ensure
+// 8-byte alignment on 32-bit architectures, where atomic.Uint64
+// guarantees proper alignment for atomic operations.
+type atomicUint64 struct {
+	atomic.Uint64
+}
+
+//go:nosplit
+func makeAtomicUint64(v uint64) atomicUint64 {
+	return *(*atomicUint64)(unsafe.Pointer(&v))
+}
+
+//go:nosplit
+func (a *atomicUint64) Raw() *uint64 {
+	return (*uint64)(unsafe.Pointer(a))
 }
