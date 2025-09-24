@@ -187,7 +187,7 @@ func (ht *HashTrieMap[K, V]) expand(oldEntry, newEntry *entry[K, V], newHash uin
 	top := newIndirect
 	for {
 		if hashShift == 0 {
-			panic("internal/sync.HashTrieMap: ran out of hash bits while inserting")
+			panic("internal/sync.HashTrieMap: ran out of hash bits while inserting (incorrect use of unsafe or cgo, or data race?)")
 		}
 		hashShift -= nChildrenLog2 // hashShift is for the level parent is at. We need to go deeper.
 		oi := (oldHash >> hashShift) & nChildrenMask
@@ -205,8 +205,8 @@ func (ht *HashTrieMap[K, V]) expand(oldEntry, newEntry *entry[K, V], newHash uin
 }
 
 // Store sets the value for a key.
-func (ht *HashTrieMap[K, V]) Store(key K, old V) {
-	ht.Swap(key, old)
+func (ht *HashTrieMap[K, V]) Store(key K, new V) {
+	ht.Swap(key, new)
 }
 
 // Swap swaps the value for a key and returns the previous value if any.
