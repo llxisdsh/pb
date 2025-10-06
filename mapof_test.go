@@ -125,6 +125,19 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 	}
 }
 
+func TestMapOf_InterfaceKey(t *testing.T) {
+	type X interface {
+		Hello()
+	}
+
+	m := NewMapOf[X, int]()
+
+	m.Store(nil, 1)
+	if v, ok := m.Load(nil); !ok || v != 1 {
+		t.Fatalf("Load(1) = %v, %v; want 1, true", v, ok)
+	}
+}
+
 // TestMapOfStoreLoadLatency tests the latency between Store and Load operations
 func TestMapOfStoreLoadLatency(t *testing.T) {
 	const (
