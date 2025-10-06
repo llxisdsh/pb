@@ -70,11 +70,6 @@ const (
 	// enableHashSpread: improve hash distribution for non-integer keys
 	// Reduces collisions for complex types but adds computational overhead
 	enableHashSpread = false
-
-	// enableSpin: use CPU PAUSE instruction for short waits
-	// Improves performance for brief contention but may reduce throughput
-	// under a high load
-	enableSpin = true
 )
 
 // MapOf is a high-performance concurrent map implementation that is fully
@@ -3277,20 +3272,27 @@ func (s unsafeSlice[T]) At(i int) *T {
 }
 
 //go:nosplit
-func delay(spins *int) {
-	if //goland:noinspection ALL
-	enableSpin && runtime_canSpin(*spins) {
+func trySpin(spins *int) bool {
+	if runtime_canSpin(*spins) {
 		*spins++
 		runtime_doSpin()
-	} else {
-		*spins = 0
-		// time.Sleep with non-zero duration (≈Millisecond level) works
-		// effectively as backoff under high concurrency.
-		// The 500µs duration is derived from Facebook/folly's implementation:
-		// https://github.com/facebook/folly/blob/main/folly/synchronization/detail/Sleeper.h
-		const yieldSleep = 500 * time.Microsecond
-		time.Sleep(yieldSleep)
+		return true
 	}
+	return false
+}
+
+//go:nosplit
+func delay(spins *int) {
+	if trySpin(spins) {
+		return
+	}
+	*spins = 0
+	// time.Sleep with non-zero duration (≈Millisecond level) works
+	// effectively as backoff under high concurrency.
+	// The 500µs duration is derived from Facebook/folly's implementation:
+	// https://github.com/facebook/folly/blob/main/folly/synchronization/detail/Sleeper.h
+	const yieldSleep = 500 * time.Microsecond
+	time.Sleep(yieldSleep)
 }
 
 // nolint:all

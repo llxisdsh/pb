@@ -913,16 +913,6 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 	}
 }
 
-//go:nosplit
-func trySpin(spins *int) bool {
-	if runtime_canSpin(*spins) {
-		*spins++
-		runtime_doSpin()
-		return true
-	}
-	return false
-}
-
 // atomicUint64 wraps atomic.Uint64 to leverage its built-in
 // alignment capabilities. The primary purpose is to ensure
 // 8-byte alignment on 32-bit architectures, where atomic.Uint64
