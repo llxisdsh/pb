@@ -758,12 +758,21 @@ func TestMapOfConcurrentReadWriteStress(t *testing.T) {
 		t.Skip("skipping stress test")
 	}
 
-	const (
+	// Detect if running with coverage and reduce test intensity
+	var writerCount, readerCount, keyCount, iterations int
+	if testing.CoverMode() != "" {
+		// Reduced parameters for coverage mode to prevent timeout
+		writerCount = 2
+		readerCount = 4
+		keyCount = 100
+		iterations = 1000
+	} else {
+		// Full stress test parameters for normal mode
 		writerCount = 4
 		readerCount = 16
-		keyCount    = 1000
-		iterations  = 10000
-	)
+		keyCount = 1000
+		iterations = 10000
+	}
 
 	m := NewMapOf[int, int]()
 	var wg sync.WaitGroup

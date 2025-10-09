@@ -49,8 +49,17 @@ func TestConcurrentCacheMapOf(t *testing.T) {
 		}
 	}
 
-	const N = 100_000
-	const P = 5_000
+	// Adjust parameters based on coverage mode to prevent timeouts
+	var N, P int
+	if testing.CoverMode() != "" {
+		// Reduced parameters for coverage mode
+		N = 1_000   // 1,000 goroutines instead of 100,000
+		P = 100     // 100 keys instead of 5,000
+	} else {
+		// Full stress test parameters for normal mode
+		N = 100_000
+		P = 5_000
+	}
 
 	var wg sync.WaitGroup
 	wg.Add(N)

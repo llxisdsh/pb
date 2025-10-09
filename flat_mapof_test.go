@@ -300,9 +300,19 @@ func TestFlatMapOf_Concurrent(t *testing.T) {
 // TestFlatMapOf_ConcurrentReadWrite tests heavy concurrent read/write load
 func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 	m := NewFlatMapOf[int, int]()
-	const duration = 2 * time.Second
-	const numReaders = 8
-	const numWriters = 2
+	
+	// Reduce test duration and concurrency for coverage mode
+	var duration time.Duration
+	var numReaders, numWriters int
+	if testing.CoverMode() != "" {
+		duration = 500 * time.Millisecond
+		numReaders = 4
+		numWriters = 1
+	} else {
+		duration = 2 * time.Second
+		numReaders = 8
+		numWriters = 2
+	}
 
 	// Pre-populate with some data
 	for i := 0; i < 1000; i++ {
