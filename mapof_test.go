@@ -323,7 +323,7 @@ func TestMapOfStoreLoadLatency(t *testing.T) {
 }
 
 // TestMapOfStoreLoadMultiThreadLatency tests Store-Load latency in a
-// multi-threaded environment
+// multithreaded environment
 func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping multi-thread latency test in short mode")
@@ -883,6 +883,637 @@ func TestMapOf(t *testing.T) {
 	})
 }
 
+// TestMapOfWithKeyHasherUnsafe tests the WithKeyHasherUnsafe function
+func TestMapOfWithKeyHasherUnsafe(t *testing.T) {
+	t.Run("BasicUnsafeHasher", func(t *testing.T) {
+		// Custom unsafe hasher that uses string length as hash
+		unsafeStringHasher := func(ptr unsafe.Pointer, seed uintptr) uintptr {
+			str := *(*string)(ptr)
+			return uintptr(len(str)) ^ seed
+		}
+
+		m := NewMapOf[string, int](WithKeyHasherUnsafe(unsafeStringHasher))
+
+		// Test basic operations
+		m.Store("a", 1)
+		m.Store("bb", 2)
+		m.Store("ccc", 3)
+
+		if val, ok := m.Load("a"); !ok || val != 1 {
+			t.Errorf("Expected a=1, got %d, exists=%v", val, ok)
+		}
+		if val, ok := m.Load("bb"); !ok || val != 2 {
+			t.Errorf("Expected bb=2, got %d, exists=%v", val, ok)
+		}
+		if val, ok := m.Load("ccc"); !ok || val != 3 {
+			t.Errorf("Expected ccc=3, got %d, exists=%v", val, ok)
+		}
+	})
+
+	t.Run("UnsafeHasherWithLinearDistribution", func(t *testing.T) {
+		// Custom unsafe hasher for integers
+		unsafeIntHasher := func(ptr unsafe.Pointer, seed uintptr) uintptr {
+			val := *(*int)(ptr)
+			return uintptr(val*31) ^ seed
+		}
+
+		m := NewMapOf[int, string](WithKeyHasherUnsafe(unsafeIntHasher, LinearDistribution))
+
+		// Test with sequential keys (good for linear distribution)
+		for i := 0; i < 100; i++ {
+			m.Store(i, fmt.Sprintf("value%d", i))
+		}
+
+		// Verify all values
+		for i := 0; i < 100; i++ {
+			expected := fmt.Sprintf("value%d", i)
+			if val, ok := m.Load(i); !ok || val != expected {
+				t.Errorf("Expected %d=%s, got %s, exists=%v", i, expected, val, ok)
+			}
+		}
+	})
+
+	t.Run("UnsafeHasherWithShiftDistribution", func(t *testing.T) {
+		// Custom unsafe hasher for strings
+		unsafeStringHasher := func(ptr unsafe.Pointer, seed uintptr) uintptr {
+			str := *(*string)(ptr)
+			hash := seed
+			for _, b := range []byte(str) {
+				hash = hash*33 + uintptr(b)
+			}
+			return hash
+		}
+
+		m := NewMapOf[string, int](WithKeyHasherUnsafe(unsafeStringHasher, ShiftDistribution))
+
+		// Test with random-like string keys
+		keys := []string{"apple", "banana", "cherry", "date", "elderberry"}
+		for i, key := range keys {
+			m.Store(key, i*10)
+		}
+
+		// Verify all values
+		for i, key := range keys {
+			expected := i * 10
+			if val, ok := m.Load(key); !ok || val != expected {
+				t.Errorf("Expected %s=%d, got %d, exists=%v", key, expected, val, ok)
+			}
+		}
+	})
+
+	t.Run("UnsafeHasherWithCollisions", func(t *testing.T) {
+		// Intentionally bad hasher that causes collisions
+		badHasher := func(ptr unsafe.Pointer, seed uintptr) uintptr {
+			return 42 // Always return the same hash
+		}
+
+		m := NewMapOf[string, int](WithKeyHasherUnsafe(badHasher))
+
+		// Store multiple values that will all hash to the same value
+		testData := map[string]int{
+			"key1": 100,
+			"key2": 200,
+			"key3": 300,
+			"key4": 400,
+		}
+
+		for key, val := range testData {
+			m.Store(key, val)
+		}
+
+		// Verify all values can still be retrieved correctly
+		for key, expected := range testData {
+			if val, ok := m.Load(key); !ok || val != expected {
+				t.Errorf("Expected %s=%d, got %d, exists=%v", key, expected, val, ok)
+			}
+		}
+	})
+
+	t.Run("UnsafeHasherNilFunction", func(t *testing.T) {
+		// Test with nil hasher (should use default)
+		m := NewMapOf[string, int](WithKeyHasherUnsafe(nil))
+
+		m.Store("test", 42)
+		if val, ok := m.Load("test"); !ok || val != 42 {
+			t.Errorf("Expected test=42, got %d, exists=%v", val, ok)
+		}
+	})
+
+	t.Run("UnsafeHasherStructKeys", func(t *testing.T) {
+		type TestStruct struct {
+			ID   int
+			Name string
+		}
+
+		// Custom unsafe hasher for struct
+		structHasher := func(ptr unsafe.Pointer, seed uintptr) uintptr {
+			s := *(*TestStruct)(ptr)
+			return uintptr(s.ID)*31 + uintptr(len(s.Name)) + seed
+		}
+
+		m := NewMapOf[TestStruct, string](WithKeyHasherUnsafe(structHasher))
+
+		key1 := TestStruct{ID: 1, Name: "Alice"}
+		key2 := TestStruct{ID: 2, Name: "Bob"}
+
+		m.Store(key1, "value1")
+		m.Store(key2, "value2")
+
+		if val, ok := m.Load(key1); !ok || val != "value1" {
+			t.Errorf("Expected key1=value1, got %s, exists=%v", val, ok)
+		}
+		if val, ok := m.Load(key2); !ok || val != "value2" {
+			t.Errorf("Expected key2=value2, got %s, exists=%v", val, ok)
+		}
+	})
+}
+
+// TestMapOfWithValueEqualUnsafe tests the WithValueEqualUnsafe function
+func TestMapOfWithValueEqualUnsafe(t *testing.T) {
+	t.Run("BasicUnsafeValueEqual", func(t *testing.T) {
+		type TestValue struct {
+			ID   int
+			Name string
+		}
+
+		// Custom unsafe equality function that only compares ID
+		unsafeEqual := func(ptr1, ptr2 unsafe.Pointer) bool {
+			val1 := *(*TestValue)(ptr1)
+			val2 := *(*TestValue)(ptr2)
+			return val1.ID == val2.ID
+		}
+
+		m := NewMapOf[string, TestValue](WithValueEqualUnsafe(unsafeEqual))
+
+		val1 := TestValue{ID: 1, Name: "Alice"}
+		val2 := TestValue{ID: 1, Name: "Bob"} // Same ID, different name
+		val3 := TestValue{ID: 2, Name: "Charlie"}
+
+		m.Store("key1", val1)
+
+		// CompareAndSwap should succeed because IDs match (1 == 1)
+		if !m.CompareAndSwap("key1", val2, val3) {
+			t.Error("CompareAndSwap should succeed with custom equality (same ID)")
+		}
+
+		// Verify the value was swapped
+		if result, ok := m.Load("key1"); !ok || result.ID != 2 {
+			t.Errorf("Expected ID=2 after swap, got ID=%d, exists=%v", result.ID, ok)
+		}
+	})
+
+	t.Run("UnsafeValueEqualWithCompareAndDelete", func(t *testing.T) {
+		type TestValue struct {
+			Score int
+			Extra string
+		}
+
+		// Custom unsafe equality that only compares Score
+		unsafeEqual := func(ptr1, ptr2 unsafe.Pointer) bool {
+			val1 := *(*TestValue)(ptr1)
+			val2 := *(*TestValue)(ptr2)
+			return val1.Score == val2.Score
+		}
+
+		m := NewMapOf[string, TestValue](WithValueEqualUnsafe(unsafeEqual))
+
+		stored := TestValue{Score: 100, Extra: "original"}
+		compare := TestValue{Score: 100, Extra: "different"} // Same score, different extra
+
+		m.Store("test", stored)
+
+		// CompareAndDelete should succeed because scores match
+		if !m.CompareAndDelete("test", compare) {
+			t.Error("CompareAndDelete should succeed with custom equality (same score)")
+		}
+
+		// Verify the key was deleted
+		if _, ok := m.Load("test"); ok {
+			t.Error("Key should be deleted after CompareAndDelete")
+		}
+	})
+
+	t.Run("UnsafeValueEqualSliceComparison", func(t *testing.T) {
+		// Custom unsafe equality for slice comparison
+		unsafeSliceEqual := func(ptr1, ptr2 unsafe.Pointer) bool {
+			slice1 := *(*[]int)(ptr1)
+			slice2 := *(*[]int)(ptr2)
+
+			if len(slice1) != len(slice2) {
+				return false
+			}
+
+			for i := range slice1 {
+				if slice1[i] != slice2[i] {
+					return false
+				}
+			}
+			return true
+		}
+
+		m := NewMapOf[string, []int](WithValueEqualUnsafe(unsafeSliceEqual))
+
+		slice1 := []int{1, 2, 3}
+		slice2 := []int{1, 2, 3} // Same content, different slice
+		slice3 := []int{4, 5, 6}
+
+		m.Store("key", slice1)
+
+		// CompareAndSwap should succeed because slice contents are equal
+		if !m.CompareAndSwap("key", slice2, slice3) {
+			t.Error("CompareAndSwap should succeed with custom slice equality")
+		}
+
+		// Verify the value was swapped
+		if result, ok := m.Load("key"); !ok || len(result) != 3 || result[0] != 4 {
+			t.Errorf("Expected [4,5,6] after swap, got %v, exists=%v", result, ok)
+		}
+	})
+
+	t.Run("UnsafeValueEqualFloatTolerance", func(t *testing.T) {
+		// Custom unsafe equality for float comparison with tolerance
+		const tolerance = 0.001
+		unsafeFloatEqual := func(ptr1, ptr2 unsafe.Pointer) bool {
+			val1 := *(*float64)(ptr1)
+			val2 := *(*float64)(ptr2)
+			diff := val1 - val2
+			if diff < 0 {
+				diff = -diff
+			}
+			return diff < tolerance
+		}
+
+		m := NewMapOf[string, float64](WithValueEqualUnsafe(unsafeFloatEqual))
+
+		m.Store("pi", 3.14159)
+
+		// These should be considered equal due to tolerance
+		closeValue := 3.14160 // Within tolerance
+		newValue := 2.71828
+
+		if !m.CompareAndSwap("pi", closeValue, newValue) {
+			t.Error("CompareAndSwap should succeed with float tolerance equality")
+		}
+
+		// Verify the value was swapped
+		if result, ok := m.Load("pi"); !ok || result != newValue {
+			t.Errorf("Expected %f after swap, got %f, exists=%v", newValue, result, ok)
+		}
+	})
+
+	t.Run("UnsafeValueEqualNilFunction", func(t *testing.T) {
+		// Test with nil equality function (should use default)
+		m := NewMapOf[string, int](WithValueEqualUnsafe(nil))
+
+		m.Store("test", 42)
+
+		// Should use default equality
+		if !m.CompareAndSwap("test", 42, 84) {
+			t.Error("CompareAndSwap should succeed with default equality")
+		}
+
+		if val, ok := m.Load("test"); !ok || val != 84 {
+			t.Errorf("Expected test=84, got %d, exists=%v", val, ok)
+		}
+	})
+
+	t.Run("UnsafeValueEqualCaseInsensitiveString", func(t *testing.T) {
+		// Custom unsafe equality for case-insensitive string comparison
+		unsafeCaseInsensitiveEqual := func(ptr1, ptr2 unsafe.Pointer) bool {
+			str1 := *(*string)(ptr1)
+			str2 := *(*string)(ptr2)
+			return strings.EqualFold(str1, str2)
+		}
+
+		m := NewMapOf[int, string](WithValueEqualUnsafe(unsafeCaseInsensitiveEqual))
+
+		m.Store(1, "Hello")
+
+		// Should match despite different case
+		if !m.CompareAndSwap(1, "HELLO", "World") {
+			t.Error("CompareAndSwap should succeed with case-insensitive equality")
+		}
+
+		if val, ok := m.Load(1); !ok || val != "World" {
+			t.Errorf("Expected 1=World, got %s, exists=%v", val, ok)
+		}
+	})
+
+	t.Run("UnsafeValueEqualComplexStruct", func(t *testing.T) {
+		type ComplexValue struct {
+			Primary   int
+			Secondary string
+			Metadata  map[string]interface{}
+		}
+
+		// Custom unsafe equality that only compares Primary field
+		unsafeComplexEqual := func(ptr1, ptr2 unsafe.Pointer) bool {
+			val1 := *(*ComplexValue)(ptr1)
+			val2 := *(*ComplexValue)(ptr2)
+			return val1.Primary == val2.Primary
+		}
+
+		m := NewMapOf[string, ComplexValue](WithValueEqualUnsafe(unsafeComplexEqual))
+
+		val1 := ComplexValue{
+			Primary:   100,
+			Secondary: "original",
+			Metadata:  map[string]interface{}{"key": "value1"},
+		}
+
+		val2 := ComplexValue{
+			Primary:   100, // Same primary
+			Secondary: "different",
+			Metadata:  map[string]interface{}{"key": "value2"},
+		}
+
+		val3 := ComplexValue{
+			Primary:   200,
+			Secondary: "new",
+			Metadata:  map[string]interface{}{"key": "value3"},
+		}
+
+		m.Store("complex", val1)
+
+		// Should succeed because Primary fields match
+		if !m.CompareAndSwap("complex", val2, val3) {
+			t.Error("CompareAndSwap should succeed with custom complex equality")
+		}
+
+		// Verify the value was swapped
+		if result, ok := m.Load("complex"); !ok || result.Primary != 200 {
+			t.Errorf("Expected Primary=200 after swap, got Primary=%d, exists=%v", result.Primary, ok)
+		}
+	})
+}
+
+// TestMapOfWithBuiltInHasher tests the WithBuiltInHasher function
+func TestMapOfWithBuiltInHasher(t *testing.T) {
+	t.Run("BasicBuiltInHasher", func(t *testing.T) {
+		// Test with built-in hasher for string keys
+		m := NewMapOf[string, int](WithBuiltInHasher[string]())
+
+		// Basic operations should work normally
+		m.Store("hello", 100)
+		m.Store("world", 200)
+
+		if val, ok := m.Load("hello"); !ok || val != 100 {
+			t.Errorf("Expected hello=100, got %d, exists=%v", val, ok)
+		}
+
+		if val, ok := m.Load("world"); !ok || val != 200 {
+			t.Errorf("Expected world=200, got %d, exists=%v", val, ok)
+		}
+
+		// Test Range functionality
+		count := 0
+		m.Range(func(key string, value int) bool {
+			count++
+			return true
+		})
+
+		if count != 2 {
+			t.Errorf("Expected 2 items in range, got %d", count)
+		}
+	})
+
+	t.Run("BuiltInHasherWithIntKeys", func(t *testing.T) {
+		// Test with built-in hasher for int keys
+		m := NewMapOf[int, string](WithBuiltInHasher[int]())
+
+		// Test with various int values
+		testData := map[int]string{
+			0:          "zero",
+			1:          "one",
+			-1:         "negative one",
+			1000000:    "million",
+			-1000000:   "negative million",
+			2147483647: "max int32",
+		}
+
+		// Store all test data
+		for k, v := range testData {
+			m.Store(k, v)
+		}
+
+		// Verify all data can be retrieved
+		for k, expected := range testData {
+			if val, ok := m.Load(k); !ok || val != expected {
+				t.Errorf("Expected %d=%s, got %s, exists=%v", k, expected, val, ok)
+			}
+		}
+
+		// Test deletion
+		m.Delete(0)
+
+		if _, ok := m.Load(0); ok {
+			t.Error("Key 0 should be deleted")
+		}
+	})
+
+	t.Run("BuiltInHasherWithStructKeys", func(t *testing.T) {
+		type TestKey struct {
+			ID   int
+			Name string
+		}
+
+		// Test with built-in hasher for struct keys
+		m := NewMapOf[TestKey, string](WithBuiltInHasher[TestKey]())
+
+		key1 := TestKey{ID: 1, Name: "Alice"}
+		key2 := TestKey{ID: 2, Name: "Bob"}
+		key3 := TestKey{ID: 1, Name: "Alice"} // Same as key1
+
+		m.Store(key1, "value1")
+		m.Store(key2, "value2")
+
+		// key3 should match key1 (same struct values)
+		if val, ok := m.Load(key3); !ok || val != "value1" {
+			t.Errorf("Expected key3 to match key1, got %s, exists=%v", val, ok)
+		}
+
+		// Test LoadOrStore
+		if val, loaded := m.LoadOrStore(key1, "new_value"); loaded != true || val != "value1" {
+			t.Errorf("LoadOrStore should return existing value, got %s, loaded=%v", val, loaded)
+		}
+
+		newKey := TestKey{ID: 3, Name: "Charlie"}
+		if val, loaded := m.LoadOrStore(newKey, "value3"); loaded != false || val != "value3" {
+			t.Errorf("LoadOrStore should store new value, got %s, loaded=%v", val, loaded)
+		}
+	})
+
+	t.Run("BuiltInHasherWithFloat64Keys", func(t *testing.T) {
+		// Test with built-in hasher for float64 keys
+		m := NewMapOf[float64, string](WithBuiltInHasher[float64]())
+
+		testFloats := map[float64]string{
+			1.0:     "one",
+			-1.0:    "negative one",
+			3.14159: "pi",
+			2.71828: "e",
+		}
+
+		// Handle 0.0 and -0.0 separately since they're the same key in Go maps
+		m.Store(0.0, "zero")
+		m.Store(-0.0, "negative zero") // This will overwrite "zero"
+
+		// Store all test data
+		for k, v := range testFloats {
+			m.Store(k, v)
+		}
+
+		// Verify all data can be retrieved
+		for k, expected := range testFloats {
+			if val, ok := m.Load(k); !ok || val != expected {
+				t.Errorf("Expected %f=%s, got %s, exists=%v", k, expected, val, ok)
+			}
+		}
+
+		// Test that NaN handling works (NaN != NaN)
+		nan1 := math.NaN()
+		nan2 := math.NaN()
+
+		m.Store(nan1, "nan1")
+
+		// Different NaN values should not match
+		if val, ok := m.Load(nan2); ok {
+			t.Errorf("Different NaN values should not match, got %s", val)
+		}
+	})
+
+	t.Run("BuiltInHasherWithStringKeys", func(t *testing.T) {
+		// Test with built-in hasher for string keys with various lengths
+		m := NewMapOf[string, int](WithBuiltInHasher[string]())
+
+		testStrings := []string{
+			"",                                    // empty string
+			"a",                                   // single char
+			"hello",                               // short string
+			"this is a longer string for testing", // long string
+			"unicode: 你好世界",                   // unicode string
+		}
+
+		// Store test data
+		for i, s := range testStrings {
+			m.Store(s, i)
+		}
+
+		// Verify all data can be retrieved
+		for i, s := range testStrings {
+			if val, ok := m.Load(s); !ok || val != i {
+				t.Errorf("Expected %s=%d, got %d, exists=%v", s, i, val, ok)
+			}
+		}
+	})
+
+	t.Run("BuiltInHasherPerformanceComparison", func(t *testing.T) {
+		// Compare built-in hasher with default hasher performance
+		const numItems = 1000
+
+		// Map with built-in hasher
+		m1 := NewMapOf[string, int](WithBuiltInHasher[string]())
+
+		// Map with default hasher (no explicit hasher)
+		m2 := NewMapOf[string, int]()
+
+		// Generate test data
+		keys := make([]string, numItems)
+		for i := 0; i < numItems; i++ {
+			keys[i] = fmt.Sprintf("key_%d_%s", i, strings.Repeat("x", i%10))
+		}
+
+		// Test both maps with same data
+		for i, key := range keys {
+			m1.Store(key, i)
+			m2.Store(key, i)
+		}
+
+		// Verify both maps have same data
+		for i, key := range keys {
+			val1, ok1 := m1.Load(key)
+			val2, ok2 := m2.Load(key)
+
+			if !ok1 || !ok2 || val1 != val2 || val1 != i {
+				t.Errorf("Mismatch for key %s: m1(%d,%v) vs m2(%d,%v), expected %d",
+					key, val1, ok1, val2, ok2, i)
+			}
+		}
+	})
+
+	t.Run("BuiltInHasherWithComplexKeys", func(t *testing.T) {
+		type ComplexKey struct {
+			ID       int64
+			Category string
+			Active   bool
+			Score    float64
+		}
+
+		// Test with built-in hasher for complex struct keys
+		m := NewMapOf[ComplexKey, string](WithBuiltInHasher[ComplexKey]())
+
+		key1 := ComplexKey{ID: 12345, Category: "premium", Active: true, Score: 95.5}
+		key2 := ComplexKey{ID: 67890, Category: "basic", Active: false, Score: 72.3}
+		key3 := ComplexKey{ID: 12345, Category: "premium", Active: true, Score: 95.5} // Same as key1
+
+		m.Store(key1, "premium_user")
+		m.Store(key2, "basic_user")
+
+		// key3 should match key1
+		if val, ok := m.Load(key3); !ok || val != "premium_user" {
+			t.Errorf("Expected key3 to match key1, got %s, exists=%v", val, ok)
+		}
+
+		// Test CompareAndSwap
+		if !m.CompareAndSwap(key1, "premium_user", "upgraded_user") {
+			t.Error("CompareAndSwap should succeed")
+		}
+
+		if val, ok := m.Load(key1); !ok || val != "upgraded_user" {
+			t.Errorf("Expected upgraded_user after CompareAndSwap, got %s, exists=%v", val, ok)
+		}
+	})
+
+	t.Run("BuiltInHasherConsistency", func(t *testing.T) {
+		// Test that built-in hasher produces consistent results across multiple maps
+		m1 := NewMapOf[string, int](WithBuiltInHasher[string]())
+		m2 := NewMapOf[string, int](WithBuiltInHasher[string]())
+
+		testKeys := []string{"test", "hello", "world", "golang", "mapof"}
+
+		// Store same data in both maps
+		for i, key := range testKeys {
+			m1.Store(key, i)
+			m2.Store(key, i)
+		}
+
+		// Both maps should behave identically
+		for i, key := range testKeys {
+			val1, ok1 := m1.Load(key)
+			val2, ok2 := m2.Load(key)
+
+			if ok1 != ok2 || val1 != val2 || val1 != i {
+				t.Errorf("Inconsistent behavior for key %s: m1(%d,%v) vs m2(%d,%v), expected %d",
+					key, val1, ok1, val2, ok2, i)
+			}
+		}
+
+		// Test deletion consistency
+		for _, key := range testKeys[:2] {
+			m1.Delete(key)
+			m2.Delete(key)
+
+			// Verify both keys are deleted
+			_, ok1 := m1.Load(key)
+			_, ok2 := m2.Load(key)
+
+			if ok1 != ok2 {
+				t.Errorf("Inconsistent deletion for key %s: m1_exists=%v vs m2_exists=%v", key, ok1, ok2)
+			}
+		}
+	})
+}
+
 // Test types for interface testing
 type CustomKey struct {
 	ID   int64
@@ -1061,7 +1692,7 @@ func TestMapOf_Interfaces(t *testing.T) {
 		val2 := SmartValue{
 			Value:   100,
 			Ignored: "ignore2",
-		} // same Value, different Ignored
+		}                                                  // same Value, different Ignored
 		val3 := SmartValue{Value: 200, Ignored: "ignore1"} // different Value
 
 		m.Store(key, val1)
@@ -1198,7 +1829,7 @@ func testMapOf(t *testing.T, newMap func() *MapOf[string, int]) {
 					defer wg.Done()
 
 					for _, s := range testData {
-						// Try a couple things to interfere with the clear.
+						// Try a couple of things to interfere with the clear.
 						expectNotDeletedMapOf(
 							t,
 							s,
@@ -3167,7 +3798,7 @@ func TestMapOfStoreThenParallelDelete_DoesNotShrinkBelowMinLen(
 	//<-cdone
 	m.Shrink()
 	stats := m.Stats()
-	if stats.RootBuckets != DefaultMinMapTableLen {
+	if stats.RootBuckets != minTableLen {
 		t.Fatalf(
 			"table length was different from the minimum: %d",
 			stats.RootBuckets,
@@ -3247,20 +3878,20 @@ func TestMapOfClear(t *testing.T) {
 	}
 }
 
-func assertMapOfCapacity[K comparable, V any](
-	t *testing.T,
-	m *MapOf[K, V],
-	expectedCap int,
-) {
-	stats := m.Stats()
-	if stats.Capacity != expectedCap {
-		t.Fatalf(
-			"capacity was different from %d: %d",
-			expectedCap,
-			stats.Capacity,
-		)
-	}
-}
+//func assertMapOfCapacity[K comparable, V any](
+//	t *testing.T,
+//	m *MapOf[K, V],
+//	expectedCap int,
+//) {
+//	stats := m.Stats()
+//	if stats.Capacity != expectedCap {
+//		t.Fatalf(
+//			"capacity was different from %d: %d",
+//			expectedCap,
+//			stats.Capacity,
+//		)
+//	}
+//}
 
 func TestNewMapOfPresized(t *testing.T) {
 	// assertMapOfCapacity(t, NewMapOf[string, string](),
@@ -3280,35 +3911,35 @@ func TestNewMapOfPresized(t *testing.T) {
 
 	var capacity, expectedCap int
 	capacity, expectedCap = NewMapOf[string, string]().Stats().
-		Capacity, DefaultMinMapOfTableCap
+		Capacity, defaultMinMapOfTableCap
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
 	capacity, expectedCap = NewMapOf[string, string](
 		WithPresize(0),
 	).Stats().
-		Capacity, DefaultMinMapOfTableCap
+		Capacity, defaultMinMapOfTableCap
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
 	capacity, expectedCap = NewMapOf[string, string](
 		WithPresize(0),
 	).Stats().
-		Capacity, DefaultMinMapOfTableCap
+		Capacity, defaultMinMapOfTableCap
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
 	capacity, expectedCap = NewMapOf[string, string](
 		WithPresize(-100),
 	).Stats().
-		Capacity, DefaultMinMapOfTableCap
+		Capacity, defaultMinMapOfTableCap
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
 	capacity, expectedCap = NewMapOf[string, string](
 		WithPresize(-100),
 	).Stats().
-		Capacity, DefaultMinMapOfTableCap
+		Capacity, defaultMinMapOfTableCap
 	if capacity != expectedCap {
 		t.Fatalf("capacity was different from %d: %d", expectedCap, capacity)
 	}
@@ -3452,7 +4083,7 @@ func TestMapOfResize(t *testing.T) {
 			expectedCapacity,
 		)
 	}
-	if stats.RootBuckets <= DefaultMinMapTableLen {
+	if stats.RootBuckets <= minTableLen {
 		t.Fatalf("table was too small: %d", stats.RootBuckets)
 	}
 	if stats.TotalGrowths == 0 {
@@ -3483,7 +4114,7 @@ func TestMapOfResize(t *testing.T) {
 			expectedCapacity,
 		)
 	}
-	if stats.RootBuckets != DefaultMinMapTableLen {
+	if stats.RootBuckets != minTableLen {
 		t.Logf("table was too large: %d", stats.RootBuckets)
 	}
 	if stats.TotalShrinks == 0 {
@@ -3572,7 +4203,7 @@ func parallelRandTypedResizer(
 
 func TestMapOfParallelResize(t *testing.T) {
 	const numIters = 1_000
-	const numEntries = 2 * entriesPerBucket * DefaultMinMapTableLen
+	const numEntries = 2 * entriesPerBucket * minTableLen
 	m := NewMapOf[string, int]()
 	cdone := make(chan bool)
 	go parallelRandTypedResizer(t, m, numIters, numEntries, cdone)
@@ -3929,7 +4560,7 @@ func parallelTypedUpdater(
 	cdone chan bool,
 ) {
 	for atomic.LoadInt64(stopFlag) != 1 {
-		sleepUs := int(rand.IntN(10))
+		sleepUs := rand.IntN(10)
 		if p, loaded := m.LoadOrStore(uint64(idx), &point{int32(idx), int32(idx)}); loaded {
 			t.Errorf("value was present for %d: %v", idx, p)
 		}
@@ -3963,7 +4594,7 @@ func TestMapOfStats(t *testing.T) {
 	m := NewMapOf[int, int]()
 
 	stats := m.Stats()
-	if stats.RootBuckets != DefaultMinMapTableLen {
+	if stats.RootBuckets != minTableLen {
 		t.Fatalf("unexpected number of root buckets: %s", stats.ToString())
 	}
 	if stats.TotalBuckets != stats.RootBuckets {
@@ -3972,7 +4603,7 @@ func TestMapOfStats(t *testing.T) {
 	if stats.EmptyBuckets != stats.RootBuckets {
 		t.Fatalf("unexpected number of empty buckets: %s", stats.ToString())
 	}
-	if stats.Capacity != entriesPerBucket*DefaultMinMapTableLen {
+	if stats.Capacity != entriesPerBucket*minTableLen {
 		t.Fatalf("unexpected capacity: %s", stats.ToString())
 	}
 	if stats.Size != 0 {
@@ -4088,8 +4719,8 @@ func benchmarkMapOfStringKeys(
 		storeThreshold := 10 * readPercentage
 		deleteThreshold := 10*readPercentage + ((1000 - 10*readPercentage) / 2)
 		for pb.Next() {
-			op := int(rand.Int() % 1000)
-			i := int(rand.Int() % benchmarkNumEntries)
+			op := rand.IntN(1000)
+			i := rand.IntN(benchmarkNumEntries)
 			if op >= deleteThreshold {
 				deleteFn(benchmarkKeys[i])
 			} else if op >= storeThreshold {
@@ -4223,8 +4854,8 @@ func benchmarkMapOfIntKeys(
 		storeThreshold := 10 * readPercentage
 		deleteThreshold := 10*readPercentage + ((1000 - 10*readPercentage) / 2)
 		for pb.Next() {
-			op := int(rand.IntN(1000))
-			i := int(rand.IntN(benchmarkNumEntries))
+			op := rand.IntN(1000)
+			i := rand.IntN(benchmarkNumEntries)
 			if op >= deleteThreshold {
 				deleteFn(i)
 			} else if op >= storeThreshold {
@@ -4258,7 +4889,7 @@ func runParallel(b *testing.B, benchFn func(pb *testing.PB)) {
 	b.ResetTimer()
 	start := time.Now()
 	b.RunParallel(benchFn)
-	opsPerSec := float64(b.N) / float64(time.Since(start).Seconds())
+	opsPerSec := float64(b.N) / time.Since(start).Seconds()
 	b.ReportMetric(opsPerSec, "ops/s")
 }
 
@@ -4267,16 +4898,8 @@ const (
 	benchmarkNumEntries = 1_000
 	// key prefix used in benchmarks
 	benchmarkKeyPrefix = "what_a_looooooooooooooooooooooong_key_prefix_"
-)
 
-const (
-	// entriesPerMapBucket     = 3
-	// EntriesPerMapBucket     = entriesPerMapBucket
-	EntriesPerMapOfBucket = entriesPerBucket
-	MapLoadFactor         = loadFactor
-	DefaultMinMapTableLen = minTableLen
-	// DefaultMinMapTableCap   = defaultMinMapTableLen * entriesPerMapBucket
-	DefaultMinMapOfTableCap = minTableLen * entriesPerBucket
+	defaultMinMapOfTableCap = minTableLen * entriesPerBucket
 )
 
 var benchmarkKeys []string
@@ -4749,7 +5372,7 @@ func TestMapOfBatchUpsert(t *testing.T) {
 	// Test with empty entries slice
 	t.Run("EmptyEntries", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		entries := []EntryOf[string, int]{}
+		var entries []EntryOf[string, int]
 
 		previous, loaded := m.BatchUpsert(entries)
 
@@ -4925,7 +5548,7 @@ func TestMapOfBatchInsert(t *testing.T) {
 	// Test with empty entries slice
 	t.Run("EmptyEntries", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		entries := []EntryOf[string, int]{}
+		var entries []EntryOf[string, int]
 
 		actual, loaded := m.BatchInsert(entries)
 
@@ -5114,7 +5737,7 @@ func TestMapOfBatchDelete(t *testing.T) {
 	// Test with empty keys slice
 	t.Run("EmptyKeys", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		keys := []string{}
+		var keys []string
 
 		previous, loaded := m.BatchDelete(keys)
 
@@ -5311,7 +5934,7 @@ func TestMapOfBatchUpdate(t *testing.T) {
 	// Test with empty entries slice
 	t.Run("EmptyEntries", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		entries := []EntryOf[string, int]{}
+		var entries []EntryOf[string, int]
 
 		previous, loaded := m.BatchUpdate(entries)
 
@@ -6182,8 +6805,6 @@ func TestMapOfGrowShrink_DataIntegrity(t *testing.T) {
 		)
 	}
 }
-
-// TestMapOfCompareAndSwap tests the CompareAndSwap function}
 
 // TestMapOfDefaultHasher tests the defaultHasher function with different key
 // types
