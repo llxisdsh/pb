@@ -892,6 +892,925 @@ func TestMapOf(t *testing.T) {
 	})
 }
 
+// TestMapOf_BatchProcessImmutableEntries tests the BatchProcessImmutableEntries method
+func TestMapOf_BatchProcessImmutableEntries(t *testing.T) {
+	m := NewMapOf[string, int]()
+
+	// Setup initial data
+	m.Store("existing1", 10)
+	m.Store("existing2", 20)
+
+	// Create immutable entries to process
+	immutableEntries := []*EntryOf[string, int]{
+		{Key: "existing1", Value: 100}, // Update existing
+		{Key: "existing2", Value: 200}, // Update existing
+		{Key: "new1", Value: 300},      // Insert new
+		{Key: "new2", Value: 400},      // Insert new
+	}
+
+	// Process entries with a function that doubles values if key exists, otherwise inserts as-is
+	values, status := m.BatchProcessImmutableEntries(
+		immutableEntries,
+		1.0, // growFactor
+		func(entry *EntryOf[string, int], loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
+			if loaded != nil {
+				// Key exists, double the new value and return old value
+				newValue := entry.Value * 2
+				return &EntryOf[string, int]{Key: entry.Key, Value: newValue}, loaded.Value, true
+			} else {
+				// Key doesn't exist, insert new value
+				return &EntryOf[string, int]{Key: entry.Key, Value: entry.Value}, entry.Value, false
+			}
+		},
+	)
+
+	// Verify results
+	if len(values) != 4 || len(status) != 4 {
+		t.Fatalf("Expected 4 results, got values: %d, status: %d", len(values), len(status))
+	}
+
+	// Check returned values (should be old values for existing keys, new values for new keys)
+	expectedValues := []int{10, 20, 300, 400}
+	expectedStatus := []bool{true, true, false, false}
+
+	for i := 0; i < 4; i++ {
+		if values[i] != expectedValues[i] {
+			t.Errorf("values[%d]: expected %d, got %d", i, expectedValues[i], values[i])
+		}
+		if status[i] != expectedStatus[i] {
+			t.Errorf("status[%d]: expected %v, got %v", i, expectedStatus[i], status[i])
+		}
+	}
+
+	// Verify final map state
+	expectedFinalValues := map[string]int{
+		"existing1": 200, // 100 * 2
+		"existing2": 400, // 200 * 2
+		"new1":      300,
+		"new2":      400,
+	}
+
+	for key, expectedValue := range expectedFinalValues {
+		if value, ok := m.Load(key); !ok || value != expectedValue {
+			t.Errorf("Final state: key %s expected %d, got %d (exists: %v)", key, expectedValue, value, ok)
+		}
+	}
+}
+
+// TestMapOf_BatchProcessEntries tests the BatchProcessEntries method
+func TestMapOf_BatchProcessEntries(t *testing.T) {
+	m := NewMapOf[string, int]()
+
+	// Setup initial data
+	m.Store("key1", 5)
+	m.Store("key2", 15)
+
+	// Create entries to process
+	entries := []EntryOf[string, int]{
+		{Key: "key1", Value: 50}, // Update existing
+		{Key: "key2", Value: 60}, // Update existing
+		{Key: "key3", Value: 70}, // Insert new
+		{Key: "key4", Value: 80}, // Insert new
+	}
+
+	// Process entries with a function that adds 100 to the value if key exists
+	values, status := m.BatchProcessEntries(
+		entries,
+		1.0, // growFactor
+		func(entry *EntryOf[string, int], loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
+			if loaded != nil {
+				// Key exists, add 100 to entry value and return old value
+				newValue := entry.Value + 100
+				return &EntryOf[string, int]{Key: entry.Key, Value: newValue}, loaded.Value, true
+			} else {
+				// Key doesn't exist, insert entry value as-is
+				return &EntryOf[string, int]{Key: entry.Key, Value: entry.Value}, entry.Value, false
+			}
+		},
+	)
+
+	// Verify results
+	if len(values) != 4 || len(status) != 4 {
+		t.Fatalf("Expected 4 results, got values: %d, status: %d", len(values), len(status))
+	}
+
+	// Check returned values
+	expectedValues := []int{5, 15, 70, 80}
+	expectedStatus := []bool{true, true, false, false}
+
+	for i := 0; i < 4; i++ {
+		if values[i] != expectedValues[i] {
+			t.Errorf("values[%d]: expected %d, got %d", i, expectedValues[i], values[i])
+		}
+		if status[i] != expectedStatus[i] {
+			t.Errorf("status[%d]: expected %v, got %v", i, expectedStatus[i], status[i])
+		}
+	}
+
+	// Verify final map state
+	expectedFinalValues := map[string]int{
+		"key1": 150, // 50 + 100
+		"key2": 160, // 60 + 100
+		"key3": 70,
+		"key4": 80,
+	}
+
+	for key, expectedValue := range expectedFinalValues {
+		if value, ok := m.Load(key); !ok || value != expectedValue {
+			t.Errorf("Final state: key %s expected %d, got %d (exists: %v)", key, expectedValue, value, ok)
+		}
+	}
+}
+
+// TestMapOf_BatchProcessKeys tests the BatchProcessKeys method
+func TestMapOf_BatchProcessKeys(t *testing.T) {
+	m := NewMapOf[string, int]()
+
+	// Setup initial data
+	m.Store("alpha", 1)
+	m.Store("beta", 2)
+
+	// Keys to process
+	keys := []string{"alpha", "beta", "gamma", "delta"}
+
+	// Process keys with a function that multiplies by 10 if exists, sets to 999 if new
+	values, status := m.BatchProcessKeys(
+		keys,
+		1.0, // growFactor
+		func(key string, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
+			if loaded != nil {
+				// Key exists, multiply by 10 and return old value
+				newValue := loaded.Value * 10
+				return &EntryOf[string, int]{Key: key, Value: newValue}, loaded.Value, true
+			} else {
+				// Key doesn't exist, set to 999
+				return &EntryOf[string, int]{Key: key, Value: 999}, 999, false
+			}
+		},
+	)
+
+	// Verify results
+	if len(values) != 4 || len(status) != 4 {
+		t.Fatalf("Expected 4 results, got values: %d, status: %d", len(values), len(status))
+	}
+
+	// Check returned values
+	expectedValues := []int{1, 2, 999, 999}
+	expectedStatus := []bool{true, true, false, false}
+
+	for i := 0; i < 4; i++ {
+		if values[i] != expectedValues[i] {
+			t.Errorf("values[%d]: expected %d, got %d", i, expectedValues[i], values[i])
+		}
+		if status[i] != expectedStatus[i] {
+			t.Errorf("status[%d]: expected %v, got %v", i, expectedStatus[i], status[i])
+		}
+	}
+
+	// Verify final map state
+	expectedFinalValues := map[string]int{
+		"alpha": 10, // 1 * 10
+		"beta":  20, // 2 * 10
+		"gamma": 999,
+		"delta": 999,
+	}
+
+	for key, expectedValue := range expectedFinalValues {
+		if value, ok := m.Load(key); !ok || value != expectedValue {
+			t.Errorf("Final state: key %s expected %d, got %d (exists: %v)", key, expectedValue, value, ok)
+		}
+	}
+
+	// Test with empty keys slice
+	emptyValues, emptyStatus := m.BatchProcessKeys(
+		[]string{},
+		1.0,
+		func(key string, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
+			t.Error("Process function should not be called for empty keys")
+			return loaded, 0, false
+		},
+	)
+
+	if len(emptyValues) != 0 || len(emptyStatus) != 0 {
+		t.Errorf("Expected empty results for empty keys, got values: %d, status: %d", len(emptyValues), len(emptyStatus))
+	}
+}
+
+// TestMapOf_LoadOrProcessEntry tests the LoadOrProcessEntry method
+func TestMapOf_LoadOrProcessEntry(t *testing.T) {
+	m := NewMapOf[string, int]()
+
+	t.Run("LoadExistingKey", func(t *testing.T) {
+		// Store a key first
+		m.Store("existing", 42)
+
+		// LoadOrProcessEntry should return existing value without calling valueFn
+		called := false
+		value, loaded := m.LoadOrProcessEntry("existing", func() (*EntryOf[string, int], int, bool) {
+			called = true
+			return &EntryOf[string, int]{Value: 999}, 999, true
+		})
+
+		if called {
+			t.Error("valueFn should not be called for existing key")
+		}
+		if !loaded {
+			t.Error("loaded should be true for existing key")
+		}
+		if value != 42 {
+			t.Errorf("Expected value 42, got %d", value)
+		}
+	})
+
+	t.Run("ProcessNonExistentKey", func(t *testing.T) {
+		// LoadOrProcessEntry should call valueFn for non-existent key
+		called := false
+		value, loaded := m.LoadOrProcessEntry("new", func() (*EntryOf[string, int], int, bool) {
+			called = true
+			return &EntryOf[string, int]{Value: 100}, 100, true
+		})
+
+		if !called {
+			t.Error("valueFn should be called for non-existent key")
+		}
+		if !loaded {
+			t.Error("loaded should be true when valueFn returns true")
+		}
+		if value != 100 {
+			t.Errorf("Expected value 100, got %d", value)
+		}
+
+		// Verify the key was stored
+		if val, ok := m.Load("new"); !ok || val != 100 {
+			t.Errorf("Expected stored value 100, got %d (ok=%v)", val, ok)
+		}
+	})
+
+	t.Run("ProcessNonExistentKeyWithNilEntry", func(t *testing.T) {
+		// LoadOrProcessEntry with nil entry should not store anything
+		value, loaded := m.LoadOrProcessEntry("nil_entry", func() (*EntryOf[string, int], int, bool) {
+			return nil, 200, false
+		})
+
+		if loaded {
+			t.Error("loaded should be false when valueFn returns false")
+		}
+		if value != 200 {
+			t.Errorf("Expected value 200, got %d", value)
+		}
+
+		// Verify the key was not stored
+		if _, ok := m.Load("nil_entry"); ok {
+			t.Error("Key should not be stored when nil entry is returned")
+		}
+	})
+
+	t.Run("ConcurrentAccess", func(t *testing.T) {
+		const numGoroutines = 10
+		const numOperations = 100
+		var wg sync.WaitGroup
+
+		for i := 0; i < numGoroutines; i++ {
+			wg.Add(1)
+			go func(id int) {
+				defer wg.Done()
+				for j := 0; j < numOperations; j++ {
+					key := fmt.Sprintf("concurrent_%d_%d", id, j)
+					expectedValue := id*1000 + j
+
+					value, loaded := m.LoadOrProcessEntry(key, func() (*EntryOf[string, int], int, bool) {
+						return &EntryOf[string, int]{Value: expectedValue}, expectedValue, true
+					})
+
+					if !loaded {
+						t.Errorf("Expected loaded=true for key %s", key)
+					}
+					if value != expectedValue {
+						t.Errorf("Expected value %d for key %s, got %d", expectedValue, key, value)
+					}
+				}
+			}(i)
+		}
+
+		wg.Wait()
+
+		// Verify all keys were stored correctly
+		for i := 0; i < numGoroutines; i++ {
+			for j := 0; j < numOperations; j++ {
+				key := fmt.Sprintf("concurrent_%d_%d", i, j)
+				expectedValue := i*1000 + j
+
+				if val, ok := m.Load(key); !ok || val != expectedValue {
+					t.Errorf("Expected %s=%d, got %d (ok=%v)", key, expectedValue, val, ok)
+				}
+			}
+		}
+	})
+}
+
+// TestMapOf_RangeKeys tests the RangeKeys method
+func TestMapOf_RangeKeys(t *testing.T) {
+	m := NewMapOf[string, int]()
+
+	t.Run("EmptyMap", func(t *testing.T) {
+		keys := make([]string, 0)
+		m.RangeKeys(func(key string) bool {
+			keys = append(keys, key)
+			return true
+		})
+
+		if len(keys) != 0 {
+			t.Errorf("Expected 0 keys from empty map, got %d", len(keys))
+		}
+	})
+
+	t.Run("SingleKey", func(t *testing.T) {
+		m.Store("single", 42)
+
+		keys := make([]string, 0)
+		m.RangeKeys(func(key string) bool {
+			keys = append(keys, key)
+			return true
+		})
+
+		if len(keys) != 1 {
+			t.Errorf("Expected 1 key, got %d", len(keys))
+		}
+		if keys[0] != "single" {
+			t.Errorf("Expected key 'single', got '%s'", keys[0])
+		}
+	})
+
+	t.Run("MultipleKeys", func(t *testing.T) {
+		m.Clear()
+		expectedKeys := []string{"key1", "key2", "key3", "key4", "key5"}
+		for i, key := range expectedKeys {
+			m.Store(key, i)
+		}
+
+		keys := make([]string, 0)
+		m.RangeKeys(func(key string) bool {
+			keys = append(keys, key)
+			return true
+		})
+
+		if len(keys) != len(expectedKeys) {
+			t.Errorf("Expected %d keys, got %d", len(expectedKeys), len(keys))
+		}
+
+		// Convert to map for easier comparison (order is not guaranteed)
+		keyMap := make(map[string]bool)
+		for _, key := range keys {
+			keyMap[key] = true
+		}
+
+		for _, expectedKey := range expectedKeys {
+			if !keyMap[expectedKey] {
+				t.Errorf("Expected key '%s' not found in range", expectedKey)
+			}
+		}
+	})
+
+	t.Run("EarlyTermination", func(t *testing.T) {
+		m.Clear()
+		for i := 0; i < 10; i++ {
+			m.Store(fmt.Sprintf("key%d", i), i)
+		}
+
+		keys := make([]string, 0)
+		count := 0
+		m.RangeKeys(func(key string) bool {
+			keys = append(keys, key)
+			count++
+			return count < 3 // Stop after 3 keys
+		})
+
+		if len(keys) != 3 {
+			t.Errorf("Expected 3 keys due to early termination, got %d", len(keys))
+		}
+	})
+
+	t.Run("ConcurrentModification", func(t *testing.T) {
+		m.Clear()
+		// Store initial keys
+		for i := 0; i < 5; i++ {
+			m.Store(fmt.Sprintf("initial%d", i), i)
+		}
+
+		keys := make([]string, 0)
+		var mu sync.Mutex
+
+		// Start a goroutine that modifies the map during iteration
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			m.Store("concurrent", 999)
+			m.Delete("initial0")
+		}()
+
+		m.RangeKeys(func(key string) bool {
+			mu.Lock()
+			keys = append(keys, key)
+			mu.Unlock()
+			time.Sleep(5 * time.Millisecond) // Slow down iteration
+			return true
+		})
+
+		// Should have at least the initial keys (minus any deleted)
+		if len(keys) < 4 {
+			t.Errorf("Expected at least 4 keys, got %d", len(keys))
+		}
+	})
+
+	t.Run("LargeMap", func(t *testing.T) {
+		m.Clear()
+		const numKeys = 1000
+		expectedKeys := make(map[string]bool)
+
+		// Store many keys
+		for i := 0; i < numKeys; i++ {
+			key := fmt.Sprintf("large%d", i)
+			m.Store(key, i)
+			expectedKeys[key] = true
+		}
+
+		keys := make([]string, 0)
+		m.RangeKeys(func(key string) bool {
+			keys = append(keys, key)
+			return true
+		})
+
+		if len(keys) != numKeys {
+			t.Errorf("Expected %d keys, got %d", numKeys, len(keys))
+		}
+
+		// Verify all keys are present
+		for _, key := range keys {
+			if !expectedKeys[key] {
+				t.Errorf("Unexpected key '%s' found in range", key)
+			}
+		}
+	})
+}
+
+// TestMapOf_RangeValues tests the RangeValues method
+func TestMapOf_RangeValues(t *testing.T) {
+	m := NewMapOf[string, int]()
+
+	t.Run("EmptyMap", func(t *testing.T) {
+		values := make([]int, 0)
+		m.RangeValues(func(value int) bool {
+			values = append(values, value)
+			return true
+		})
+
+		if len(values) != 0 {
+			t.Errorf("Expected 0 values from empty map, got %d", len(values))
+		}
+	})
+
+	t.Run("SingleValue", func(t *testing.T) {
+		m.Store("single", 42)
+
+		values := make([]int, 0)
+		m.RangeValues(func(value int) bool {
+			values = append(values, value)
+			return true
+		})
+
+		if len(values) != 1 {
+			t.Errorf("Expected 1 value, got %d", len(values))
+		}
+		if values[0] != 42 {
+			t.Errorf("Expected value 42, got %d", values[0])
+		}
+	})
+
+	t.Run("MultipleValues", func(t *testing.T) {
+		m.Clear()
+		expectedValues := []int{10, 20, 30, 40, 50}
+		for i, value := range expectedValues {
+			m.Store(fmt.Sprintf("key%d", i), value)
+		}
+
+		values := make([]int, 0)
+		m.RangeValues(func(value int) bool {
+			values = append(values, value)
+			return true
+		})
+
+		if len(values) != len(expectedValues) {
+			t.Errorf("Expected %d values, got %d", len(expectedValues), len(values))
+		}
+
+		// Convert to map for easier comparison (order is not guaranteed)
+		valueMap := make(map[int]bool)
+		for _, value := range values {
+			valueMap[value] = true
+		}
+
+		for _, expectedValue := range expectedValues {
+			if !valueMap[expectedValue] {
+				t.Errorf("Expected value %d not found in range", expectedValue)
+			}
+		}
+	})
+
+	t.Run("DuplicateValues", func(t *testing.T) {
+		m.Clear()
+		// Store multiple keys with the same value
+		m.Store("key1", 100)
+		m.Store("key2", 100)
+		m.Store("key3", 200)
+		m.Store("key4", 100)
+
+		values := make([]int, 0)
+		m.RangeValues(func(value int) bool {
+			values = append(values, value)
+			return true
+		})
+
+		if len(values) != 4 {
+			t.Errorf("Expected 4 values, got %d", len(values))
+		}
+
+		// Count occurrences
+		count100 := 0
+		count200 := 0
+		for _, value := range values {
+			if value == 100 {
+				count100++
+			} else if value == 200 {
+				count200++
+			}
+		}
+
+		if count100 != 3 {
+			t.Errorf("Expected 3 occurrences of value 100, got %d", count100)
+		}
+		if count200 != 1 {
+			t.Errorf("Expected 1 occurrence of value 200, got %d", count200)
+		}
+	})
+
+	t.Run("EarlyTermination", func(t *testing.T) {
+		m.Clear()
+		for i := 0; i < 10; i++ {
+			m.Store(fmt.Sprintf("key%d", i), i*10)
+		}
+
+		values := make([]int, 0)
+		count := 0
+		m.RangeValues(func(value int) bool {
+			values = append(values, value)
+			count++
+			return count < 3 // Stop after 3 values
+		})
+
+		if len(values) != 3 {
+			t.Errorf("Expected 3 values due to early termination, got %d", len(values))
+		}
+	})
+
+	t.Run("ConcurrentModification", func(t *testing.T) {
+		m.Clear()
+		// Store initial values
+		for i := 0; i < 5; i++ {
+			m.Store(fmt.Sprintf("initial%d", i), i*100)
+		}
+
+		values := make([]int, 0)
+		var mu sync.Mutex
+
+		// Start a goroutine that modifies the map during iteration
+		go func() {
+			time.Sleep(10 * time.Millisecond)
+			m.Store("concurrent", 999)
+			m.Delete("initial0")
+		}()
+
+		m.RangeValues(func(value int) bool {
+			mu.Lock()
+			values = append(values, value)
+			mu.Unlock()
+			time.Sleep(5 * time.Millisecond) // Slow down iteration
+			return true
+		})
+
+		// Should have at least the initial values (minus any deleted)
+		if len(values) < 4 {
+			t.Errorf("Expected at least 4 values, got %d", len(values))
+		}
+	})
+
+	t.Run("LargeMap", func(t *testing.T) {
+		m.Clear()
+		const numValues = 1000
+		expectedValues := make(map[int]bool)
+
+		// Store many values
+		for i := 0; i < numValues; i++ {
+			value := i * 2 // Even numbers
+			m.Store(fmt.Sprintf("large%d", i), value)
+			expectedValues[value] = true
+		}
+
+		values := make([]int, 0)
+		m.RangeValues(func(value int) bool {
+			values = append(values, value)
+			return true
+		})
+
+		if len(values) != numValues {
+			t.Errorf("Expected %d values, got %d", numValues, len(values))
+		}
+
+		// Verify all values are present
+		for _, value := range values {
+			if !expectedValues[value] {
+				t.Errorf("Unexpected value %d found in range", value)
+			}
+		}
+	})
+
+	t.Run("ZeroValues", func(t *testing.T) {
+		m.Clear()
+		// Test with zero values
+		m.Store("zero1", 0)
+		m.Store("zero2", 0)
+		m.Store("nonzero", 42)
+
+		values := make([]int, 0)
+		m.RangeValues(func(value int) bool {
+			values = append(values, value)
+			return true
+		})
+
+		if len(values) != 3 {
+			t.Errorf("Expected 3 values, got %d", len(values))
+		}
+
+		zeroCount := 0
+		nonZeroCount := 0
+		for _, value := range values {
+			if value == 0 {
+				zeroCount++
+			} else if value == 42 {
+				nonZeroCount++
+			}
+		}
+
+		if zeroCount != 2 {
+			t.Errorf("Expected 2 zero values, got %d", zeroCount)
+		}
+		if nonZeroCount != 1 {
+			t.Errorf("Expected 1 non-zero value, got %d", nonZeroCount)
+		}
+	})
+}
+
+// TestMapOf_HasKey tests the HasKey method
+func TestMapOf_HasKey(t *testing.T) {
+	m := NewMapOf[string, int]()
+
+	t.Run("EmptyMap", func(t *testing.T) {
+		if m.HasKey("nonexistent") {
+			t.Error("Expected HasKey to return false for empty map")
+		}
+	})
+
+	t.Run("ExistingKey", func(t *testing.T) {
+		m.Store("existing", 42)
+
+		if !m.HasKey("existing") {
+			t.Error("Expected HasKey to return true for existing key")
+		}
+	})
+
+	t.Run("NonExistingKey", func(t *testing.T) {
+		if m.HasKey("nonexistent") {
+			t.Error("Expected HasKey to return false for non-existing key")
+		}
+	})
+
+	t.Run("DeletedKey", func(t *testing.T) {
+		m.Store("toDelete", 100)
+		if !m.HasKey("toDelete") {
+			t.Error("Expected HasKey to return true before deletion")
+		}
+
+		m.Delete("toDelete")
+		if m.HasKey("toDelete") {
+			t.Error("Expected HasKey to return false after deletion")
+		}
+	})
+
+	t.Run("ZeroValue", func(t *testing.T) {
+		m.Store("zero", 0)
+
+		if !m.HasKey("zero") {
+			t.Error("Expected HasKey to return true for key with zero value")
+		}
+	})
+
+	t.Run("MultipleKeys", func(t *testing.T) {
+		m.Clear()
+		keys := []string{"key1", "key2", "key3", "key4", "key5"}
+
+		// Store all keys
+		for i, key := range keys {
+			m.Store(key, i*10)
+		}
+
+		// Check all keys exist
+		for _, key := range keys {
+			if !m.HasKey(key) {
+				t.Errorf("Expected HasKey to return true for key %s", key)
+			}
+		}
+
+		// Check non-existing keys
+		nonExistingKeys := []string{"missing1", "missing2", "missing3"}
+		for _, key := range nonExistingKeys {
+			if m.HasKey(key) {
+				t.Errorf("Expected HasKey to return false for non-existing key %s", key)
+			}
+		}
+	})
+
+	t.Run("ConcurrentAccess", func(t *testing.T) {
+		m.Clear()
+		const numGoroutines = 10
+		const numOperations = 100
+
+		var wg sync.WaitGroup
+		wg.Add(numGoroutines)
+
+		// Start multiple goroutines that store and check keys
+		for i := 0; i < numGoroutines; i++ {
+			go func(id int) {
+				defer wg.Done()
+
+				for j := 0; j < numOperations; j++ {
+					key := fmt.Sprintf("concurrent_%d_%d", id, j)
+
+					// Store the key
+					m.Store(key, id*1000+j)
+
+					// Immediately check if it exists
+					if !m.HasKey(key) {
+						t.Errorf("Expected HasKey to return true for just stored key %s", key)
+					}
+
+					// Check some other keys
+					otherKey := fmt.Sprintf("concurrent_%d_%d", (id+1)%numGoroutines, j)
+					m.HasKey(otherKey) // Just call it, result may vary due to concurrency
+				}
+			}(i)
+		}
+
+		wg.Wait()
+	})
+
+	t.Run("LargeMap", func(t *testing.T) {
+		m.Clear()
+		const numKeys = 1000
+
+		// Store many keys
+		for i := 0; i < numKeys; i++ {
+			key := fmt.Sprintf("large_%d", i)
+			m.Store(key, i)
+		}
+
+		// Check all keys exist
+		for i := 0; i < numKeys; i++ {
+			key := fmt.Sprintf("large_%d", i)
+			if !m.HasKey(key) {
+				t.Errorf("Expected HasKey to return true for key %s", key)
+			}
+		}
+
+		// Check some non-existing keys
+		for i := numKeys; i < numKeys+100; i++ {
+			key := fmt.Sprintf("large_%d", i)
+			if m.HasKey(key) {
+				t.Errorf("Expected HasKey to return false for non-existing key %s", key)
+			}
+		}
+	})
+
+	t.Run("EmptyStringKey", func(t *testing.T) {
+		m.Clear()
+
+		// Test empty string as key
+		m.Store("", 999)
+		if !m.HasKey("") {
+			t.Error("Expected HasKey to return true for empty string key")
+		}
+	})
+
+	t.Run("SpecialCharacterKeys", func(t *testing.T) {
+		m.Clear()
+		specialKeys := []string{
+			"key with spaces",
+			"key\nwith\nnewlines",
+			"key\twith\ttabs",
+			"key-with-dashes",
+			"key_with_underscores",
+			"key.with.dots",
+			"key/with/slashes",
+			"key\\with\\backslashes",
+			"key@with@symbols",
+			"key#with#hash",
+			"key$with$dollar",
+			"key%with%percent",
+			"key^with^caret",
+			"key&with&ampersand",
+			"key*with*asterisk",
+			"key(with)parentheses",
+			"key[with]brackets",
+			"key{with}braces",
+			"key|with|pipes",
+			"key+with+plus",
+			"key=with=equals",
+			"key?with?question",
+			"key<with>angles",
+			"key\"with\"quotes",
+			"key'with'apostrophes",
+			"key`with`backticks",
+			"key~with~tildes",
+			"key!with!exclamation",
+		}
+
+		// Store all special keys
+		for i, key := range specialKeys {
+			m.Store(key, i)
+		}
+
+		// Check all special keys exist
+		for _, key := range specialKeys {
+			if !m.HasKey(key) {
+				t.Errorf("Expected HasKey to return true for special key: %q", key)
+			}
+		}
+	})
+
+	t.Run("UnicodeKeys", func(t *testing.T) {
+		m.Clear()
+		unicodeKeys := []string{
+			"键",
+			"клавиша",
+			"キー",
+			"مفتاح",
+			"🔑",
+			"🗝️",
+			"🔐",
+			"🔒",
+			"🔓",
+			"αβγδε",
+			"ñáéíóú",
+			"çğıöşü",
+		}
+
+		// Store all unicode keys
+		for i, key := range unicodeKeys {
+			m.Store(key, i)
+		}
+
+		// Check all unicode keys exist
+		for _, key := range unicodeKeys {
+			if !m.HasKey(key) {
+				t.Errorf("Expected HasKey to return true for unicode key: %q", key)
+			}
+		}
+	})
+
+	t.Run("StoreAndDeletePattern", func(t *testing.T) {
+		m.Clear()
+
+		// Pattern: store, check, delete, check
+		for i := 0; i < 100; i++ {
+			key := fmt.Sprintf("pattern_%d", i)
+
+			// Initially should not exist
+			if m.HasKey(key) {
+				t.Errorf("Expected HasKey to return false for key %s before storing", key)
+			}
+
+			// Store and check
+			m.Store(key, i)
+			if !m.HasKey(key) {
+				t.Errorf("Expected HasKey to return true for key %s after storing", key)
+			}
+
+			// Delete and check
+			m.Delete(key)
+			if m.HasKey(key) {
+				t.Errorf("Expected HasKey to return false for key %s after deletion", key)
+			}
+		}
+	})
+}
+
 // TestMapOfWithKeyHasherUnsafe tests the WithKeyHasherUnsafe function
 func TestMapOfWithKeyHasherUnsafe(t *testing.T) {
 	t.Run("BasicUnsafeHasher", func(t *testing.T) {
@@ -8105,6 +9024,477 @@ func TestMapOf_SetDefaultJSONMarshal(t *testing.T) {
 		}
 		if result["key"] != 123 {
 			t.Errorf("Expected key=123, got %d", result["key"])
+		}
+	})
+}
+
+func TestMapOf_HashUint64On32Bit(t *testing.T) {
+	val := uint64(0x123456789ABCDEF0)
+	hash := hashUint64On32Bit(unsafe.Pointer(&val), 0)
+	// The function XORs the lower 32 bits with the upper 32 bits
+	expected := uint32(0x9ABCDEF0) ^ uint32(0x12345678)
+	if uint32(hash) != expected {
+		t.Errorf("Expected hash %x, got %x", expected, hash)
+	}
+}
+
+func TestMapOf_UnlockWithMeta(t *testing.T) {
+	t.Run("MapOf", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+
+		// Get a bucket to test UnlockWithMeta
+		key := "test"
+		hash := m.keyHash(unsafe.Pointer(&key), m.seed)
+		table := (*mapOfTable)(atomic.LoadPointer(&m.table))
+		bucketIdx := int(hash) & table.mask
+		bucket := table.buckets.At(bucketIdx)
+
+		// Lock the bucket first
+		bucket.Lock()
+
+		// Test UnlockWithMeta with different meta values
+		testMetas := []uint64{
+			0,
+			0x123456789ABCDEF0,
+			^uint64(0), // max uint64
+		}
+
+		for _, meta := range testMetas {
+			bucket.UnlockWithMeta(meta)
+			// Verify the meta was set correctly (without lock bits)
+			storedMeta := atomic.LoadUint64(&bucket.meta)
+			expectedMeta := meta &^ opLockMask
+			if storedMeta != expectedMeta {
+				t.Errorf("UnlockWithMeta(%x): stored meta = %x, want %x", meta, storedMeta, expectedMeta)
+			}
+
+			// Lock again for next iteration
+			if meta != testMetas[len(testMetas)-1] {
+				bucket.Lock()
+			}
+		}
+	})
+
+	t.Run("FlatMapOf", func(t *testing.T) {
+		m := NewFlatMapOf[string, int]()
+
+		// Get a bucket to test UnlockWithMeta
+		key := "test"
+		hash := m.keyHash(unsafe.Pointer(&key), m.seed)
+		table := m.table.SeqLoad()
+		bucketIdx := int(hash) & table.mask
+		bucket := table.buckets.At(bucketIdx)
+
+		// Lock the bucket first
+		bucket.Lock()
+
+		// Test UnlockWithMeta with different meta values
+		testMetas := []uint64{
+			0,
+			0x123456789ABCDEF0,
+			^uint64(0), // max uint64
+		}
+
+		for _, meta := range testMetas {
+			bucket.UnlockWithMeta(meta)
+			// Verify the meta was set correctly (without lock bits)
+			storedMeta := bucket.meta.Load()
+			expectedMeta := meta &^ opLockMask
+			if storedMeta != expectedMeta {
+				t.Errorf("UnlockWithMeta(%x): stored meta = %x, want %x", meta, storedMeta, expectedMeta)
+			}
+
+			// Lock again for next iteration
+			if meta != testMetas[len(testMetas)-1] {
+				bucket.Lock()
+			}
+		}
+	})
+}
+
+func TestMapOf_EmbeddedHashOff(t *testing.T) {
+	// These functions are no-ops when mapof_opt_embeddedhash build tag is not set
+	// But we still need to call them to get coverage
+
+	t.Run("EntryOf", func(t *testing.T) {
+		var entry EntryOf[string, int]
+
+		// Test getHash - should return 0
+		hash := entry.getHash()
+		if hash != 0 {
+			t.Errorf("EntryOf.getHash() = %d, want 0", hash)
+		}
+
+		// Test setHash - should be a no-op
+		entry.setHash(0x12345678)
+		// Verify it's still 0 since setHash is a no-op
+		hash = entry.getHash()
+		if hash != 0 {
+			t.Errorf("After setHash, EntryOf.getHash() = %d, want 0", hash)
+		}
+	})
+}
+
+// TestDefaultHasherEdgeCases tests edge cases for defaultHasher to improve coverage
+func TestMapOf_DefaultHasherEdgeCases(t *testing.T) {
+	keyHash, _, _ := defaultHasher[string, int]()
+
+	// Test with empty string
+	emptyStr := ""
+	result1 := keyHash(unsafe.Pointer(&emptyStr), 0)
+	if result1 == 0 {
+		t.Logf("Hash for empty string: %x", result1)
+	}
+
+	// Test with different seeds
+	testStr := "test"
+	result2 := keyHash(unsafe.Pointer(&testStr), 12345)
+	result3 := keyHash(unsafe.Pointer(&testStr), 67890)
+	if result2 == result3 {
+		t.Errorf("Expected different hashes for different seeds")
+	}
+}
+
+func TestMapOf_IsZero(t *testing.T) {
+	t.Run("IsZero", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		if !m.IsZero() {
+			t.Errorf("New map should be zero")
+		}
+
+		m.Store("key", 1)
+		if m.IsZero() {
+			t.Errorf("Map with elements should not be zero")
+		}
+	})
+}
+
+func TestMapOf_GCAndWeakReferences(t *testing.T) {
+	// Force garbage collection to test weak reference cleanup paths
+	runtime.GC()
+	runtime.GC() // Call twice to ensure cleanup
+
+	// Test with maps that might trigger resize operations
+	m := NewMapOf[int, string]()
+
+	// Add many elements to trigger resize
+	for i := 0; i < 1000; i++ {
+		m.Store(i, "value")
+	}
+
+	// Force GC again
+	runtime.GC()
+
+	// Verify map still works
+	if val, ok := m.Load(500); !ok || val != "value" {
+		t.Errorf("Map should still work after GC")
+	}
+}
+
+// TestMapOf_LoadAndDelete tests the LoadAndDelete method comprehensively
+func TestMapOf_LoadAndDelete(t *testing.T) {
+	t.Run("LoadAndDelete_ExistingKey", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		
+		// Store a value
+		m.Store("key1", 100)
+		
+		// LoadAndDelete should return the value and true
+		value, loaded := m.LoadAndDelete("key1")
+		if !loaded || value != 100 {
+			t.Errorf("LoadAndDelete(key1) = (%v, %v), want (100, true)", value, loaded)
+		}
+		
+		// Key should no longer exist
+		if _, ok := m.Load("key1"); ok {
+			t.Error("Key should be deleted after LoadAndDelete")
+		}
+	})
+	
+	t.Run("LoadAndDelete_NonExistentKey", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		
+		// LoadAndDelete on non-existent key should return zero value and false
+		value, loaded := m.LoadAndDelete("nonexistent")
+		if loaded || value != 0 {
+			t.Errorf("LoadAndDelete(nonexistent) = (%v, %v), want (0, false)", value, loaded)
+		}
+	})
+	
+	t.Run("LoadAndDelete_MultipleKeys", func(t *testing.T) {
+		m := NewMapOf[int, string]()
+		
+		// Store multiple values
+		for i := 0; i < 10; i++ {
+			m.Store(i, fmt.Sprintf("value_%d", i))
+		}
+		
+		// Delete even keys using LoadAndDelete
+		for i := 0; i < 10; i += 2 {
+			expected := fmt.Sprintf("value_%d", i)
+			value, loaded := m.LoadAndDelete(i)
+			if !loaded || value != expected {
+				t.Errorf("LoadAndDelete(%d) = (%v, %v), want (%s, true)", i, value, loaded, expected)
+			}
+		}
+		
+		// Verify even keys are deleted and odd keys remain
+		for i := 0; i < 10; i++ {
+			value, ok := m.Load(i)
+			if i%2 == 0 {
+				// Even keys should be deleted
+				if ok {
+					t.Errorf("Key %d should be deleted, but found value %v", i, value)
+				}
+			} else {
+				// Odd keys should remain
+				expected := fmt.Sprintf("value_%d", i)
+				if !ok || value != expected {
+					t.Errorf("Key %d: expected (%s, true), got (%v, %v)", i, expected, value, ok)
+				}
+			}
+		}
+	})
+	
+	t.Run("LoadAndDelete_Concurrent", func(t *testing.T) {
+		m := NewMapOf[int, int]()
+		const numKeys = 1000
+		
+		// Store initial values
+		for i := 0; i < numKeys; i++ {
+			m.Store(i, i*10)
+		}
+		
+		var wg sync.WaitGroup
+		deletedKeys := make(map[int]bool)
+		var mu sync.Mutex
+		
+		// Concurrent LoadAndDelete operations
+		numWorkers := 10
+		keysPerWorker := numKeys / numWorkers
+		
+		for w := 0; w < numWorkers; w++ {
+			wg.Add(1)
+			go func(workerID int) {
+				defer wg.Done()
+				start := workerID * keysPerWorker
+				end := start + keysPerWorker
+				
+				for i := start; i < end; i++ {
+					value, loaded := m.LoadAndDelete(i)
+					if loaded {
+						expectedValue := i * 10
+						if value != expectedValue {
+							t.Errorf("Worker %d: LoadAndDelete(%d) = %v, want %v", workerID, i, value, expectedValue)
+						}
+						
+						mu.Lock()
+						deletedKeys[i] = true
+						mu.Unlock()
+					}
+				}
+			}(w)
+		}
+		
+		wg.Wait()
+		
+		// Verify all keys were deleted exactly once
+		mu.Lock()
+		if len(deletedKeys) != numKeys {
+			t.Errorf("Expected %d keys to be deleted, got %d", numKeys, len(deletedKeys))
+		}
+		mu.Unlock()
+		
+		// Verify map is empty
+		if size := m.Size(); size != 0 {
+			t.Errorf("Expected map size 0 after all deletions, got %d", size)
+		}
+	})
+}
+
+// TestMapOf_LoadOrStoreFn tests the LoadOrStoreFn method comprehensively
+func TestMapOf_LoadOrStoreFn(t *testing.T) {
+	t.Run("LoadOrStoreFn_NewKey", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		
+		called := false
+		value, loaded := m.LoadOrStoreFn("key1", func() int {
+			called = true
+			return 42
+		})
+		
+		if loaded {
+			t.Error("LoadOrStoreFn should return loaded=false for new key")
+		}
+		if value != 42 {
+			t.Errorf("LoadOrStoreFn returned value %v, want 42", value)
+		}
+		if !called {
+			t.Error("Function should be called for new key")
+		}
+		
+		// Verify value was stored
+		if storedValue, ok := m.Load("key1"); !ok || storedValue != 42 {
+			t.Errorf("Stored value = (%v, %v), want (42, true)", storedValue, ok)
+		}
+	})
+	
+	t.Run("LoadOrStoreFn_ExistingKey", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		
+		// Store initial value
+		m.Store("key1", 100)
+		
+		called := false
+		value, loaded := m.LoadOrStoreFn("key1", func() int {
+			called = true
+			return 200
+		})
+		
+		if !loaded {
+			t.Error("LoadOrStoreFn should return loaded=true for existing key")
+		}
+		if value != 100 {
+			t.Errorf("LoadOrStoreFn returned value %v, want 100", value)
+		}
+		if called {
+			t.Error("Function should not be called for existing key")
+		}
+		
+		// Verify original value is unchanged
+		if storedValue, ok := m.Load("key1"); !ok || storedValue != 100 {
+			t.Errorf("Stored value = (%v, %v), want (100, true)", storedValue, ok)
+		}
+	})
+	
+	t.Run("LoadOrStoreFn_FunctionPanic", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		
+		defer func() {
+			if r := recover(); r == nil {
+				t.Error("Expected panic from function, but didn't get one")
+			}
+		}()
+		
+		m.LoadOrStoreFn("key1", func() int {
+			panic("test panic")
+		})
+	})
+	
+	t.Run("LoadOrStoreFn_ZeroValue", func(t *testing.T) {
+		m := NewMapOf[string, int]()
+		
+		// Test storing zero value
+		value, loaded := m.LoadOrStoreFn("key1", func() int {
+			return 0
+		})
+		
+		if loaded {
+			t.Error("LoadOrStoreFn should return loaded=false for new key")
+		}
+		if value != 0 {
+			t.Errorf("LoadOrStoreFn returned value %v, want 0", value)
+		}
+		
+		// Verify zero value was stored
+		if storedValue, ok := m.Load("key1"); !ok || storedValue != 0 {
+			t.Errorf("Stored value = (%v, %v), want (0, true)", storedValue, ok)
+		}
+	})
+	
+	t.Run("LoadOrStoreFn_Concurrent", func(t *testing.T) {
+		m := NewMapOf[int, int]()
+		const numKeys = 100
+		const numWorkers = 10
+		
+		var wg sync.WaitGroup
+		callCounts := make([]int32, numKeys)
+		
+		// Concurrent LoadOrStoreFn operations on the same keys
+		for w := 0; w < numWorkers; w++ {
+			wg.Add(1)
+			go func(workerID int) {
+				defer wg.Done()
+				
+				for i := 0; i < numKeys; i++ {
+					m.LoadOrStoreFn(i, func() int {
+						atomic.AddInt32(&callCounts[i], 1)
+						return i * 100
+					})
+				}
+			}(w)
+		}
+		
+		wg.Wait()
+		
+		// Verify each function was called exactly once per key
+		for i := 0; i < numKeys; i++ {
+			count := atomic.LoadInt32(&callCounts[i])
+			if count != 1 {
+				t.Errorf("Key %d: function called %d times, want 1", i, count)
+			}
+			
+			// Verify correct value was stored
+			if value, ok := m.Load(i); !ok || value != i*100 {
+				t.Errorf("Key %d: stored value = (%v, %v), want (%d, true)", i, value, ok, i*100)
+			}
+		}
+	})
+	
+	t.Run("LoadOrStoreFn_PointerTypes", func(t *testing.T) {
+		m := NewMapOf[string, *string]()
+		
+		// Test with pointer types
+		value, loaded := m.LoadOrStoreFn("key1", func() *string {
+			s := "hello"
+			return &s
+		})
+		
+		if loaded {
+			t.Error("LoadOrStoreFn should return loaded=false for new key")
+		}
+		if value == nil || *value != "hello" {
+			t.Errorf("LoadOrStoreFn returned unexpected value: %v", value)
+		}
+		
+		// Test loading existing pointer
+		value2, loaded2 := m.LoadOrStoreFn("key1", func() *string {
+			s := "world"
+			return &s
+		})
+		
+		if !loaded2 {
+			t.Error("LoadOrStoreFn should return loaded=true for existing key")
+		}
+		if value2 != value {
+			t.Error("LoadOrStoreFn should return same pointer for existing key")
+		}
+	})
+	
+	t.Run("LoadOrStoreFn_ComplexTypes", func(t *testing.T) {
+		type ComplexValue struct {
+			ID   int
+			Name string
+			Data []int
+		}
+		
+		m := NewMapOf[int, ComplexValue]()
+		
+		expected := ComplexValue{
+			ID:   1,
+			Name: "test",
+			Data: []int{1, 2, 3},
+		}
+		
+		value, loaded := m.LoadOrStoreFn(1, func() ComplexValue {
+			return expected
+		})
+		
+		if loaded {
+			t.Error("LoadOrStoreFn should return loaded=false for new key")
+		}
+		if !reflect.DeepEqual(value, expected) {
+			t.Errorf("LoadOrStoreFn returned %+v, want %+v", value, expected)
 		}
 	})
 }

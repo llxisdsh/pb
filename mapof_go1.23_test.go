@@ -3,6 +3,7 @@
 package pb
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 )
@@ -38,6 +39,814 @@ func TestMapOf_ProcessAll_Basic(t *testing.T) {
 			t.Errorf("Expected processed[%s] = %d, got %d", k, v, processed[k])
 		}
 	}
+}
+
+// TestMapOf_Keys tests the Keys iterator method
+func TestMapOf_Keys(t *testing.T) {
+	m := NewMapOf[string, int]()
+
+	t.Run("EmptyMap", func(t *testing.T) {
+		count := 0
+		for key := range m.Keys() {
+			count++
+			t.Errorf("Unexpected key in empty map: %s", key)
+		}
+		if count != 0 {
+			t.Errorf("Expected 0 keys in empty map, got %d", count)
+		}
+	})
+
+	t.Run("SingleKey", func(t *testing.T) {
+		m.Clear()
+		m.Store("single", 42)
+
+		keys := make([]string, 0)
+		for key := range m.Keys() {
+			keys = append(keys, key)
+		}
+
+		if len(keys) != 1 {
+			t.Errorf("Expected 1 key, got %d", len(keys))
+		}
+		if keys[0] != "single" {
+			t.Errorf("Expected key 'single', got '%s'", keys[0])
+		}
+	})
+
+	t.Run("MultipleKeys", func(t *testing.T) {
+		m.Clear()
+		expectedKeys := map[string]bool{
+			"key1": true,
+			"key2": true,
+			"key3": true,
+			"key4": true,
+			"key5": true,
+		}
+
+		// Store keys with different values
+		for key := range expectedKeys {
+			m.Store(key, len(key))
+		}
+
+		// Collect all keys from iterator
+		actualKeys := make(map[string]bool)
+		count := 0
+		for key := range m.Keys() {
+			actualKeys[key] = true
+			count++
+		}
+
+		if count != len(expectedKeys) {
+			t.Errorf("Expected %d keys, got %d", len(expectedKeys), count)
+		}
+
+		// Verify all expected keys are present
+		for expectedKey := range expectedKeys {
+			if !actualKeys[expectedKey] {
+				t.Errorf("Expected key '%s' not found in iterator", expectedKey)
+			}
+		}
+
+		// Verify no unexpected keys
+		for actualKey := range actualKeys {
+			if !expectedKeys[actualKey] {
+				t.Errorf("Unexpected key '%s' found in iterator", actualKey)
+			}
+		}
+	})
+
+	t.Run("EarlyTermination", func(t *testing.T) {
+		m.Clear()
+		// Store multiple keys
+		for i := 0; i < 10; i++ {
+			m.Store(fmt.Sprintf("key%d", i), i)
+		}
+
+		count := 0
+		for range m.Keys() {
+			count++
+			if count >= 3 {
+				break // Early termination
+			}
+		}
+
+		if count != 3 {
+			t.Errorf("Expected to process exactly 3 keys before break, got %d", count)
+		}
+	})
+
+	t.Run("ConcurrentModification", func(t *testing.T) {
+		m.Clear()
+		// Store initial keys
+		for i := 0; i < 50; i++ {
+			m.Store(fmt.Sprintf("initial_%d", i), i)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// Goroutine 1: Iterate over keys
+		go func() {
+			defer wg.Done()
+			count := 0
+			for key := range m.Keys() {
+				count++
+				// Just count, don't fail on specific keys due to concurrent modification
+				_ = key
+			}
+			// We should get at least some keys, but exact count may vary due to concurrency
+			if count == 0 {
+				t.Error("Expected to iterate over at least some keys")
+			}
+		}()
+
+		// Goroutine 2: Modify map during iteration
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 25; i++ {
+				m.Store(fmt.Sprintf("concurrent_%d", i), i+1000)
+				if i%5 == 0 {
+					m.Delete(fmt.Sprintf("initial_%d", i))
+				}
+			}
+		}()
+
+		wg.Wait()
+	})
+
+	t.Run("LargeMap", func(t *testing.T) {
+		m.Clear()
+		const numKeys = 1000
+
+		// Store many keys
+		expectedKeys := make(map[string]bool)
+		for i := 0; i < numKeys; i++ {
+			key := fmt.Sprintf("large_%d", i)
+			m.Store(key, i)
+			expectedKeys[key] = true
+		}
+
+		// Iterate and collect all keys
+		actualKeys := make(map[string]bool)
+		count := 0
+		for key := range m.Keys() {
+			actualKeys[key] = true
+			count++
+		}
+
+		if count != numKeys {
+			t.Errorf("Expected %d keys, got %d", numKeys, count)
+		}
+
+		// Verify all keys are present
+		for expectedKey := range expectedKeys {
+			if !actualKeys[expectedKey] {
+				t.Errorf("Expected key '%s' not found", expectedKey)
+			}
+		}
+
+		if len(actualKeys) != len(expectedKeys) {
+			t.Errorf("Expected %d unique keys, got %d", len(expectedKeys), len(actualKeys))
+		}
+	})
+
+	t.Run("EmptyStringKeys", func(t *testing.T) {
+		m.Clear()
+		m.Store("", 0)
+		m.Store("non-empty", 1)
+
+		keys := make([]string, 0)
+		for key := range m.Keys() {
+			keys = append(keys, key)
+		}
+
+		if len(keys) != 2 {
+			t.Errorf("Expected 2 keys, got %d", len(keys))
+		}
+
+		hasEmpty := false
+		hasNonEmpty := false
+		for _, key := range keys {
+			if key == "" {
+				hasEmpty = true
+			} else if key == "non-empty" {
+				hasNonEmpty = true
+			}
+		}
+
+		if !hasEmpty {
+			t.Error("Expected empty string key to be present")
+		}
+		if !hasNonEmpty {
+			t.Error("Expected non-empty string key to be present")
+		}
+	})
+
+	t.Run("SpecialCharacterKeys", func(t *testing.T) {
+		m.Clear()
+		specialKeys := []string{
+			"key with spaces",
+			"key\twith\ttabs",
+			"key\nwith\nnewlines",
+			"key\"with\"quotes",
+			"key'with'apostrophes",
+			"key\\with\\backslashes",
+			"key/with/slashes",
+			"key.with.dots",
+			"key-with-dashes",
+			"key_with_underscores",
+		}
+
+		// Store all special keys
+		for i, key := range specialKeys {
+			m.Store(key, i)
+		}
+
+		// Collect keys from iterator
+		actualKeys := make(map[string]bool)
+		for key := range m.Keys() {
+			actualKeys[key] = true
+		}
+
+		if len(actualKeys) != len(specialKeys) {
+			t.Errorf("Expected %d keys, got %d", len(specialKeys), len(actualKeys))
+		}
+
+		// Verify all special keys are present
+		for _, expectedKey := range specialKeys {
+			if !actualKeys[expectedKey] {
+				t.Errorf("Expected special key '%s' not found", expectedKey)
+			}
+		}
+	})
+
+	t.Run("UnicodeKeys", func(t *testing.T) {
+		m.Clear()
+		unicodeKeys := []string{
+			"键",       // Chinese
+			"キー",     // Japanese
+			"키",        // Korean
+			"ключ",     // Russian
+			"مفتاح",    // Arabic
+			"🔑",        // Emoji
+			"café",     // Accented characters
+			"naïve",    // More accented characters
+			"Ελληνικά", // Greek
+			"עברית",    // Hebrew
+		}
+
+		// Store all unicode keys
+		for i, key := range unicodeKeys {
+			m.Store(key, i)
+		}
+
+		// Collect keys from iterator
+		actualKeys := make(map[string]bool)
+		for key := range m.Keys() {
+			actualKeys[key] = true
+		}
+
+		if len(actualKeys) != len(unicodeKeys) {
+			t.Errorf("Expected %d keys, got %d", len(unicodeKeys), len(actualKeys))
+		}
+
+		// Verify all unicode keys are present
+		for _, expectedKey := range unicodeKeys {
+			if !actualKeys[expectedKey] {
+				t.Errorf("Expected unicode key '%s' not found", expectedKey)
+			}
+		}
+	})
+
+	t.Run("StoreDeletePattern", func(t *testing.T) {
+		m.Clear()
+
+		// Store some keys
+		m.Store("persistent1", 1)
+		m.Store("persistent2", 2)
+		m.Store("temporary1", 3)
+		m.Store("temporary2", 4)
+
+		// Delete some keys
+		m.Delete("temporary1")
+		m.Delete("temporary2")
+
+		// Collect remaining keys
+		actualKeys := make(map[string]bool)
+		for key := range m.Keys() {
+			actualKeys[key] = true
+		}
+
+		if len(actualKeys) != 2 {
+			t.Errorf("Expected 2 remaining keys, got %d", len(actualKeys))
+		}
+
+		if !actualKeys["persistent1"] {
+			t.Error("Expected 'persistent1' to remain")
+		}
+		if !actualKeys["persistent2"] {
+			t.Error("Expected 'persistent2' to remain")
+		}
+		if actualKeys["temporary1"] {
+			t.Error("Expected 'temporary1' to be deleted")
+		}
+		if actualKeys["temporary2"] {
+			t.Error("Expected 'temporary2' to be deleted")
+		}
+	})
+
+	t.Run("IteratorIndependence", func(t *testing.T) {
+		m.Clear()
+		// Store test keys
+		for i := 0; i < 10; i++ {
+			m.Store(fmt.Sprintf("key%d", i), i)
+		}
+
+		// Create two independent iterators
+		iter1 := m.Keys()
+		iter2 := m.Keys()
+
+		// Consume first iterator partially
+		count1 := 0
+		for key := range iter1 {
+			count1++
+			_ = key
+			if count1 >= 5 {
+				break
+			}
+		}
+
+		// Consume second iterator completely
+		count2 := 0
+		for key := range iter2 {
+			count2++
+			_ = key
+		}
+
+		// Second iterator should see all keys regardless of first iterator state
+		if count2 != 10 {
+			t.Errorf("Expected second iterator to see all 10 keys, got %d", count2)
+		}
+	})
+}
+
+// TestMapOf_Values tests the Values iterator method
+func TestMapOf_Values(t *testing.T) {
+	m := NewMapOf[string, int]()
+
+	t.Run("EmptyMap", func(t *testing.T) {
+		count := 0
+		for value := range m.Values() {
+			count++
+			t.Errorf("Unexpected value in empty map: %d", value)
+		}
+		if count != 0 {
+			t.Errorf("Expected 0 values in empty map, got %d", count)
+		}
+	})
+
+	t.Run("SingleValue", func(t *testing.T) {
+		m.Clear()
+		m.Store("single", 42)
+
+		values := make([]int, 0)
+		for value := range m.Values() {
+			values = append(values, value)
+		}
+
+		if len(values) != 1 {
+			t.Errorf("Expected 1 value, got %d", len(values))
+		}
+		if values[0] != 42 {
+			t.Errorf("Expected value 42, got %d", values[0])
+		}
+	})
+
+	t.Run("MultipleValues", func(t *testing.T) {
+		m.Clear()
+		expectedValues := map[int]bool{
+			10: true,
+			20: true,
+			30: true,
+			40: true,
+			50: true,
+		}
+
+		// Store values with different keys
+		i := 0
+		for value := range expectedValues {
+			m.Store(fmt.Sprintf("key%d", i), value)
+			i++
+		}
+
+		// Collect all values from iterator
+		actualValues := make(map[int]bool)
+		count := 0
+		for value := range m.Values() {
+			actualValues[value] = true
+			count++
+		}
+
+		if count != len(expectedValues) {
+			t.Errorf("Expected %d values, got %d", len(expectedValues), count)
+		}
+
+		// Verify all expected values are present
+		for expectedValue := range expectedValues {
+			if !actualValues[expectedValue] {
+				t.Errorf("Expected value %d not found in iterator", expectedValue)
+			}
+		}
+
+		// Verify no unexpected values
+		for actualValue := range actualValues {
+			if !expectedValues[actualValue] {
+				t.Errorf("Unexpected value %d found in iterator", actualValue)
+			}
+		}
+	})
+
+	t.Run("DuplicateValues", func(t *testing.T) {
+		m.Clear()
+		// Store same value with different keys
+		m.Store("key1", 100)
+		m.Store("key2", 100)
+		m.Store("key3", 100)
+		m.Store("key4", 200)
+
+		values := make([]int, 0)
+		for value := range m.Values() {
+			values = append(values, value)
+		}
+
+		if len(values) != 4 {
+			t.Errorf("Expected 4 values, got %d", len(values))
+		}
+
+		// Count occurrences
+		count100 := 0
+		count200 := 0
+		for _, value := range values {
+			if value == 100 {
+				count100++
+			} else if value == 200 {
+				count200++
+			} else {
+				t.Errorf("Unexpected value: %d", value)
+			}
+		}
+
+		if count100 != 3 {
+			t.Errorf("Expected 3 occurrences of value 100, got %d", count100)
+		}
+		if count200 != 1 {
+			t.Errorf("Expected 1 occurrence of value 200, got %d", count200)
+		}
+	})
+
+	t.Run("EarlyTermination", func(t *testing.T) {
+		m.Clear()
+		// Store multiple values
+		for i := 0; i < 10; i++ {
+			m.Store(fmt.Sprintf("key%d", i), i*10)
+		}
+
+		count := 0
+		for value := range m.Values() {
+			count++
+			_ = value
+			if count >= 3 {
+				break // Early termination
+			}
+		}
+
+		if count != 3 {
+			t.Errorf("Expected to process exactly 3 values before break, got %d", count)
+		}
+	})
+
+	t.Run("ConcurrentModification", func(t *testing.T) {
+		m.Clear()
+		// Store initial values
+		for i := 0; i < 50; i++ {
+			m.Store(fmt.Sprintf("initial_%d", i), i*100)
+		}
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+
+		// Goroutine 1: Iterate over values
+		go func() {
+			defer wg.Done()
+			count := 0
+			for value := range m.Values() {
+				count++
+				// Just count, don't fail on specific values due to concurrent modification
+				_ = value
+			}
+			// We should get at least some values, but exact count may vary due to concurrency
+			if count == 0 {
+				t.Error("Expected to iterate over at least some values")
+			}
+		}()
+
+		// Goroutine 2: Modify map during iteration
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 25; i++ {
+				m.Store(fmt.Sprintf("concurrent_%d", i), i+5000)
+				if i%5 == 0 {
+					m.Delete(fmt.Sprintf("initial_%d", i))
+				}
+			}
+		}()
+
+		wg.Wait()
+	})
+
+	t.Run("LargeMap", func(t *testing.T) {
+		m.Clear()
+		const numValues = 1000
+
+		// Store many values
+		expectedValues := make(map[int]bool)
+		for i := 0; i < numValues; i++ {
+			value := i * 7 // Use a multiplier to create distinct values
+			m.Store(fmt.Sprintf("large_%d", i), value)
+			expectedValues[value] = true
+		}
+
+		// Iterate and collect all values
+		actualValues := make(map[int]bool)
+		count := 0
+		for value := range m.Values() {
+			actualValues[value] = true
+			count++
+		}
+
+		if count != numValues {
+			t.Errorf("Expected %d values, got %d", numValues, count)
+		}
+
+		// Verify all values are present
+		for expectedValue := range expectedValues {
+			if !actualValues[expectedValue] {
+				t.Errorf("Expected value %d not found", expectedValue)
+			}
+		}
+
+		if len(actualValues) != len(expectedValues) {
+			t.Errorf("Expected %d unique values, got %d", len(expectedValues), len(actualValues))
+		}
+	})
+
+	t.Run("ZeroValues", func(t *testing.T) {
+		m.Clear()
+		m.Store("zero1", 0)
+		m.Store("zero2", 0)
+		m.Store("nonzero", 42)
+
+		values := make([]int, 0)
+		for value := range m.Values() {
+			values = append(values, value)
+		}
+
+		if len(values) != 3 {
+			t.Errorf("Expected 3 values, got %d", len(values))
+		}
+
+		zeroCount := 0
+		nonZeroCount := 0
+		for _, value := range values {
+			if value == 0 {
+				zeroCount++
+			} else if value == 42 {
+				nonZeroCount++
+			} else {
+				t.Errorf("Unexpected value: %d", value)
+			}
+		}
+
+		if zeroCount != 2 {
+			t.Errorf("Expected 2 zero values, got %d", zeroCount)
+		}
+		if nonZeroCount != 1 {
+			t.Errorf("Expected 1 non-zero value, got %d", nonZeroCount)
+		}
+	})
+
+	t.Run("NegativeValues", func(t *testing.T) {
+		m.Clear()
+		negativeValues := []int{-100, -50, -1, 0, 1, 50, 100}
+
+		// Store all values
+		for i, value := range negativeValues {
+			m.Store(fmt.Sprintf("key%d", i), value)
+		}
+
+		// Collect values from iterator
+		actualValues := make(map[int]bool)
+		for value := range m.Values() {
+			actualValues[value] = true
+		}
+
+		if len(actualValues) != len(negativeValues) {
+			t.Errorf("Expected %d values, got %d", len(negativeValues), len(actualValues))
+		}
+
+		// Verify all values are present
+		for _, expectedValue := range negativeValues {
+			if !actualValues[expectedValue] {
+				t.Errorf("Expected value %d not found", expectedValue)
+			}
+		}
+	})
+
+	t.Run("LargeValues", func(t *testing.T) {
+		m.Clear()
+		largeValues := []int{
+			1000000,
+			2147483647,  // Max int32
+			-2147483648, // Min int32
+			999999999,
+			-999999999,
+		}
+
+		// Store all large values
+		for i, value := range largeValues {
+			m.Store(fmt.Sprintf("large_key%d", i), value)
+		}
+
+		// Collect values from iterator
+		actualValues := make(map[int]bool)
+		for value := range m.Values() {
+			actualValues[value] = true
+		}
+
+		if len(actualValues) != len(largeValues) {
+			t.Errorf("Expected %d values, got %d", len(largeValues), len(actualValues))
+		}
+
+		// Verify all large values are present
+		for _, expectedValue := range largeValues {
+			if !actualValues[expectedValue] {
+				t.Errorf("Expected large value %d not found", expectedValue)
+			}
+		}
+	})
+
+	t.Run("StoreDeletePattern", func(t *testing.T) {
+		m.Clear()
+
+		// Store some values
+		m.Store("persistent1", 111)
+		m.Store("persistent2", 222)
+		m.Store("temporary1", 333)
+		m.Store("temporary2", 444)
+
+		// Delete some entries
+		m.Delete("temporary1")
+		m.Delete("temporary2")
+
+		// Collect remaining values
+		actualValues := make(map[int]bool)
+		for value := range m.Values() {
+			actualValues[value] = true
+		}
+
+		if len(actualValues) != 2 {
+			t.Errorf("Expected 2 remaining values, got %d", len(actualValues))
+		}
+
+		if !actualValues[111] {
+			t.Error("Expected value 111 to remain")
+		}
+		if !actualValues[222] {
+			t.Error("Expected value 222 to remain")
+		}
+		if actualValues[333] {
+			t.Error("Expected value 333 to be deleted")
+		}
+		if actualValues[444] {
+			t.Error("Expected value 444 to be deleted")
+		}
+	})
+
+	t.Run("ValueUpdatePattern", func(t *testing.T) {
+		m.Clear()
+
+		// Store initial values
+		m.Store("key1", 100)
+		m.Store("key2", 200)
+		m.Store("key3", 300)
+
+		// Update some values
+		m.Store("key1", 1000) // Update existing
+		m.Store("key2", 2000) // Update existing
+
+		// Collect current values
+		actualValues := make(map[int]bool)
+		for value := range m.Values() {
+			actualValues[value] = true
+		}
+
+		if len(actualValues) != 3 {
+			t.Errorf("Expected 3 values, got %d", len(actualValues))
+		}
+
+		// Should have updated values, not original ones
+		if !actualValues[1000] {
+			t.Error("Expected updated value 1000 to be present")
+		}
+		if !actualValues[2000] {
+			t.Error("Expected updated value 2000 to be present")
+		}
+		if !actualValues[300] {
+			t.Error("Expected unchanged value 300 to be present")
+		}
+		if actualValues[100] {
+			t.Error("Expected original value 100 to be replaced")
+		}
+		if actualValues[200] {
+			t.Error("Expected original value 200 to be replaced")
+		}
+	})
+
+	t.Run("IteratorIndependence", func(t *testing.T) {
+		m.Clear()
+		// Store test values
+		for i := 0; i < 10; i++ {
+			m.Store(fmt.Sprintf("key%d", i), i*100)
+		}
+
+		// Create two independent iterators
+		iter1 := m.Values()
+		iter2 := m.Values()
+
+		// Consume first iterator partially
+		count1 := 0
+		for value := range iter1 {
+			count1++
+			_ = value
+			if count1 >= 5 {
+				break
+			}
+		}
+
+		// Consume second iterator completely
+		count2 := 0
+		for value := range iter2 {
+			count2++
+			_ = value
+		}
+
+		// Second iterator should see all values regardless of first iterator state
+		if count2 != 10 {
+			t.Errorf("Expected second iterator to see all 10 values, got %d", count2)
+		}
+	})
+
+	t.Run("ValueOrderConsistency", func(t *testing.T) {
+		m.Clear()
+		// Store values in a specific order
+		keys := []string{"a", "b", "c", "d", "e"}
+		values := []int{10, 20, 30, 40, 50}
+
+		for i, key := range keys {
+			m.Store(key, values[i])
+		}
+
+		// Collect values multiple times
+		var collections [][]int
+		for run := 0; run < 3; run++ {
+			var currentCollection []int
+			for value := range m.Values() {
+				currentCollection = append(currentCollection, value)
+			}
+			collections = append(collections, currentCollection)
+		}
+
+		// All collections should have the same length
+		for i, collection := range collections {
+			if len(collection) != len(values) {
+				t.Errorf("Collection %d: expected %d values, got %d", i, len(values), len(collection))
+			}
+		}
+
+		// While order might not be guaranteed, the same set of values should be present
+		for i, collection := range collections {
+			collectionMap := make(map[int]bool)
+			for _, value := range collection {
+				collectionMap[value] = true
+			}
+
+			for _, expectedValue := range values {
+				if !collectionMap[expectedValue] {
+					t.Errorf("Collection %d: expected value %d not found", i, expectedValue)
+				}
+			}
+		}
+	})
 }
 
 // TestMapOf_ProcessSpecified tests ProcessSpecified with specific keys
