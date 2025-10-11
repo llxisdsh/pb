@@ -304,6 +304,9 @@ func (ht *HashTrieMap[K, V]) CompareAndSwap(key K, old, new V) (swapped bool) {
 	// 	defer i.mu.Unlock()
 	// }
 	if n == nil {
+		if i != nil {
+			i.mu.Unlock()
+		}
 		return false
 	}
 
