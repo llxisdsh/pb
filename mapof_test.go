@@ -2273,7 +2273,7 @@ func TestMapOfWithBuiltInHasher(t *testing.T) {
 			"a",                                   // single char
 			"hello",                               // short string
 			"this is a longer string for testing", // long string
-			"unicode: 你好世界",                   // unicode string
+			"unicode: 你好世界",                       // unicode string
 		}
 
 		// Store test data
@@ -2574,7 +2574,7 @@ func TestMapOf_Interfaces(t *testing.T) {
 		val2 := SmartValue{
 			Value:   100,
 			Ignored: "ignore2",
-		}                                                  // same Value, different Ignored
+		} // same Value, different Ignored
 		val3 := SmartValue{Value: 200, Ignored: "ignore1"} // different Value
 
 		m.Store(key, val1)
