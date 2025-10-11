@@ -284,8 +284,8 @@ func TestMapOf_Keys(t *testing.T) {
 	t.Run("UnicodeKeys", func(t *testing.T) {
 		m.Clear()
 		unicodeKeys := []string{
-			"键",        // Chinese
-			"キー",       // Japanese
+			"键",       // Chinese
+			"キー",     // Japanese
 			"키",        // Korean
 			"ключ",     // Russian
 			"مفتاح",    // Arabic

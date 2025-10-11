@@ -53,8 +53,8 @@ func TestConcurrentCacheMapOf(t *testing.T) {
 	var N, P int
 	if testing.CoverMode() != "" {
 		// Reduced parameters for coverage mode
-		N = 1_000   // 1,000 goroutines instead of 100,000
-		P = 100     // 100 keys instead of 5,000
+		N = 1_000 // 1,000 goroutines instead of 100,000
+		P = 100   // 100 keys instead of 5,000
 	} else {
 		// Full stress test parameters for normal mode
 		N = 100_000
