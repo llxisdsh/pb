@@ -1437,9 +1437,10 @@ func TestMapOf_RangeValues(t *testing.T) {
 		count100 := 0
 		count200 := 0
 		for _, value := range values {
-			if value == 100 {
+			switch value {
+			case 100:
 				count100++
-			} else if value == 200 {
+			case 200:
 				count200++
 			}
 		}
@@ -1552,9 +1553,10 @@ func TestMapOf_RangeValues(t *testing.T) {
 		zeroCount := 0
 		nonZeroCount := 0
 		for _, value := range values {
-			if value == 0 {
+			switch value {
+			case 0:
 				zeroCount++
-			} else if value == 42 {
+			case 42:
 				nonZeroCount++
 			}
 		}
@@ -1771,12 +1773,12 @@ func TestMapOf_HasKey(t *testing.T) {
 			"çğıöşü",
 		}
 
-		// Store all unicode keys
+		// Store all Unicode keys
 		for i, key := range unicodeKeys {
 			m.Store(key, i)
 		}
 
-		// Check all unicode keys exist
+		// Check all Unicode keys exist
 		for _, key := range unicodeKeys {
 			if !m.HasKey(key) {
 				t.Errorf("Expected HasKey to return true for unicode key: %q", key)
@@ -2284,7 +2286,8 @@ func TestMapOfWithBuiltInHasher(t *testing.T) {
 
 		// Handle 0.0 and -0.0 separately since they're the same key in Go maps
 		m.Store(0.0, "zero")
-		m.Store(-0.0, "negative zero") // This will overwrite "zero"
+		// Handle -0.0 separately to ensure it's not overwritten by 0.0
+		m.Store(math.Copysign(0, -1), "negative zero")
 
 		// Store all test data
 		for k, v := range testFloats {
@@ -2319,7 +2322,7 @@ func TestMapOfWithBuiltInHasher(t *testing.T) {
 			"a",                                   // single char
 			"hello",                               // short string
 			"this is a longer string for testing", // long string
-			"unicode: 你好世界",                   // unicode string
+			"unicode: 你好世界",                       // unicode string
 		}
 
 		// Store test data
@@ -2620,7 +2623,7 @@ func TestMapOf_Interfaces(t *testing.T) {
 		val2 := SmartValue{
 			Value:   100,
 			Ignored: "ignore2",
-		}                                                  // same Value, different Ignored
+		} // same Value, different Ignored
 		val3 := SmartValue{Value: 200, Ignored: "ignore1"} // different Value
 
 		m.Store(key, val1)
@@ -3885,7 +3888,7 @@ func expectLoadedFromSwapMapOf[K, V comparable](
 func expectNotLoadedFromSwapMapOf[K, V comparable](
 	t *testing.T,
 	key K,
-	new V,
+	_ V,
 ) func(old V, loaded bool) {
 	t.Helper()
 	return func(old V, loaded bool) {
@@ -4314,22 +4317,23 @@ func TestMapOfWithHasher(t *testing.T) {
 }
 
 func murmur3Finalizer(i int, _ uintptr) uintptr {
-	if bits.UintSize == 32 {
+	if bits.UintSize >= 64 {
+		h := uint32(i >> 32)
+		h = (h ^ (h >> 16)) * 0x85ebca6b
+		h = (h ^ (h >> 13)) * 0xc2b2ae35
+		h = h ^ (h >> 16)
+		l := uint32(i)
+		l = (l ^ (l >> 16)) * 0x85ebca6b
+		l = (l ^ (l >> 13)) * 0xc2b2ae35
+		l = l ^ (l >> 16)
+		return uintptr(h)<<32 | uintptr(l)
+	} else {
 		h := uintptr(i)
 		h = (h ^ (h >> 16)) * 0x85ebca6b
 		h = (h ^ (h >> 13)) * 0xc2b2ae35
 		return h ^ (h >> 16)
 	}
-	h := uint32(i >> 32)
-	h = (h ^ (h >> 16)) * 0x85ebca6b
-	h = (h ^ (h >> 13)) * 0xc2b2ae35
-	h = h ^ (h >> 16)
-	l := uint32(i)
-	l = (l ^ (l >> 16)) * 0x85ebca6b
-	l = (l ^ (l >> 13)) * 0xc2b2ae35
-	l = l ^ (l >> 16)
-	return uintptr(h) << 32 & uintptr(l)
-	//}
+
 	//h := uintptr(i)
 	//h = (h ^ (h >> 33)) * 0xff51afd7ed558ccd
 	//h = (h ^ (h >> 33)) * 0xc4ceb9fe1a85ec53
@@ -5110,7 +5114,7 @@ func TestMapOfParallelResize_GrowOnly(t *testing.T) {
 }
 
 func parallelRandTypedResizer(
-	t *testing.T,
+	_ *testing.T,
 	m *MapOf[string, int],
 	numIters, numEntries int,
 	cdone chan bool,
@@ -5165,7 +5169,7 @@ func TestMapOfParallelResize(t *testing.T) {
 }
 
 func parallelRandTypedClearer(
-	t *testing.T,
+	_ *testing.T,
 	m *MapOf[string, int],
 	numIters, numEntries int,
 	cdone chan bool,
@@ -8444,9 +8448,15 @@ func TestMapOfBatchProcess(t *testing.T) {
 
 		m.BatchProcess(
 			func(yield func(string, int) bool) {
-				yield("key1", 100) // Update existing
-				yield("key2", 200) // Update existing
-				yield("key3", 300) // Insert new
+				if !yield("key1", 100) { // Update existing
+					return
+				}
+				if !yield("key2", 200) { // Update existing
+					return
+				}
+				if !yield("key3", 300) { // Insert new
+					return
+				}
 			},
 			func(key string, value int, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
 				processCount++
@@ -8486,8 +8496,12 @@ func TestMapOfBatchProcess(t *testing.T) {
 
 		m.BatchProcess(
 			func(yield func(string, int) bool) {
-				yield("key1", 0) // Delete key1
-				yield("key2", 0) // Delete key2
+				if !yield("key1", 0) { // Delete key1
+					return
+				}
+				if !yield("key2", 0) { // Delete key2
+					return
+				}
 			},
 			func(key string, value int, loaded *EntryOf[string, int]) (*EntryOf[string, int], int, bool) {
 				processCount++
@@ -8517,7 +8531,7 @@ func TestMapOfBatchProcess(t *testing.T) {
 
 		m.BatchProcess(
 			func(yield func(string, int) bool) {
-				for i := 0; i < 100; i++ {
+				for i := range 100 {
 					if !yield(fmt.Sprintf("key%d", i), i) {
 						break
 					}
@@ -9195,40 +9209,40 @@ func TestMapOf_GCAndWeakReferences(t *testing.T) {
 func TestMapOf_LoadAndDelete(t *testing.T) {
 	t.Run("LoadAndDelete_ExistingKey", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		
+
 		// Store a value
 		m.Store("key1", 100)
-		
+
 		// LoadAndDelete should return the value and true
 		value, loaded := m.LoadAndDelete("key1")
 		if !loaded || value != 100 {
 			t.Errorf("LoadAndDelete(key1) = (%v, %v), want (100, true)", value, loaded)
 		}
-		
+
 		// Key should no longer exist
 		if _, ok := m.Load("key1"); ok {
 			t.Error("Key should be deleted after LoadAndDelete")
 		}
 	})
-	
+
 	t.Run("LoadAndDelete_NonExistentKey", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		
+
 		// LoadAndDelete on non-existent key should return zero value and false
 		value, loaded := m.LoadAndDelete("nonexistent")
 		if loaded || value != 0 {
 			t.Errorf("LoadAndDelete(nonexistent) = (%v, %v), want (0, false)", value, loaded)
 		}
 	})
-	
+
 	t.Run("LoadAndDelete_MultipleKeys", func(t *testing.T) {
 		m := NewMapOf[int, string]()
-		
+
 		// Store multiple values
 		for i := 0; i < 10; i++ {
 			m.Store(i, fmt.Sprintf("value_%d", i))
 		}
-		
+
 		// Delete even keys using LoadAndDelete
 		for i := 0; i < 10; i += 2 {
 			expected := fmt.Sprintf("value_%d", i)
@@ -9237,7 +9251,7 @@ func TestMapOf_LoadAndDelete(t *testing.T) {
 				t.Errorf("LoadAndDelete(%d) = (%v, %v), want (%s, true)", i, value, loaded, expected)
 			}
 		}
-		
+
 		// Verify even keys are deleted and odd keys remain
 		for i := 0; i < 10; i++ {
 			value, ok := m.Load(i)
@@ -9255,31 +9269,31 @@ func TestMapOf_LoadAndDelete(t *testing.T) {
 			}
 		}
 	})
-	
+
 	t.Run("LoadAndDelete_Concurrent", func(t *testing.T) {
 		m := NewMapOf[int, int]()
 		const numKeys = 1000
-		
+
 		// Store initial values
 		for i := 0; i < numKeys; i++ {
 			m.Store(i, i*10)
 		}
-		
+
 		var wg sync.WaitGroup
 		deletedKeys := make(map[int]bool)
 		var mu sync.Mutex
-		
+
 		// Concurrent LoadAndDelete operations
 		numWorkers := 10
 		keysPerWorker := numKeys / numWorkers
-		
+
 		for w := 0; w < numWorkers; w++ {
 			wg.Add(1)
 			go func(workerID int) {
 				defer wg.Done()
 				start := workerID * keysPerWorker
 				end := start + keysPerWorker
-				
+
 				for i := start; i < end; i++ {
 					value, loaded := m.LoadAndDelete(i)
 					if loaded {
@@ -9287,7 +9301,7 @@ func TestMapOf_LoadAndDelete(t *testing.T) {
 						if value != expectedValue {
 							t.Errorf("Worker %d: LoadAndDelete(%d) = %v, want %v", workerID, i, value, expectedValue)
 						}
-						
+
 						mu.Lock()
 						deletedKeys[i] = true
 						mu.Unlock()
@@ -9295,16 +9309,16 @@ func TestMapOf_LoadAndDelete(t *testing.T) {
 				}
 			}(w)
 		}
-		
+
 		wg.Wait()
-		
+
 		// Verify all keys were deleted exactly once
 		mu.Lock()
 		if len(deletedKeys) != numKeys {
 			t.Errorf("Expected %d keys to be deleted, got %d", numKeys, len(deletedKeys))
 		}
 		mu.Unlock()
-		
+
 		// Verify map is empty
 		if size := m.Size(); size != 0 {
 			t.Errorf("Expected map size 0 after all deletions, got %d", size)
@@ -9316,13 +9330,13 @@ func TestMapOf_LoadAndDelete(t *testing.T) {
 func TestMapOf_LoadOrStoreFn(t *testing.T) {
 	t.Run("LoadOrStoreFn_NewKey", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		
+
 		called := false
 		value, loaded := m.LoadOrStoreFn("key1", func() int {
 			called = true
 			return 42
 		})
-		
+
 		if loaded {
 			t.Error("LoadOrStoreFn should return loaded=false for new key")
 		}
@@ -9332,25 +9346,25 @@ func TestMapOf_LoadOrStoreFn(t *testing.T) {
 		if !called {
 			t.Error("Function should be called for new key")
 		}
-		
+
 		// Verify value was stored
 		if storedValue, ok := m.Load("key1"); !ok || storedValue != 42 {
 			t.Errorf("Stored value = (%v, %v), want (42, true)", storedValue, ok)
 		}
 	})
-	
+
 	t.Run("LoadOrStoreFn_ExistingKey", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		
+
 		// Store initial value
 		m.Store("key1", 100)
-		
+
 		called := false
 		value, loaded := m.LoadOrStoreFn("key1", func() int {
 			called = true
 			return 200
 		})
-		
+
 		if !loaded {
 			t.Error("LoadOrStoreFn should return loaded=true for existing key")
 		}
@@ -9360,62 +9374,62 @@ func TestMapOf_LoadOrStoreFn(t *testing.T) {
 		if called {
 			t.Error("Function should not be called for existing key")
 		}
-		
+
 		// Verify original value is unchanged
 		if storedValue, ok := m.Load("key1"); !ok || storedValue != 100 {
 			t.Errorf("Stored value = (%v, %v), want (100, true)", storedValue, ok)
 		}
 	})
-	
+
 	t.Run("LoadOrStoreFn_FunctionPanic", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		
+
 		defer func() {
 			if r := recover(); r == nil {
 				t.Error("Expected panic from function, but didn't get one")
 			}
 		}()
-		
+
 		m.LoadOrStoreFn("key1", func() int {
 			panic("test panic")
 		})
 	})
-	
+
 	t.Run("LoadOrStoreFn_ZeroValue", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		
+
 		// Test storing zero value
 		value, loaded := m.LoadOrStoreFn("key1", func() int {
 			return 0
 		})
-		
+
 		if loaded {
 			t.Error("LoadOrStoreFn should return loaded=false for new key")
 		}
 		if value != 0 {
 			t.Errorf("LoadOrStoreFn returned value %v, want 0", value)
 		}
-		
+
 		// Verify zero value was stored
 		if storedValue, ok := m.Load("key1"); !ok || storedValue != 0 {
 			t.Errorf("Stored value = (%v, %v), want (0, true)", storedValue, ok)
 		}
 	})
-	
+
 	t.Run("LoadOrStoreFn_Concurrent", func(t *testing.T) {
 		m := NewMapOf[int, int]()
 		const numKeys = 100
 		const numWorkers = 10
-		
+
 		var wg sync.WaitGroup
 		callCounts := make([]int32, numKeys)
-		
+
 		// Concurrent LoadOrStoreFn operations on the same keys
 		for w := 0; w < numWorkers; w++ {
 			wg.Add(1)
 			go func(workerID int) {
 				defer wg.Done()
-				
+
 				for i := 0; i < numKeys; i++ {
 					m.LoadOrStoreFn(i, func() int {
 						atomic.AddInt32(&callCounts[i], 1)
@@ -9424,45 +9438,45 @@ func TestMapOf_LoadOrStoreFn(t *testing.T) {
 				}
 			}(w)
 		}
-		
+
 		wg.Wait()
-		
+
 		// Verify each function was called exactly once per key
 		for i := 0; i < numKeys; i++ {
 			count := atomic.LoadInt32(&callCounts[i])
 			if count != 1 {
 				t.Errorf("Key %d: function called %d times, want 1", i, count)
 			}
-			
+
 			// Verify correct value was stored
 			if value, ok := m.Load(i); !ok || value != i*100 {
 				t.Errorf("Key %d: stored value = (%v, %v), want (%d, true)", i, value, ok, i*100)
 			}
 		}
 	})
-	
+
 	t.Run("LoadOrStoreFn_PointerTypes", func(t *testing.T) {
 		m := NewMapOf[string, *string]()
-		
+
 		// Test with pointer types
 		value, loaded := m.LoadOrStoreFn("key1", func() *string {
 			s := "hello"
 			return &s
 		})
-		
+
 		if loaded {
 			t.Error("LoadOrStoreFn should return loaded=false for new key")
 		}
 		if value == nil || *value != "hello" {
 			t.Errorf("LoadOrStoreFn returned unexpected value: %v", value)
 		}
-		
+
 		// Test loading existing pointer
 		value2, loaded2 := m.LoadOrStoreFn("key1", func() *string {
 			s := "world"
 			return &s
 		})
-		
+
 		if !loaded2 {
 			t.Error("LoadOrStoreFn should return loaded=true for existing key")
 		}
@@ -9470,26 +9484,26 @@ func TestMapOf_LoadOrStoreFn(t *testing.T) {
 			t.Error("LoadOrStoreFn should return same pointer for existing key")
 		}
 	})
-	
+
 	t.Run("LoadOrStoreFn_ComplexTypes", func(t *testing.T) {
 		type ComplexValue struct {
 			ID   int
 			Name string
 			Data []int
 		}
-		
+
 		m := NewMapOf[int, ComplexValue]()
-		
+
 		expected := ComplexValue{
 			ID:   1,
 			Name: "test",
 			Data: []int{1, 2, 3},
 		}
-		
+
 		value, loaded := m.LoadOrStoreFn(1, func() ComplexValue {
 			return expected
 		})
-		
+
 		if loaded {
 			t.Error("LoadOrStoreFn should return loaded=false for new key")
 		}

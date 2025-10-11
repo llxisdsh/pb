@@ -34,7 +34,7 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 	}
 
 	// Test load after insert
-	if val, ok := m.Load("key1"); !ok || val != 42 {
+	if val, loaded := m.Load("key1"); !loaded || val != 42 {
 		t.Errorf("Expected (42, true), got (%v, %v)", val, ok)
 	}
 
@@ -57,12 +57,12 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 	}
 
 	// Test load after update
-	if val, ok := m.Load("key1"); !ok || val != 52 {
-		t.Errorf("Expected (52, true), got (%v, %v)", val, ok)
+	if val, loaded := m.Load("key1"); !loaded || val != 52 {
+		t.Errorf("Expected (52, true), got (%v, %v)", val, loaded)
 	}
 
 	// Test delete
-	actual, ok = m.Process(
+	_, ok = m.Process(
 		"key1",
 		func(old int, loaded bool) (int, ComputeOp, int, bool) {
 			if !loaded || old != 52 {
@@ -80,8 +80,8 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 	}
 
 	// Test load after delete
-	if val, ok := m.Load("key1"); ok {
-		t.Errorf("Expected not found after delete, got (%v, %v)", val, ok)
+	if val, loaded := m.Load("key1"); loaded {
+		t.Errorf("Expected not found after delete, got (%v, %v)", val, loaded)
 	}
 
 	// Test cancel operation
@@ -300,7 +300,7 @@ func TestFlatMapOf_Concurrent(t *testing.T) {
 // TestFlatMapOf_ConcurrentReadWrite tests heavy concurrent read/write load
 func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 	m := NewFlatMapOf[int, int]()
-	
+
 	// Reduce test duration and concurrency for coverage mode
 	var duration time.Duration
 	var numReaders, numWriters int
@@ -791,8 +791,8 @@ func TestFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
 		stop uint32
 	)
 
-	readers := max(2, runtime.GOMAXPROCS(0)) // Reduce Concurrency​
-	dur := 500 * time.Millisecond            // Reduce Duration​
+	readers := max(2, runtime.GOMAXPROCS(0)) // Reduce Concurrency
+	dur := 500 * time.Millisecond            // Reduce Duration
 
 	var wg sync.WaitGroup
 	wg.Add(readers + 1)

@@ -3342,10 +3342,11 @@ func defaultHasher[K comparable, V any]() (
 	case uint, int, uintptr:
 		return hashUintptr, valEqual, true
 	case uint64, int64:
-		if bits.UintSize == 32 {
+		if bits.UintSize >= 64 {
+			return hashUint64, valEqual, true
+		} else {
 			return hashUint64On32Bit, valEqual, true
 		}
-		return hashUint64, valEqual, true
 	case uint32, int32:
 		return hashUint32, valEqual, true
 	case uint16, int16:
@@ -3368,10 +3369,11 @@ func defaultHasher[K comparable, V any]() (
 		case reflect.Uint, reflect.Int, reflect.Uintptr:
 			return hashUintptr, valEqual, true
 		case reflect.Int64, reflect.Uint64:
-			if bits.UintSize == 32 {
+			if bits.UintSize >= 64 {
+				return hashUint64, valEqual, true
+			} else {
 				return hashUint64On32Bit, valEqual, true
 			}
-			return hashUint64, valEqual, true
 		case reflect.Int32, reflect.Uint32:
 			return hashUint32, valEqual, true
 		case reflect.Int16, reflect.Uint16:

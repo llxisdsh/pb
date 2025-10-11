@@ -227,9 +227,10 @@ func TestMapOf_Keys(t *testing.T) {
 		hasEmpty := false
 		hasNonEmpty := false
 		for _, key := range keys {
-			if key == "" {
+			switch key {
+			case "":
 				hasEmpty = true
-			} else if key == "non-empty" {
+			case "non-empty":
 				hasNonEmpty = true
 			}
 		}
@@ -283,8 +284,8 @@ func TestMapOf_Keys(t *testing.T) {
 	t.Run("UnicodeKeys", func(t *testing.T) {
 		m.Clear()
 		unicodeKeys := []string{
-			"键",       // Chinese
-			"キー",     // Japanese
+			"键",        // Chinese
+			"キー",       // Japanese
 			"키",        // Korean
 			"ключ",     // Russian
 			"مفتاح",    // Arabic
@@ -295,7 +296,7 @@ func TestMapOf_Keys(t *testing.T) {
 			"עברית",    // Hebrew
 		}
 
-		// Store all unicode keys
+		// Store all Unicode keys
 		for i, key := range unicodeKeys {
 			m.Store(key, i)
 		}
@@ -310,7 +311,7 @@ func TestMapOf_Keys(t *testing.T) {
 			t.Errorf("Expected %d keys, got %d", len(unicodeKeys), len(actualKeys))
 		}
 
-		// Verify all unicode keys are present
+		// Verify all Unicode keys are present
 		for _, expectedKey := range unicodeKeys {
 			if !actualKeys[expectedKey] {
 				t.Errorf("Expected unicode key '%s' not found", expectedKey)
@@ -487,11 +488,12 @@ func TestMapOf_Values(t *testing.T) {
 		count100 := 0
 		count200 := 0
 		for _, value := range values {
-			if value == 100 {
+			switch value {
+			case 100:
 				count100++
-			} else if value == 200 {
+			case 200:
 				count200++
-			} else {
+			default:
 				t.Errorf("Unexpected value: %d", value)
 			}
 		}
@@ -618,11 +620,12 @@ func TestMapOf_Values(t *testing.T) {
 		zeroCount := 0
 		nonZeroCount := 0
 		for _, value := range values {
-			if value == 0 {
+			switch value {
+			case 0:
 				zeroCount++
-			} else if value == 42 {
+			case 42:
 				nonZeroCount++
-			} else {
+			default:
 				t.Errorf("Unexpected value: %d", value)
 			}
 		}
