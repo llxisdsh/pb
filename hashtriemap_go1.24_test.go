@@ -9,14 +9,14 @@ import (
 	"weak"
 )
 
-// TestConcurrentCache tests HashTrieMap in a scenario where it is used as
+// TestHashTrieMapConcurrentCache tests HashTrieMap in a scenario where it is used as
 // the basis of a memory-efficient concurrent cache. We're specifically
 // looking to make sure that CompareAndSwap and CompareAndDelete are
 // atomic with respect to one another. When competing for the same
 // key-value pair, they must not both succeed.
 //
 // This test is a regression test for issue #70970.
-func TestConcurrentCache(t *testing.T) {
+func TestHashTrieMapConcurrentCache(t *testing.T) {
 	type dummy [32]byte
 
 	var m HashTrieMap[int, weak.Pointer[dummy]]
@@ -53,8 +53,8 @@ func TestConcurrentCache(t *testing.T) {
 	var N, P int
 	if testing.CoverMode() != "" {
 		// Reduced parameters for coverage mode
-		N = 1_000   // 1,000 goroutines instead of 100,000
-		P = 100     // 100 keys instead of 5,000
+		N = 1_000 // 1,000 goroutines instead of 100,000
+		P = 100   // 100 keys instead of 5,000
 	} else {
 		// Full stress test parameters for normal mode
 		N = 100_000

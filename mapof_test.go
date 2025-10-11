@@ -87,7 +87,7 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 
 	structType := reflect.TypeOf(bucketOf{})
 	t.Logf("Struct bucketOf: %s", structType.Name())
-	for i := 0; i < structType.NumField(); i++ {
+	for i := range structType.NumField() {
 		field := structType.Field(i)
 		fieldName := field.Name
 		fieldType := field.Type
@@ -100,7 +100,7 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 
 	structType = reflect.TypeOf(mapOfTable{})
 	t.Logf("Struct mapOfTable: %s", structType.Name())
-	for i := 0; i < structType.NumField(); i++ {
+	for i := range structType.NumField() {
 		field := structType.Field(i)
 		fieldName := field.Name
 		fieldType := field.Type
@@ -113,7 +113,7 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 
 	structType = reflect.TypeOf(MapOf[string, int]{})
 	t.Logf("Struct MapOf: %s", structType.Name())
-	for i := 0; i < structType.NumField(); i++ {
+	for i := range structType.NumField() {
 		field := structType.Field(i)
 		fieldName := field.Name
 		fieldType := field.Type
@@ -212,7 +212,7 @@ func TestMapOfStoreLoadLatency(t *testing.T) {
 		close(startCh)
 
 		// Warmup phase
-		for i := 0; i < warmupRounds; i++ {
+		for i := range warmupRounds {
 			m.Store("test-key", int64(i))
 			readyCh <- struct{}{}
 		}
@@ -287,16 +287,17 @@ func TestMapOfStoreLoadLatency(t *testing.T) {
 	counts := make([]int, len(buckets)+1)
 	for _, latency := range latencies {
 		i := 0
-		for ; i < len(buckets); i++ {
-			if latency < buckets[i] {
+		for _, bucket := range buckets {
+			if latency < bucket {
 				break
 			}
+			i++
 		}
 		counts[i]++
 	}
 
 	t.Log("Latency distribution:")
-	for i := 0; i < len(buckets); i++ {
+	for i := range len(buckets) {
 		var rangeStr string
 		if i == 0 {
 			rangeStr = fmt.Sprintf("< %v", buckets[i])
@@ -355,7 +356,7 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 	latestValues := make([]atomic.Int64, keyCount)
 
 	// Start reader threads
-	for r := 0; r < readerCount; r++ {
+	for r := range readerCount {
 		wg.Add(1)
 		go func(readerID int) {
 			defer wg.Done()
@@ -385,7 +386,7 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 	}
 
 	// Start writer threads
-	for w := 0; w < writerCount; w++ {
+	for w := range writerCount {
 		wg.Add(1)
 		go func(writerID int) {
 			defer wg.Done()
@@ -402,7 +403,7 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 			}
 
 			// Warmup phase
-			for i := 0; i < warmupRounds; i++ {
+			for i := range warmupRounds {
 				for key := startKey; key < endKey; key++ {
 					newValue := int64(i + 1)
 					m.Store(key, newValue)
@@ -411,7 +412,7 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 			}
 
 			// Actual test
-			for i := 0; i < iterations; i++ {
+			for range iterations {
 				for key := startKey; key < endKey; key++ {
 					// Write new value
 					startTime := time.Now()
@@ -487,56 +488,6 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 	}
 }
 
-//
-//func TestMapOfConcurrentInsert(t *testing.T) {
-//	const total = 100_000_000
-//
-//	m := NewMapOf[int, int](WithPresize(total))
-//
-//	numCPU := runtime.GOMAXPROCS(0)
-//
-//	var wg sync.WaitGroup
-//	wg.Add(numCPU)
-//
-//	start := time.Now()
-//
-//	batchSize := total / numCPU
-//
-//	for i := 0; i < numCPU; i++ {
-//		go func(start, end int) {
-//			//defer wg.Done()
-//
-//			for j := start; j < end; j++ {
-//				m.Store(j, j)
-//			}
-//			wg.Done()
-//		}(i*batchSize, min((i+1)*batchSize, total))
-//	}
-//
-//	wg.Wait()
-//
-//	elapsed := time.Since(start)
-//
-//	size := m.Size()
-//	if size != total {
-//		t.Errorf("Expected size %d, got %d", total, size)
-//	}
-//
-//	t.Logf("Inserted %d items in %v", total, elapsed)
-// 	t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
-// 	t.Logf("Throughput: %.2f million ops/sec",
-// float64(total)/(elapsed.Seconds()*1000000))
-//
-//	// rand check
-//	for i := 0; i < 1000; i++ {
-//		idx := i * (total / 1000)
-//		if val, ok := m.Load(idx); !ok || val != idx {
-// 			t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val,
-// ok)
-//		}
-//	}
-//}
-
 func TestMapOfMisc(t *testing.T) {
 	// var a *SyncMap[int, int] = NewSyncMap[int, int]()
 	var a, a1, a2, a3, a4 MapOf[int, int]
@@ -584,7 +535,7 @@ func TestMapOfMisc(t *testing.T) {
 	t.Log(&idm)
 
 	var test int64
-	for k := int64(0); k <= 100000; k++ {
+	for k := range int64(100000) {
 		atomic.StoreInt64(&test, k)
 		if test != k {
 			t.Fatal("sync test fail:", test, k)
@@ -592,7 +543,7 @@ func TestMapOfMisc(t *testing.T) {
 	}
 
 	var wg sync.WaitGroup
-	for k := int64(0); k <= 100000; k++ {
+	for k := range int64(100000) {
 
 		wg.Add(1)
 		go func(k int64) {
@@ -632,7 +583,7 @@ func TestMapOfSimpleConcurrentReadWrite(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			// wait for writer to complete and send the written value
 			expectedValue := <-writeDone
 
@@ -656,7 +607,7 @@ func TestMapOfSimpleConcurrentReadWrite(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			// write value
 			m.Store("test-key", i)
 
@@ -701,9 +652,9 @@ func TestMapOfMultiKeyConcurrentReadWrite(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			// write a batch of key-value pairs
-			for k := 0; k < keyCount; k++ {
+			for k := range keyCount {
 				m.Store(k, i)
 			}
 
@@ -720,12 +671,12 @@ func TestMapOfMultiKeyConcurrentReadWrite(t *testing.T) {
 	go func() {
 		defer wg.Done()
 
-		for i := 0; i < iterations; i++ {
+		for i := range iterations {
 			// wait for writer to complete
 			<-writeDone
 
 			// read and verify all key-value pairs
-			for k := 0; k < keyCount; k++ {
+			for k := range keyCount {
 				value, ok := m.Load(k)
 				if !ok {
 					t.Logf("Iteration %d: key %d not found", i, k)
@@ -778,12 +729,12 @@ func TestMapOfConcurrentReadWriteStress(t *testing.T) {
 	var wg sync.WaitGroup
 
 	// start writer goroutines
-	for w := 0; w < writerCount; w++ {
+	for w := range writerCount {
 		wg.Add(1)
 		go func(writerID int) {
 			defer wg.Done()
 
-			for i := 0; i < iterations; i++ {
+			for i := range iterations {
 				key := (writerID*iterations + i) % keyCount
 				m.Store(key, writerID*10000+i)
 			}
@@ -792,13 +743,13 @@ func TestMapOfConcurrentReadWriteStress(t *testing.T) {
 
 	// start reader goroutines
 	readErrors := make(chan string, readerCount*iterations)
-	for r := 0; r < readerCount; r++ {
+	for range readerCount {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 
-			for i := 0; i < iterations; i++ {
-				for k := 0; k < keyCount; k++ {
+			for range iterations {
+				for k := range keyCount {
 					_, _ = m.Load(k) // we only care about crashes or deadlocks
 				}
 				// time.Sleep(time.Microsecond) // slightly slow down reading
@@ -830,7 +781,7 @@ func TestMapOfCalcLen(t *testing.T) {
 	var tableLen, growTableLen, sizeLen, parallelism, lastTableLen, lastGrowTableLen, lastSizeLen, lastParallelism int
 	cpus := runtime.GOMAXPROCS(0)
 	t.Log("runtime.GOMAXPROCS(0),", cpus)
-	for i := 0; i < 1000000; i++ {
+	for i := range 1000000 {
 		tableLen = calcTableLen(i)
 		sizeLen = calcSizeLen(i, cpus)
 		// const sizeHintFactor = float64(entriesPerBucket) * mapLoadFactor
@@ -933,7 +884,7 @@ func TestMapOf_BatchProcessImmutableEntries(t *testing.T) {
 	expectedValues := []int{10, 20, 300, 400}
 	expectedStatus := []bool{true, true, false, false}
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if values[i] != expectedValues[i] {
 			t.Errorf("values[%d]: expected %d, got %d", i, expectedValues[i], values[i])
 		}
@@ -998,7 +949,7 @@ func TestMapOf_BatchProcessEntries(t *testing.T) {
 	expectedValues := []int{5, 15, 70, 80}
 	expectedStatus := []bool{true, true, false, false}
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if values[i] != expectedValues[i] {
 			t.Errorf("values[%d]: expected %d, got %d", i, expectedValues[i], values[i])
 		}
@@ -1058,7 +1009,7 @@ func TestMapOf_BatchProcessKeys(t *testing.T) {
 	expectedValues := []int{1, 2, 999, 999}
 	expectedStatus := []bool{true, true, false, false}
 
-	for i := 0; i < 4; i++ {
+	for i := range 4 {
 		if values[i] != expectedValues[i] {
 			t.Errorf("values[%d]: expected %d, got %d", i, expectedValues[i], values[i])
 		}
@@ -1170,11 +1121,11 @@ func TestMapOf_LoadOrProcessEntry(t *testing.T) {
 		const numOperations = 100
 		var wg sync.WaitGroup
 
-		for i := 0; i < numGoroutines; i++ {
+		for i := range numGoroutines {
 			wg.Add(1)
 			go func(id int) {
 				defer wg.Done()
-				for j := 0; j < numOperations; j++ {
+				for j := range numOperations {
 					key := fmt.Sprintf("concurrent_%d_%d", id, j)
 					expectedValue := id*1000 + j
 
@@ -1195,8 +1146,8 @@ func TestMapOf_LoadOrProcessEntry(t *testing.T) {
 		wg.Wait()
 
 		// Verify all keys were stored correctly
-		for i := 0; i < numGoroutines; i++ {
-			for j := 0; j < numOperations; j++ {
+		for i := range numGoroutines {
+			for j := range numOperations {
 				key := fmt.Sprintf("concurrent_%d_%d", i, j)
 				expectedValue := i*1000 + j
 
@@ -1273,7 +1224,7 @@ func TestMapOf_RangeKeys(t *testing.T) {
 
 	t.Run("EarlyTermination", func(t *testing.T) {
 		m.Clear()
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(fmt.Sprintf("key%d", i), i)
 		}
 
@@ -1293,7 +1244,7 @@ func TestMapOf_RangeKeys(t *testing.T) {
 	t.Run("ConcurrentModification", func(t *testing.T) {
 		m.Clear()
 		// Store initial keys
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			m.Store(fmt.Sprintf("initial%d", i), i)
 		}
 
@@ -1327,7 +1278,7 @@ func TestMapOf_RangeKeys(t *testing.T) {
 		expectedKeys := make(map[string]bool)
 
 		// Store many keys
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			key := fmt.Sprintf("large%d", i)
 			m.Store(key, i)
 			expectedKeys[key] = true
@@ -1455,7 +1406,7 @@ func TestMapOf_RangeValues(t *testing.T) {
 
 	t.Run("EarlyTermination", func(t *testing.T) {
 		m.Clear()
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(fmt.Sprintf("key%d", i), i*10)
 		}
 
@@ -1475,7 +1426,7 @@ func TestMapOf_RangeValues(t *testing.T) {
 	t.Run("ConcurrentModification", func(t *testing.T) {
 		m.Clear()
 		// Store initial values
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			m.Store(fmt.Sprintf("initial%d", i), i*100)
 		}
 
@@ -1509,7 +1460,7 @@ func TestMapOf_RangeValues(t *testing.T) {
 		expectedValues := make(map[int]bool)
 
 		// Store many values
-		for i := 0; i < numValues; i++ {
+		for i := range numValues {
 			value := i * 2 // Even numbers
 			m.Store(fmt.Sprintf("large%d", i), value)
 			expectedValues[value] = true
@@ -1648,11 +1599,11 @@ func TestMapOf_HasKey(t *testing.T) {
 		wg.Add(numGoroutines)
 
 		// Start multiple goroutines that store and check keys
-		for i := 0; i < numGoroutines; i++ {
+		for i := range numGoroutines {
 			go func(id int) {
 				defer wg.Done()
 
-				for j := 0; j < numOperations; j++ {
+				for j := range numOperations {
 					key := fmt.Sprintf("concurrent_%d_%d", id, j)
 
 					// Store the key
@@ -1678,13 +1629,13 @@ func TestMapOf_HasKey(t *testing.T) {
 		const numKeys = 1000
 
 		// Store many keys
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			key := fmt.Sprintf("large_%d", i)
 			m.Store(key, i)
 		}
 
 		// Check all keys exist
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			key := fmt.Sprintf("large_%d", i)
 			if !m.HasKey(key) {
 				t.Errorf("Expected HasKey to return true for key %s", key)
@@ -1790,7 +1741,7 @@ func TestMapOf_HasKey(t *testing.T) {
 		m.Clear()
 
 		// Pattern: store, check, delete, check
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			key := fmt.Sprintf("pattern_%d", i)
 
 			// Initially should not exist
@@ -1850,12 +1801,12 @@ func TestMapOfWithKeyHasherUnsafe(t *testing.T) {
 		m := NewMapOf[int, string](WithKeyHasherUnsafe(unsafeIntHasher, LinearDistribution))
 
 		// Test with sequential keys (good for linear distribution)
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			m.Store(i, fmt.Sprintf("value%d", i))
 		}
 
 		// Verify all values
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			expected := fmt.Sprintf("value%d", i)
 			if val, ok := m.Load(i); !ok || val != expected {
 				t.Errorf("Expected %d=%s, got %s, exists=%v", i, expected, val, ok)
@@ -2350,7 +2301,7 @@ func TestMapOfWithBuiltInHasher(t *testing.T) {
 
 		// Generate test data
 		keys := make([]string, numItems)
-		for i := 0; i < numItems; i++ {
+		for i := range numItems {
 			keys[i] = fmt.Sprintf("key_%d_%s", i, strings.Repeat("x", i%10))
 		}
 
@@ -4167,7 +4118,7 @@ func TestMapOfLoadAndStore_NonNilValue(t *testing.T) {
 func TestMapOfRange(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[string, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(strconv.Itoa(i), i)
 	}
 	iters := 0
@@ -4189,7 +4140,7 @@ func TestMapOfRange(t *testing.T) {
 	if iters != numEntries {
 		t.Fatalf("got unexpected number of iterations: %d", iters)
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		if c := met[strconv.Itoa(i)]; c != 1 {
 			t.Fatalf("range did not iterate correctly over %d: %d", i, c)
 		}
@@ -4198,7 +4149,7 @@ func TestMapOfRange(t *testing.T) {
 
 func TestMapOfRange_FalseReturned(t *testing.T) {
 	m := NewMapOf[string, int]()
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		m.Store(strconv.Itoa(i), i)
 	}
 	iters := 0
@@ -4214,14 +4165,14 @@ func TestMapOfRange_FalseReturned(t *testing.T) {
 func TestMapOfRange_NestedDelete(t *testing.T) {
 	const numEntries = 256
 	m := NewMapOf[string, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(strconv.Itoa(i), i)
 	}
 	m.Range(func(key string, value int) bool {
 		m.Delete(key)
 		return true
 	})
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		if _, ok := m.Load(strconv.Itoa(i)); ok {
 			t.Fatalf("value found for %d", i)
 		}
@@ -4231,10 +4182,10 @@ func TestMapOfRange_NestedDelete(t *testing.T) {
 func TestMapOfStringStore(t *testing.T) {
 	const numEntries = 128
 	m := NewMapOf[string, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(strconv.Itoa(i), i)
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		v, ok := m.Load(strconv.Itoa(i))
 		if !ok {
 			t.Fatalf("value not found for %d", i)
@@ -4248,10 +4199,10 @@ func TestMapOfStringStore(t *testing.T) {
 func TestMapOfIntStore(t *testing.T) {
 	const numEntries = 128
 	m := NewMapOf[int, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(i, i)
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		v, ok := m.Load(i)
 		if !ok {
 			t.Fatalf("value not found for %d", i)
@@ -4265,10 +4216,10 @@ func TestMapOfIntStore(t *testing.T) {
 func TestMapOfStore_StructKeys_IntValues(t *testing.T) {
 	const numEntries = 128
 	m := NewMapOf[point, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(point{int32(i), -int32(i)}, i)
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		v, ok := m.Load(point{int32(i), -int32(i)})
 		if !ok {
 			t.Fatalf("value not found for %d", i)
@@ -4282,10 +4233,10 @@ func TestMapOfStore_StructKeys_IntValues(t *testing.T) {
 func TestMapOfStore_StructKeys_StructValues(t *testing.T) {
 	const numEntries = 128
 	m := NewMapOf[point, point]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(point{int32(i), -int32(i)}, point{-int32(i), int32(i)})
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		v, ok := m.Load(point{int32(i), -int32(i)})
 		if !ok {
 			t.Fatalf("value not found for %d", i)
@@ -4302,10 +4253,10 @@ func TestMapOfStore_StructKeys_StructValues(t *testing.T) {
 func TestMapOfWithHasher(t *testing.T) {
 	const numEntries = 10000
 	m := NewMapOf[int, int](WithKeyHasher(murmur3Finalizer))
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(i, i)
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		v, ok := m.Load(i)
 		if !ok {
 			t.Fatalf("value not found for %d", i)
@@ -4350,10 +4301,10 @@ func TestMapOfWithHasher_HashCodeCollisions(t *testing.T) {
 		}),
 		WithPresize(numEntries),
 	)
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(i, i)
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		v, ok := m.Load(i)
 		if !ok {
 			t.Fatalf("value not found for %d", i)
@@ -4367,10 +4318,10 @@ func TestMapOfWithHasher_HashCodeCollisions(t *testing.T) {
 func TestMapOfLoadOrStore(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[string, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(strconv.Itoa(i), i)
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		if _, loaded := m.LoadOrStore(strconv.Itoa(i), i); !loaded {
 			t.Fatalf("value not found for %d", i)
 		}
@@ -4380,7 +4331,7 @@ func TestMapOfLoadOrStore(t *testing.T) {
 func TestMapOfLoadOrCompute(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[string, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		v, loaded := m.LoadOrCompute(
 			strconv.Itoa(i),
 			func() (newValue int, cancel bool) {
@@ -4397,7 +4348,7 @@ func TestMapOfLoadOrCompute(t *testing.T) {
 	if m.Size() != 0 {
 		t.Fatalf("zero map size expected: %d", m.Size())
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		v, loaded := m.LoadOrCompute(
 			strconv.Itoa(i),
 			func() (newValue int, cancel bool) {
@@ -4411,7 +4362,7 @@ func TestMapOfLoadOrCompute(t *testing.T) {
 			t.Fatalf("values do not match for %d: %v", i, v)
 		}
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		v, loaded := m.LoadOrCompute(
 			strconv.Itoa(i),
 			func() (newValue int, cancel bool) {
@@ -4595,10 +4546,10 @@ func TestMapOfCompute(t *testing.T) {
 func TestMapOfStringStoreThenDelete(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[string, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(strconv.Itoa(i), i)
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Delete(strconv.Itoa(i))
 		if _, ok := m.Load(strconv.Itoa(i)); ok {
 			t.Fatalf("value was not expected for %d", i)
@@ -4609,10 +4560,10 @@ func TestMapOfStringStoreThenDelete(t *testing.T) {
 func TestMapOfIntStoreThenDelete(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[int32, int32]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(int32(i), int32(i))
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Delete(int32(i))
 		if _, ok := m.Load(int32(i)); ok {
 			t.Fatalf("value was not expected for %d", i)
@@ -4623,10 +4574,10 @@ func TestMapOfIntStoreThenDelete(t *testing.T) {
 func TestMapOfStructStoreThenDelete(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[point, string]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(point{int32(i), 42}, strconv.Itoa(i))
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Delete(point{int32(i), 42})
 		if _, ok := m.Load(point{int32(i), 42}); ok {
 			t.Fatalf("value was not expected for %d", i)
@@ -4637,10 +4588,10 @@ func TestMapOfStructStoreThenDelete(t *testing.T) {
 func TestMapOfStringStoreThenLoadAndDelete(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[string, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(strconv.Itoa(i), i)
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		if v, loaded := m.LoadAndDelete(strconv.Itoa(i)); !loaded || v != i {
 			t.Fatalf("value was not found or different for %d: %v", i, v)
 		}
@@ -4653,10 +4604,10 @@ func TestMapOfStringStoreThenLoadAndDelete(t *testing.T) {
 func TestMapOfIntStoreThenLoadAndDelete(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[int, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(i, i)
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		if _, loaded := m.LoadAndDelete(i); !loaded {
 			t.Fatalf("value was not found for %d", i)
 		}
@@ -4669,10 +4620,10 @@ func TestMapOfIntStoreThenLoadAndDelete(t *testing.T) {
 func TestMapOfStructStoreThenLoadAndDelete(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[point, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(point{42, int32(i)}, i)
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		if _, loaded := m.LoadAndDelete(point{42, int32(i)}); !loaded {
 			t.Fatalf("value was not found for %d", i)
 		}
@@ -4687,37 +4638,37 @@ func TestMapOfStoreThenParallelDelete_DoesNotShrinkBelowMinLen(
 ) {
 	const numEntries = 1000
 	m := NewMapOf[int, int](WithShrinkEnabled())
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(i, i)
 	}
 
 	cdone := make(chan bool)
 	go func() {
-		for i := 0; i < numEntries; i++ {
+		for i := range numEntries {
 			m.Delete(i)
 		}
 		cdone <- true
 	}()
 	//go func() {
-	//	for i := 0; i < numEntries; i++ {
+	//	for i := range numEntries {
 	//		m.Delete(i)
 	//	}
 	//	cdone <- true
 	//}()
 	//go func() {
-	//	for i := 0; i < numEntries; i++ {
+	//	for i := range numEntries {
 	//		m.Delete(i)
 	//	}
 	//	cdone <- true
 	//}()
 	//go func() {
-	//	for i := 0; i < numEntries; i++ {
+	//	for i := range numEntries {
 	//		m.Delete(i)
 	//	}
 	//	cdone <- true
 	//}()
 	//go func() {
-	//	for i := 0; i < numEntries; i++ {
+	//	for i := range numEntries {
 	//		m.Delete(i)
 	//	}
 	//	cdone <- true
@@ -4755,7 +4706,7 @@ func TestMapOfSize(t *testing.T) {
 		t.Fatalf("zero size expected: %d", size)
 	}
 	expectedSize := 0
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(strconv.Itoa(i), i)
 		expectedSize++
 		size := m.Size()
@@ -4771,7 +4722,7 @@ func TestMapOfSize(t *testing.T) {
 			)
 		}
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Delete(strconv.Itoa(i))
 		expectedSize--
 		size := m.Size()
@@ -4792,7 +4743,7 @@ func TestMapOfSize(t *testing.T) {
 func TestMapOfClear(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[string, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(strconv.Itoa(i), i)
 	}
 	size := m.Size()
@@ -4935,7 +4886,7 @@ func TestNewMapOfPresized_DoesNotShrinkBelowMinLen(t *testing.T) {
 	const minLen = 1024
 	const numEntries = int(minLen*float64(entriesPerBucket)*loadFactor) - entriesPerBucket
 	m := NewMapOf[int, int](WithPresize(numEntries), WithShrinkEnabled())
-	for i := 0; i < 2*numEntries; i++ {
+	for i := range 2 * numEntries {
 		m.Store(i, i)
 	}
 
@@ -4944,7 +4895,7 @@ func TestNewMapOfPresized_DoesNotShrinkBelowMinLen(t *testing.T) {
 		t.Fatalf("table did not grow: %d", stats.RootBuckets)
 	}
 
-	for i := 0; i < 2*numEntries; i++ {
+	for i := range 2 * numEntries {
 		m.Delete(i)
 	}
 
@@ -4964,7 +4915,7 @@ func TestNewMapOfGrowOnly_OnlyShrinksOnClear(t *testing.T) {
 	stats := m.Stats()
 	initialTableLen := stats.RootBuckets
 
-	for i := 0; i < 2*numEntries; i++ {
+	for i := range 2 * numEntries {
 		m.Store(i, i)
 	}
 	stats = m.Stats()
@@ -4973,7 +4924,7 @@ func TestNewMapOfGrowOnly_OnlyShrinksOnClear(t *testing.T) {
 		t.Fatalf("table did not grow: %d", maxTableLen)
 	}
 
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Delete(i)
 	}
 	stats = m.Stats()
@@ -4998,7 +4949,7 @@ func TestMapOfResize(t *testing.T) {
 	const numEntries = 100_000
 	m := NewMapOf[string, int](WithShrinkEnabled())
 
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(strconv.Itoa(i), i)
 	}
 	stats := m.Stats()
@@ -5028,7 +4979,7 @@ func TestMapOfResize(t *testing.T) {
 	// Use -v flag to see the output.
 	t.Log(stats.ToString())
 
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Delete(strconv.Itoa(i))
 	}
 	m.Shrink()
@@ -5059,7 +5010,7 @@ func TestMapOfResize_CounterLenLimit(t *testing.T) {
 	const numEntries = 1_000_000
 	m := NewMapOf[string, string]()
 
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store("foo"+strconv.Itoa(i), "bar"+strconv.Itoa(i))
 	}
 	stats := m.Stats()
@@ -5079,7 +5030,7 @@ func parallelSeqTypedResizer(
 	positive bool,
 	cdone chan bool,
 ) {
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		if positive {
 			m.Store(i, i)
 		} else {
@@ -5120,9 +5071,9 @@ func parallelRandTypedResizer(
 	cdone chan bool,
 ) {
 	// r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
-	for i := 0; i < numIters; i++ {
+	for range numIters {
 		coin := rand.Int64N(2)
-		for j := 0; j < numEntries; j++ {
+		for j := range numEntries {
 			if coin == 1 {
 				m.Store(strconv.Itoa(j), j)
 			} else {
@@ -5144,7 +5095,7 @@ func TestMapOfParallelResize(t *testing.T) {
 	<-cdone
 	<-cdone
 	// Verify map contents.
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		v, ok := m.Load(strconv.Itoa(i))
 		if !ok {
 			// The entry may be deleted and that's ok.
@@ -5175,9 +5126,9 @@ func parallelRandTypedClearer(
 	cdone chan bool,
 ) {
 	// r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
-	for i := 0; i < numIters; i++ {
+	for range numIters {
 		coin := rand.Int64N(2)
-		for j := 0; j < numEntries; j++ {
+		for j := range numEntries {
 			if coin == 1 {
 				m.Store(strconv.Itoa(j), j)
 			} else {
@@ -5219,8 +5170,8 @@ func parallelSeqTypedStorer(
 	storeEach, numIters, numEntries int,
 	cdone chan bool,
 ) {
-	for i := 0; i < numIters; i++ {
-		for j := 0; j < numEntries; j++ {
+	for range numIters {
+		for j := range numEntries {
 			if storeEach == 0 || j%storeEach == 0 {
 				m.Store(strconv.Itoa(j), j)
 				// Due to atomic snapshots we must see a "<j>"/j pair.
@@ -5245,15 +5196,15 @@ func TestMapOfParallelStores(t *testing.T) {
 	const numEntries = 100
 	m := NewMapOf[string, int]()
 	cdone := make(chan bool)
-	for i := 0; i < numStorers; i++ {
+	for i := range numStorers {
 		go parallelSeqTypedStorer(t, m, i, numIters, numEntries, cdone)
 	}
 	// Wait for the goroutines to finish.
-	for i := 0; i < numStorers; i++ {
+	for range numStorers {
 		<-cdone
 	}
 	// Verify map contents.
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		v, ok := m.Load(strconv.Itoa(i))
 		if !ok {
 			t.Fatalf("value not found for %d", i)
@@ -5271,7 +5222,7 @@ func parallelRandTypedStorer(
 	cdone chan bool,
 ) {
 	// r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
-	for i := 0; i < numIters; i++ {
+	for range numIters {
 		j := rand.IntN(numEntries)
 		if v, loaded := m.LoadOrStore(strconv.Itoa(j), j); loaded {
 			if v != j {
@@ -5289,7 +5240,7 @@ func parallelRandTypedDeleter(
 	cdone chan bool,
 ) {
 	// r := rand1.New(rand1.NewSource(time.Now().UnixNano()))
-	for i := 0; i < numIters; i++ {
+	for range numIters {
 		j := rand.IntN(numEntries)
 		if v, loaded := m.LoadAndDelete(strconv.Itoa(j)); loaded {
 			if v != j {
@@ -5306,8 +5257,8 @@ func parallelTypedLoader(
 	numIters, numEntries int,
 	cdone chan bool,
 ) {
-	for i := 0; i < numIters; i++ {
-		for j := 0; j < numEntries; j++ {
+	for range numIters {
+		for j := range numEntries {
 			// Due to atomic snapshots we must either see no entry, or a "<j>"/j
 			// pair.
 			if v, ok := m.Load(strconv.Itoa(j)); ok {
@@ -5330,7 +5281,7 @@ func TestMapOfAtomicSnapshot(t *testing.T) {
 	go parallelRandTypedDeleter(t, m, numIters, numEntries, cdone)
 	go parallelTypedLoader(t, m, numIters, numEntries, cdone)
 	// Wait for the goroutines to finish.
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		<-cdone
 	}
 }
@@ -5342,12 +5293,12 @@ func TestMapOfParallelStoresAndDeletes(t *testing.T) {
 	m := NewMapOf[string, int]()
 	cdone := make(chan bool)
 	// Update random entry in parallel with deletes.
-	for i := 0; i < numWorkers; i++ {
+	for range numWorkers {
 		go parallelRandTypedStorer(t, m, numIters, numEntries, cdone)
 		go parallelRandTypedDeleter(t, m, numIters, numEntries, cdone)
 	}
 	// Wait for the goroutines to finish.
-	for i := 0; i < 2*numWorkers; i++ {
+	for range 2 * numWorkers {
 		<-cdone
 	}
 }
@@ -5357,8 +5308,8 @@ func parallelTypedComputer(
 	numIters, numEntries int,
 	cdone chan bool,
 ) {
-	for i := 0; i < numIters; i++ {
-		for j := 0; j < numEntries; j++ {
+	for range numIters {
+		for j := range numEntries {
 			m.Compute(
 				uint64(j),
 				func(oldValue uint64, loaded bool) (newValue uint64, op ComputeOp) {
@@ -5375,15 +5326,15 @@ func TestMapOfParallelComputes(t *testing.T) {
 	const numIters = 10_000
 	m := NewMapOf[uint64, uint64]()
 	cdone := make(chan bool)
-	for i := 0; i < numWorkers; i++ {
+	for range numWorkers {
 		go parallelTypedComputer(m, numIters, numWorkers, cdone)
 	}
 	// Wait for the goroutines to finish.
-	for i := 0; i < numWorkers; i++ {
+	for range numWorkers {
 		<-cdone
 	}
 	// Verify map contents.
-	for i := 0; i < numWorkers; i++ {
+	for i := range numWorkers {
 		v, ok := m.Load(uint64(i))
 		if !ok {
 			t.Fatalf("value not found for %d", i)
@@ -5401,7 +5352,7 @@ func parallelTypedRangeStorer(
 	cdone chan bool,
 ) {
 	for {
-		for i := 0; i < numEntries; i++ {
+		for i := range numEntries {
 			m.Store(i, i)
 		}
 		if atomic.LoadInt64(stopFlag) != 0 {
@@ -5418,7 +5369,7 @@ func parallelTypedRangeDeleter(
 	cdone chan bool,
 ) {
 	for {
-		for i := 0; i < numEntries; i++ {
+		for i := range numEntries {
 			m.Delete(i)
 		}
 		if atomic.LoadInt64(stopFlag) != 0 {
@@ -5431,7 +5382,7 @@ func parallelTypedRangeDeleter(
 func TestMapOfParallelRange(t *testing.T) {
 	const numEntries = 10_000
 	m := NewMapOf[int, int](WithPresize(numEntries))
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(i, i)
 	}
 	// Start goroutines that would be storing and deleting items in parallel.
@@ -5470,13 +5421,13 @@ func parallelTypedShrinker(
 	stopFlag *int64,
 	cdone chan bool,
 ) {
-	for i := 0; i < numIters; i++ {
-		for j := 0; j < numEntries; j++ {
+	for range numIters {
+		for j := range numEntries {
 			if p, loaded := m.LoadOrStore(uint64(j), &point{int32(j), int32(j)}); loaded {
 				t.Errorf("value was present for %d: %v", j, p)
 			}
 		}
-		for j := 0; j < numEntries; j++ {
+		for j := range numEntries {
 			m.Delete(uint64(j))
 		}
 	}
@@ -5548,7 +5499,7 @@ func TestMapOfStats(t *testing.T) {
 		t.Fatalf("unexpected counter length: %s", stats.ToString())
 	}
 
-	for i := 0; i < 200; i++ {
+	for i := range 200 {
 		m.Store(i, i)
 	}
 
@@ -5587,14 +5538,14 @@ func TestMapOfStats(t *testing.T) {
 func TestToPlainMapOf(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[int, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(i, i)
 	}
 	pm := m.ToMap()
 	if len(pm) != numEntries {
 		t.Fatalf("got unexpected size of nil map copy: %d", len(pm))
 	}
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		if v := pm[i]; v != i {
 			t.Fatalf("unexpected value for key %d: %d", i, v)
 		}
@@ -5624,7 +5575,7 @@ func BenchmarkMapOf_WarmUp(b *testing.B) {
 	for _, bc := range benchmarkCases {
 		b.Run(bc.name, func(b *testing.B) {
 			m := NewMapOf[string, int](WithPresize(benchmarkNumEntries))
-			for i := 0; i < benchmarkNumEntries; i++ {
+			for i := range benchmarkNumEntries {
 				m.Store(benchmarkKeyPrefix+strconv.Itoa(i), i)
 			}
 			b.ResetTimer()
@@ -5687,7 +5638,7 @@ func BenchmarkMapOfInt_WarmUp(b *testing.B) {
 	for _, bc := range benchmarkCases {
 		b.Run(bc.name, func(b *testing.B) {
 			m := NewMapOf[int, int](WithPresize(benchmarkNumEntries))
-			for i := 0; i < benchmarkNumEntries; i++ {
+			for i := range benchmarkNumEntries {
 				m.Store(i, i)
 			}
 			b.ResetTimer()
@@ -5709,7 +5660,7 @@ func BenchmarkMapOfInt_Murmur3Finalizer_WarmUp(b *testing.B) {
 				WithKeyHasher(murmur3Finalizer),
 				WithPresize(benchmarkNumEntries),
 			)
-			for i := 0; i < benchmarkNumEntries; i++ {
+			for i := range benchmarkNumEntries {
 				m.Store(i, i)
 			}
 			b.ResetTimer()
@@ -5754,7 +5705,7 @@ func BenchmarkIntMapStandard_WarmUp(b *testing.B) {
 	for _, bc := range benchmarkCases {
 		b.Run(bc.name, func(b *testing.B) {
 			var m sync.Map
-			for i := 0; i < benchmarkNumEntries; i++ {
+			for i := range benchmarkNumEntries {
 				m.Store(i, i)
 			}
 			b.ResetTimer()
@@ -5801,7 +5752,7 @@ func benchmarkMapOfIntKeys(
 
 func BenchmarkMapOfRange(b *testing.B) {
 	m := NewMapOf[string, int](WithPresize(benchmarkNumEntries))
-	for i := 0; i < benchmarkNumEntries; i++ {
+	for i := range benchmarkNumEntries {
 		m.Store(benchmarkKeys[i], i)
 	}
 	b.ResetTimer()
@@ -5838,7 +5789,7 @@ var benchmarkKeys []string
 
 func init() {
 	benchmarkKeys = make([]string, benchmarkNumEntries)
-	for i := 0; i < benchmarkNumEntries; i++ {
+	for i := range benchmarkNumEntries {
 		benchmarkKeys[i] = benchmarkKeyPrefix + strconv.Itoa(i)
 	}
 }
@@ -5876,7 +5827,7 @@ func TestMapOfClone(t *testing.T) {
 	t.Run("PopulatedMap", func(t *testing.T) {
 		const numEntries = 1000
 		m := NewMapOf[string, int]()
-		for i := 0; i < numEntries; i++ {
+		for i := range numEntries {
 			m.Store(strconv.Itoa(i), i)
 		}
 
@@ -5892,7 +5843,7 @@ func TestMapOfClone(t *testing.T) {
 		}
 
 		// Verify all entries were copied correctly
-		for i := 0; i < numEntries; i++ {
+		for i := range numEntries {
 			key := strconv.Itoa(i)
 			val, ok := clone.Load(key)
 			if !ok {
@@ -6068,7 +6019,7 @@ func TestMapOfFilterAndTransform(t *testing.T) {
 	// Test filtering only (no transformation)
 	t.Run("FilterOnly", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(strconv.Itoa(i), i)
 		}
 
@@ -6103,7 +6054,7 @@ func TestMapOfFilterAndTransform(t *testing.T) {
 	// Test transformation only (no filtering)
 	t.Run("TransformOnly", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			m.Store(strconv.Itoa(i), i)
 		}
 
@@ -6118,7 +6069,7 @@ func TestMapOfFilterAndTransform(t *testing.T) {
 		}
 
 		// Verify all values are doubled
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			key := strconv.Itoa(i)
 			expectPresentMapOf(t, key, i*2)(m.Load(key))
 		}
@@ -6127,7 +6078,7 @@ func TestMapOfFilterAndTransform(t *testing.T) {
 	// Test both filtering and transformation
 	t.Run("FilterAndTransform", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(strconv.Itoa(i), i)
 		}
 
@@ -6163,7 +6114,7 @@ func TestMapOfFilterAndTransform(t *testing.T) {
 	// Test selective transformation (only transform some values)
 	t.Run("SelectiveTransform", func(t *testing.T) {
 		m := NewMapOf[string, int]()
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(strconv.Itoa(i), i)
 		}
 
@@ -6183,7 +6134,7 @@ func TestMapOfFilterAndTransform(t *testing.T) {
 		}
 
 		// Verify even numbers are doubled, odd numbers unchanged
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			key := strconv.Itoa(i)
 			if i%2 == 0 {
 				expectPresentMapOf(
@@ -6281,7 +6232,7 @@ func TestMapOfFromMap(t *testing.T) {
 		m := NewMapOf[string, int]()
 		source := make(map[string]int, 1000)
 
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			source[strconv.Itoa(i)] = i
 		}
 
@@ -6428,7 +6379,7 @@ func TestMapOfBatchUpsert(t *testing.T) {
 		const numEntries = 1000
 		entries := make([]EntryOf[string, int], numEntries)
 
-		for i := 0; i < numEntries; i++ {
+		for i := range numEntries {
 			entries[i] = EntryOf[string, int]{Key: strconv.Itoa(i), Value: i}
 		}
 
@@ -6452,7 +6403,7 @@ func TestMapOfBatchUpsert(t *testing.T) {
 		}
 
 		// All entries should be new
-		for i := 0; i < numEntries; i++ {
+		for i := range numEntries {
 			if loaded[i] {
 				t.Fatalf("expected loaded[%d] to be false for new entry", i)
 			}
@@ -6609,7 +6560,7 @@ func TestMapOfBatchInsert(t *testing.T) {
 		const numEntries = 1000
 		entries := make([]EntryOf[string, int], numEntries)
 
-		for i := 0; i < numEntries; i++ {
+		for i := range numEntries {
 			entries[i] = EntryOf[string, int]{Key: strconv.Itoa(i), Value: i}
 		}
 
@@ -6633,7 +6584,7 @@ func TestMapOfBatchInsert(t *testing.T) {
 		}
 
 		// All entries should be new
-		for i := 0; i < numEntries; i++ {
+		for i := range numEntries {
 			if loaded[i] {
 				t.Fatalf("expected loaded[%d] to be false for new entry", i)
 			}
@@ -6788,7 +6739,7 @@ func TestMapOfBatchDelete(t *testing.T) {
 		const numEntries = 1000
 
 		// Pre-populate the map
-		for i := 0; i < numEntries; i++ {
+		for i := range numEntries {
 			m.Store(strconv.Itoa(i), i)
 		}
 
@@ -6818,7 +6769,7 @@ func TestMapOfBatchDelete(t *testing.T) {
 		}
 
 		// All deleted entries should have correct values and loaded=true
-		for i := 0; i < numEntries/2; i++ {
+		for i := range numEntries / 2 {
 			expectedValue := i * 2 // Even numbers
 			if previous[i] != expectedValue {
 				t.Fatalf(
@@ -6844,7 +6795,7 @@ func TestMapOfBatchDelete(t *testing.T) {
 
 		// Check random samples - even numbers should be gone, odd numbers
 		// present
-		for i := 0; i < 20; i++ {
+		for i := range 20 {
 			key := strconv.Itoa(i)
 			if i%2 == 0 {
 				expectMissingMapOf(
@@ -7002,7 +6953,7 @@ func TestMapOfBatchUpdate(t *testing.T) {
 
 		// Create entries for all keys (both odd and even)
 		entries := make([]EntryOf[string, int], numEntries)
-		for i := 0; i < numEntries; i++ {
+		for i := range numEntries {
 			entries[i] = EntryOf[string, int]{Key: strconv.Itoa(i), Value: i}
 		}
 
@@ -7027,7 +6978,7 @@ func TestMapOfBatchUpdate(t *testing.T) {
 
 		// Verify results - odd numbers should be updated, even numbers should
 		// not be affected
-		for i := 0; i < numEntries; i++ {
+		for i := range numEntries {
 			if i%2 == 1 { // Odd numbers - should be updated
 				if !loaded[i] {
 					t.Fatalf(
@@ -7064,7 +7015,7 @@ func TestMapOfBatchUpdate(t *testing.T) {
 		}
 
 		// Check random samples
-		for i := 0; i < 20; i++ {
+		for i := range 20 {
 			key := strconv.Itoa(i)
 			if i%2 == 1 { // Odd numbers should be updated
 				expectPresentMapOf(t, key, i)(m.Load(key))
@@ -7101,7 +7052,7 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 	t.Run("UpdateValues", func(t *testing.T) {
 		m := NewMapOf[string, int]()
 		// Pre-populate the map
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(strconv.Itoa(i), i)
 		}
 
@@ -7122,7 +7073,7 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 		}
 
 		// Verify all values are doubled
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			key := strconv.Itoa(i)
 			expectPresentMapOf(t, key, i*2)(m.Load(key))
 		}
@@ -7132,7 +7083,7 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 	t.Run("DeleteEntries", func(t *testing.T) {
 		m := NewMapOf[string, int]()
 		// Pre-populate the map
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(strconv.Itoa(i), i)
 		}
 
@@ -7161,7 +7112,7 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 			)
 		}
 
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			key := strconv.Itoa(i)
 			if i%2 == 0 {
 				// Even numbers should be deleted
@@ -7177,7 +7128,7 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 	t.Run("MixedOperations", func(t *testing.T) {
 		m := NewMapOf[string, int]()
 		// Pre-populate the map
-		for i := 0; i < 15; i++ {
+		for i := range 15 {
 			m.Store(strconv.Itoa(i), i)
 		}
 
@@ -7202,7 +7153,7 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 		)
 
 		// Verify results
-		for i := 0; i < 15; i++ {
+		for i := range 15 {
 			key := strconv.Itoa(i)
 			switch {
 			case i%3 == 0:
@@ -7222,7 +7173,7 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 	t.Run("ConcurrentSafety", func(t *testing.T) {
 		m := NewMapOf[string, int]()
 		// Pre-populate the map
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			m.Store(strconv.Itoa(i), i)
 		}
 
@@ -7369,10 +7320,10 @@ func TestMapOfLoadAndUpdate(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(numGoroutines)
 
-		for i := 0; i < numGoroutines; i++ {
+		for i := range numGoroutines {
 			go func(goroutineID int) {
 				defer wg.Done()
-				for j := 0; j < updatesPerGoroutine; j++ {
+				for j := range updatesPerGoroutine {
 					// Each goroutine tries to update with its own value
 					newValue := goroutineID*1000 + j
 					m.LoadAndUpdate("shared", newValue)
@@ -7484,7 +7435,7 @@ func TestMapOfGrow_UninitializedMap(t *testing.T) {
 func TestMapOfShrink_Basic(t *testing.T) {
 	m := NewMapOf[string, int]()
 
-	for i := 0; i < 10000; i++ {
+	for i := range 10000 {
 		m.Store(strconv.Itoa(i), i)
 	}
 
@@ -7492,7 +7443,7 @@ func TestMapOfShrink_Basic(t *testing.T) {
 	initialCapacity := afterStoreStats.Capacity
 	initialBuckets := afterStoreStats.RootBuckets
 
-	for i := 0; i < 9000; i++ {
+	for i := range 9000 {
 		m.Delete(strconv.Itoa(i))
 	}
 
@@ -7523,7 +7474,7 @@ func TestMapOfShrink_MinLen(t *testing.T) {
 	initialStats := m.Stats()
 	minBuckets := initialStats.RootBuckets
 
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		m.Store(strconv.Itoa(i), i)
 	}
 
@@ -7556,30 +7507,30 @@ func TestMapOfGrowShrink_Concurrent(t *testing.T) {
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines * 3) // grow, shrink, data operations
 
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < numOperations; j++ {
+			for range numOperations {
 				m.Grow(sizeAdd)
 				runtime.Gosched()
 			}
 		}()
 	}
 
-	for i := 0; i < numGoroutines; i++ {
+	for range numGoroutines {
 		go func() {
 			defer wg.Done()
-			for j := 0; j < numOperations; j++ {
+			for range numOperations {
 				m.Shrink()
 				runtime.Gosched()
 			}
 		}()
 	}
 
-	for i := 0; i < numGoroutines; i++ {
+	for i := range numGoroutines {
 		go func(base int) {
 			defer wg.Done()
-			for j := 0; j < numOperations; j++ {
+			for j := range numOperations {
 				key := base*numOperations + j
 				m.Store(key, key)
 				if val, ok := m.Load(key); !ok || val != key {
@@ -7608,7 +7559,7 @@ func TestMapOfGrow_Performance(t *testing.T) {
 
 	m1 := NewMapOf[int, int]()
 	start1 := time.Now()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m1.Store(i, i)
 	}
 	duration1 := time.Since(start1)
@@ -7616,7 +7567,7 @@ func TestMapOfGrow_Performance(t *testing.T) {
 	m2 := NewMapOf[int, int]()
 	m2.Grow(numEntries)
 	start2 := time.Now()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m2.Store(i, i)
 	}
 	duration2 := time.Since(start2)
@@ -7656,19 +7607,19 @@ func TestMapOfShrink_AutomaticVsManual(t *testing.T) {
 	const numEntries = 10000
 
 	m1 := NewMapOf[string, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m1.Store(strconv.Itoa(i), i)
 	}
-	for i := 0; i < numEntries-100; i++ {
+	for i := range numEntries - 100 {
 		m1.Delete(strconv.Itoa(i))
 	}
 	stats1 := m1.Stats()
 
 	m2 := NewMapOf[string, int]()
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m2.Store(strconv.Itoa(i), i)
 	}
-	for i := 0; i < numEntries-100; i++ {
+	for i := range numEntries - 100 {
 		m2.Delete(strconv.Itoa(i))
 	}
 	m2.Shrink()
@@ -7687,14 +7638,14 @@ func TestMapOfGrowShrink_DataIntegrity(t *testing.T) {
 	const numEntries = 1000
 
 	testData := make(map[string]string)
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		key := "key_" + strconv.Itoa(i)
 		value := "value_" + strconv.Itoa(i)
 		testData[key] = value
 		m.Store(key, value)
 	}
 
-	for cycle := 0; cycle < 5; cycle++ {
+	for cycle := range 5 {
 		m.Grow(numEntries * 2)
 
 		for key, expectedValue := range testData {
@@ -8101,22 +8052,22 @@ func TestMapOfEdgeCases(t *testing.T) {
 		m := NewMapOf[int, int]()
 
 		// Store many values
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			m.Store(i, i*2)
 		}
 
 		// Verify all values
-		for i := 0; i < 1000; i++ {
+		for i := range 1000 {
 			expectPresentMapOf(t, i, i*2)(m.Load(i))
 		}
 
 		// Delete half
-		for i := 0; i < 500; i++ {
+		for i := range 500 {
 			m.Delete(i)
 		}
 
 		// Verify deletions
-		for i := 0; i < 500; i++ {
+		for i := range 500 {
 			expectMissingMapOf(t, i, 0)(m.Load(i))
 		}
 
@@ -8559,7 +8510,7 @@ func TestMapOfBatchProcess(t *testing.T) {
 
 		m.BatchProcess(
 			func(yield func(string, int) bool) {
-				for i := 0; i < 10; i++ {
+				for i := range 10 {
 					if i == 5 {
 						// Simulate early termination
 						if !yield(fmt.Sprintf("key%d", i), i) {
@@ -8602,7 +8553,7 @@ func TestMapOf_InitWithOptions(t *testing.T) {
 		m.InitWithOptions(WithPresize(1000))
 
 		// Verify the map works correctly
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			key := fmt.Sprintf("key%d", i)
 			m.Store(key, i)
 		}
@@ -8617,13 +8568,13 @@ func TestMapOf_InitWithOptions(t *testing.T) {
 		m.InitWithOptions(WithShrinkEnabled())
 
 		// Add and remove items to test shrinking
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			key := fmt.Sprintf("key%d", i)
 			m.Store(key, i)
 		}
 
 		// Remove most items
-		for i := 0; i < 90; i++ {
+		for i := range 90 {
 			key := fmt.Sprintf("key%d", i)
 			m.Delete(key)
 		}
@@ -8684,7 +8635,7 @@ func TestMapOf_InitWithOptions(t *testing.T) {
 		)
 
 		// Test that all options work together
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			key := fmt.Sprintf("key%d", i)
 			m.Store(key, i)
 		}
@@ -9192,7 +9143,7 @@ func TestMapOf_GCAndWeakReferences(t *testing.T) {
 	m := NewMapOf[int, string]()
 
 	// Add many elements to trigger resize
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		m.Store(i, "value")
 	}
 
@@ -9239,7 +9190,7 @@ func TestMapOf_LoadAndDelete(t *testing.T) {
 		m := NewMapOf[int, string]()
 
 		// Store multiple values
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(i, fmt.Sprintf("value_%d", i))
 		}
 
@@ -9253,7 +9204,7 @@ func TestMapOf_LoadAndDelete(t *testing.T) {
 		}
 
 		// Verify even keys are deleted and odd keys remain
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			value, ok := m.Load(i)
 			if i%2 == 0 {
 				// Even keys should be deleted
@@ -9275,7 +9226,7 @@ func TestMapOf_LoadAndDelete(t *testing.T) {
 		const numKeys = 1000
 
 		// Store initial values
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			m.Store(i, i*10)
 		}
 
@@ -9287,7 +9238,7 @@ func TestMapOf_LoadAndDelete(t *testing.T) {
 		numWorkers := 10
 		keysPerWorker := numKeys / numWorkers
 
-		for w := 0; w < numWorkers; w++ {
+		for w := range numWorkers {
 			wg.Add(1)
 			go func(workerID int) {
 				defer wg.Done()
@@ -9425,12 +9376,12 @@ func TestMapOf_LoadOrStoreFn(t *testing.T) {
 		callCounts := make([]int32, numKeys)
 
 		// Concurrent LoadOrStoreFn operations on the same keys
-		for w := 0; w < numWorkers; w++ {
+		for w := range numWorkers {
 			wg.Add(1)
 			go func(workerID int) {
 				defer wg.Done()
 
-				for i := 0; i < numKeys; i++ {
+				for i := range numKeys {
 					m.LoadOrStoreFn(i, func() int {
 						atomic.AddInt32(&callCounts[i], 1)
 						return i * 100
@@ -9442,7 +9393,7 @@ func TestMapOf_LoadOrStoreFn(t *testing.T) {
 		wg.Wait()
 
 		// Verify each function was called exactly once per key
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			count := atomic.LoadInt32(&callCounts[i])
 			if count != 1 {
 				t.Errorf("Key %d: function called %d times, want 1", i, count)

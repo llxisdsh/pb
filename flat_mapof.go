@@ -342,7 +342,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 				}
 				s2 = b.seq.Load()
 				if s1 == s2 {
-					for j := 0; j < cacheCount; j++ {
+					for j := range cacheCount {
 						kv := &cache[j]
 						if !yield(kv.k, kv.v) {
 							return
@@ -367,7 +367,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 				}
 				root.Unlock()
 				// yield outside lock
-				for j := 0; j < cacheCount; j++ {
+				for j := range cacheCount {
 					kv := &cache[j]
 					if !yield(kv.k, kv.v) {
 						return

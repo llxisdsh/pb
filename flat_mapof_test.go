@@ -146,7 +146,7 @@ func TestFlatMapOf_MultipleKeys(t *testing.T) {
 	m := NewFlatMapOf[int, *string]()
 
 	// Insert multiple keys
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		m.Process(
 			i,
 			func(old *string, loaded bool) (*string, ComputeOp, *string, bool) {
@@ -157,7 +157,7 @@ func TestFlatMapOf_MultipleKeys(t *testing.T) {
 	}
 
 	// Verify all keys
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		expected := fmt.Sprintf("value_%d", i)
 		if val, ok := m.Load(i); !ok || *val != expected {
 			t.Errorf(
@@ -182,7 +182,7 @@ func TestFlatMapOf_MultipleKeys(t *testing.T) {
 	}
 
 	// Verify deletions
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		val, ok := m.Load(i)
 		if i%2 == 0 {
 			// Even keys should be deleted
@@ -251,7 +251,7 @@ func TestFlatMapOf_Concurrent(t *testing.T) {
 	wg.Add(numGoroutines)
 
 	// Concurrent writers
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		go func(goroutineID int) {
 			defer wg.Done()
 			for i := 1; i <= numOpsPerGoroutine; i++ {
@@ -267,7 +267,7 @@ func TestFlatMapOf_Concurrent(t *testing.T) {
 	}
 
 	// Concurrent readers
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		go func(goroutineID int) {
 			for i := 1; i <= numOpsPerGoroutine; i++ {
 				key := goroutineID*numOpsPerGoroutine + i
@@ -280,7 +280,7 @@ func TestFlatMapOf_Concurrent(t *testing.T) {
 	wg.Wait()
 
 	// Verify final state
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		for i := 1; i <= numOpsPerGoroutine; i++ {
 			key := g*numOpsPerGoroutine + i
 			expected := key * 2
@@ -315,7 +315,7 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 	}
 
 	// Pre-populate with some data
-	for i := 0; i < 1000; i++ {
+	for i := range 1000 {
 		m.Process(i, func(old int, loaded bool) (int, ComputeOp, int, bool) {
 			return i, UpdateOp, i, true
 		})
@@ -325,7 +325,7 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 	stop := make(chan struct{})
 
 	// Start readers
-	for i := 0; i < numReaders; i++ {
+	for range numReaders {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -342,7 +342,7 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 	}
 
 	// Start writers
-	for i := 0; i < numWriters; i++ {
+	for range numWriters {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -432,7 +432,7 @@ func TestFlatMapOf_Range(t *testing.T) {
 
 	// Add some data
 	expected := make(map[int]string)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		value := fmt.Sprintf("value_%d", i)
 		m.Store(i, &value)
 		expected[i] = value
@@ -476,7 +476,7 @@ func TestFlatMapOf_Size(t *testing.T) {
 	}
 
 	// Add items and check size
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		value := fmt.Sprintf("value_%d", i)
 		m.Store(i, &value)
 		expectedSize := i + 1
@@ -491,7 +491,7 @@ func TestFlatMapOf_Size(t *testing.T) {
 	}
 
 	// Delete items and check size
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		m.Delete(i)
 		expectedSize := 10 - i - 1
 		if size := m.Size(); size != expectedSize {
@@ -551,7 +551,7 @@ func TestFlatMapOf_LoadOrStoreFn_OnceUnderRace(t *testing.T) {
 	var wg sync.WaitGroup
 	workers := max(2, runtime.GOMAXPROCS(0)) // Reduce Concurrency​
 	wg.Add(workers)
-	for i := 0; i < workers; i++ {
+	for range workers {
 		go func() {
 			defer wg.Done()
 			_, _ = m.LoadOrStoreFn(999, func() int {
@@ -589,7 +589,7 @@ func TestFlatMapOf_DoubleBufferConsistency(t *testing.T) {
 	stop := make(chan struct{})
 
 	// Continuous readers to stress test the double buffer
-	for r := 0; r < 4; r++ {
+	for range 4 {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -620,7 +620,7 @@ func TestFlatMapOf_DoubleBufferConsistency(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for update := 0; update < numUpdates; update++ {
+		for range numUpdates {
 			for i := 1; i <= numKeys; i++ {
 				m.Process(
 					i,
@@ -660,7 +660,7 @@ func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
 
 	// Start multiple writers to maximize flip frequency on the same slot
 	writerN := 4
-	for w := 0; w < writerN; w++ {
+	for range writerN {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -684,7 +684,7 @@ func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
 
 	// Start readers to continuously validate that values are not torn
 	readerN := 8
-	for r := 0; r < readerN; r++ {
+	for range readerN {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -728,7 +728,7 @@ func TestFlatMapOf_SeqlockConsistency_StressABA(t *testing.T) {
 	)
 
 	writerN := 4 // Reduce Concurrency​
-	for w := 0; w < writerN; w++ {
+	for range writerN {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -751,7 +751,7 @@ func TestFlatMapOf_SeqlockConsistency_StressABA(t *testing.T) {
 	}
 
 	readerN := 4 // Reduce Concurrency​
-	for r := 0; r < readerN; r++ {
+	for range readerN {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -809,7 +809,7 @@ func TestFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
 		atomic.StoreUint32(&stop, 1)
 	}()
 
-	for i := 0; i < readers; i++ {
+	for range readers {
 		go func() {
 			defer wg.Done()
 			for atomic.LoadUint32(&stop) == 0 {
@@ -842,7 +842,7 @@ func TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 
 	const N = 1024
 	keys := make([]bigKey, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		// Maintain invariant: B == ^A
 		ai := uint64(i*2147483647 + 123456789)
 		keys[i] = bigKey{A: ai, B: ^ai}
@@ -858,7 +858,7 @@ func TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 	// Readers: continuously range and validate key invariant
 	readerN := 8
 	wg.Add(readerN)
-	for r := 0; r < readerN; r++ {
+	for range readerN {
 		go func() {
 			defer wg.Done()
 			for {
@@ -882,7 +882,7 @@ func TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 	// Additional readers: hammer Load to exercise key comparisons
 	loadN := 4
 	wg.Add(loadN)
-	for r := 0; r < loadN; r++ {
+	for r := range loadN {
 		go func(id int) {
 			defer wg.Done()
 			for {
@@ -902,7 +902,7 @@ func TestFlatMapOf_KeyTornRead_Stress(t *testing.T) {
 	// meta-clearing followed by key memory clearing in current implementation.
 	writerN := 2
 	wg.Add(writerN)
-	for w := 0; w < writerN; w++ {
+	for w := range writerN {
 		go func(offset int) {
 			defer wg.Done()
 			for {
@@ -959,7 +959,7 @@ func TestFlatMapOf_KeyTornRead_Stress_Heavy(t *testing.T) {
 
 	const N = 4096
 	keys := make([]bigKey, N)
-	for i := 0; i < N; i++ {
+	for i := range N {
 		ai := uint64(i*2147483647 + 987654321)
 		keys[i] = bigKey{A: ai, B: ^ai}
 		m.Store(keys[i], i)
@@ -973,7 +973,7 @@ func TestFlatMapOf_KeyTornRead_Stress_Heavy(t *testing.T) {
 
 	readerN := max(8, runtime.GOMAXPROCS(0)*2)
 	wg.Add(readerN)
-	for r := 0; r < readerN; r++ {
+	for range readerN {
 		go func() {
 			defer wg.Done()
 			for {
@@ -995,7 +995,7 @@ func TestFlatMapOf_KeyTornRead_Stress_Heavy(t *testing.T) {
 
 	loadN := max(4, runtime.GOMAXPROCS(0))
 	wg.Add(loadN)
-	for r := 0; r < loadN; r++ {
+	for r := range loadN {
 		go func(id int) {
 			defer wg.Done()
 			for {
@@ -1013,7 +1013,7 @@ func TestFlatMapOf_KeyTornRead_Stress_Heavy(t *testing.T) {
 
 	writerN := max(8, runtime.GOMAXPROCS(0)*2)
 	wg.Add(writerN)
-	for w := 0; w < writerN; w++ {
+	for w := range writerN {
 		go func(offset int) {
 			defer wg.Done()
 			for {
@@ -1058,7 +1058,7 @@ func TestFlatMapOf_Range_NoDuplicateVisit_Heavy(t *testing.T) {
 
 	m := NewFlatMapOf[int, int]()
 	const N = 2048 * 50 // ~100K keys to cover chains
-	for i := 0; i < N; i++ {
+	for i := range N {
 		m.Store(i, i)
 	}
 
@@ -1066,7 +1066,7 @@ func TestFlatMapOf_Range_NoDuplicateVisit_Heavy(t *testing.T) {
 	writerN := max(4, runtime.GOMAXPROCS(0))
 	var wg sync.WaitGroup
 	wg.Add(writerN)
-	for w := 0; w < writerN; w++ {
+	for w := range writerN {
 		go func(offset int) {
 			defer wg.Done()
 			for atomic.LoadUint32(&stop) == 0 {
@@ -1085,7 +1085,7 @@ func TestFlatMapOf_Range_NoDuplicateVisit_Heavy(t *testing.T) {
 
 	// Multiple Range passes; each pass must not yield duplicates
 	rounds := 20
-	for r := 0; r < rounds; r++ {
+	for range rounds {
 		seen := make([]uint8, N) // compact bitset
 		m.Range(func(k, v int) bool {
 			if k >= 0 && k < N {
@@ -1110,7 +1110,7 @@ func TestFlatMapOf_Range_NoDuplicateVisit_Heavy(t *testing.T) {
 func TestFlatMapOf_Range_NoDuplicateVisit(t *testing.T) {
 	m := NewFlatMapOf[int, int]()
 	const N = 2048 * 100 // cover multiple buckets and chains
-	for i := 0; i < N; i++ {
+	for i := range N {
 		m.Store(i, i)
 	}
 
@@ -1118,7 +1118,7 @@ func TestFlatMapOf_Range_NoDuplicateVisit(t *testing.T) {
 	writerN := max(2, runtime.GOMAXPROCS(0)/2) // Reduce Concurrency​
 	var wg sync.WaitGroup
 	wg.Add(writerN)
-	for w := 0; w < writerN; w++ {
+	for w := range writerN {
 		go func(offset int) {
 			defer wg.Done()
 			for atomic.LoadUint32(&stop) == 0 {
@@ -1139,7 +1139,7 @@ func TestFlatMapOf_Range_NoDuplicateVisit(t *testing.T) {
 	// Run several Range passes under writer churn; each pass must not see
 	// duplicates
 	rounds := 10
-	for r := 0; r < rounds; r++ {
+	for range rounds {
 		seen := make(map[int]struct{}, N)
 		m.Range(func(k, v int) bool {
 			if _, dup := seen[k]; dup {
@@ -1160,7 +1160,7 @@ func TestFlatMapOf_Range_NoDuplicateVisit(t *testing.T) {
 func TestFlatMapOf_RangeProcess_Basic(t *testing.T) {
 	m := NewFlatMapOf[int, int]()
 	const N = 1024
-	for i := 0; i < N; i++ {
+	for i := range N {
 		m.Store(i, i)
 	}
 
@@ -1172,7 +1172,7 @@ func TestFlatMapOf_RangeProcess_Basic(t *testing.T) {
 		return v + 100, UpdateOp
 	})
 
-	for i := 0; i < N; i++ {
+	for i := range N {
 		v, ok := m.Load(i)
 		if i%2 == 0 {
 			if ok {
@@ -1188,7 +1188,7 @@ func TestFlatMapOf_RangeProcess_Basic(t *testing.T) {
 
 func TestFlatMapOf_RangeProcess_CancelAndEarlyStop(t *testing.T) {
 	m := NewFlatMapOf[int, int]()
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		m.Store(i, i)
 	}
 	count := 0
@@ -1201,7 +1201,7 @@ func TestFlatMapOf_RangeProcess_CancelAndEarlyStop(t *testing.T) {
 	})
 	// we cannot assert exact count, but state should be consistent
 	// First 9 updated, others unchanged
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		v, ok := m.Load(i)
 		if !ok {
 			t.Fatalf("missing key %d", i)
@@ -1221,7 +1221,7 @@ func TestFlatMapOf_RangeProcess_CancelAndEarlyStop(t *testing.T) {
 func TestFlatMapOf_RangeProcess_Concurrent(t *testing.T) {
 	m := NewFlatMapOf[int, int]()
 	const N = 512
-	for i := 0; i < N; i++ {
+	for i := range N {
 		m.Store(i, i)
 	}
 
@@ -1253,7 +1253,7 @@ func TestFlatMapOf_RangeProcess_Concurrent(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				for i := 0; i < N; i++ {
+				for i := range N {
 					m.Process(
 						i,
 						func(old int, loaded bool) (int, ComputeOp, int, bool) {
@@ -1275,7 +1275,7 @@ func TestFlatMapOf_RangeProcess_Concurrent(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				for i := 0; i < N; i++ {
+				for i := range N {
 					m.Load(i)
 				}
 			}
@@ -1294,12 +1294,12 @@ func TestFlatMapOf_ConcurrentShrink(t *testing.T) {
 	const numOperations = 1000
 
 	// Pre-populate the map to create a large table
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(i, i*2)
 	}
 
 	// Delete most entries to trigger potential shrink
-	for i := 0; i < numEntries-100; i++ {
+	for i := range numEntries - 100 {
 		m.Delete(i)
 	}
 
@@ -1308,10 +1308,10 @@ func TestFlatMapOf_ConcurrentShrink(t *testing.T) {
 
 	// Concurrent readers during shrink
 	wg.Add(numGoroutines)
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		go func(base int) {
 			defer wg.Done()
-			for i := 0; i < numOperations; i++ {
+			for i := range numOperations {
 				key := numEntries - 100 + (base*numOperations+i)%100
 				if val, ok := m.Load(key); ok && val != key*2 {
 					atomic.AddInt64(&errors, 1)
@@ -1323,10 +1323,10 @@ func TestFlatMapOf_ConcurrentShrink(t *testing.T) {
 
 	// Concurrent writers during shrink
 	wg.Add(numGoroutines)
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		go func(base int) {
 			defer wg.Done()
-			for i := 0; i < numOperations; i++ {
+			for i := range numOperations {
 				key := numEntries + base*numOperations + i
 				m.Store(key, key*2)
 				if val, ok := m.Load(key); !ok || val != key*2 {
@@ -1340,10 +1340,10 @@ func TestFlatMapOf_ConcurrentShrink(t *testing.T) {
 
 	// Concurrent deleters during shrink
 	wg.Add(numGoroutines)
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		go func(base int) {
 			defer wg.Done()
-			for i := 0; i < numOperations; i++ {
+			for i := range numOperations {
 				key := numEntries + 100000 + base*numOperations + i
 				m.Store(key, key*2)
 				m.Delete(key)
@@ -1376,7 +1376,7 @@ func TestFlatMapOf_ShrinkDataIntegrity(t *testing.T) {
 	const numEntries = 5000
 
 	// Create test data
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		key := fmt.Sprintf("key_%d", i)
 		value := i * 3
 		m.Store(key, value)
@@ -1384,7 +1384,7 @@ func TestFlatMapOf_ShrinkDataIntegrity(t *testing.T) {
 
 	// Delete most entries to trigger shrink (delete first numEntries-200 keys)
 	deletedKeys := make(map[string]bool)
-	for i := 0; i < numEntries-200; i++ {
+	for i := range numEntries - 200 {
 		key := fmt.Sprintf("key_%d", i)
 		m.Delete(key)
 		deletedKeys[key] = true
@@ -1415,12 +1415,12 @@ func TestFlatMapOf_ConcurrentShrinkWithRangeProcess(t *testing.T) {
 	const numGoroutines = 4
 
 	// Pre-populate
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(i, i*5)
 	}
 
 	// Delete most entries to trigger shrink
-	for i := 0; i < numEntries-500; i++ {
+	for i := range numEntries - 500 {
 		m.Delete(i)
 	}
 
@@ -1430,10 +1430,10 @@ func TestFlatMapOf_ConcurrentShrinkWithRangeProcess(t *testing.T) {
 
 	// Concurrent Range operations during shrink
 	wg.Add(numGoroutines)
-	for g := 0; g < numGoroutines; g++ {
+	for range numGoroutines {
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 100; i++ {
+			for range 100 {
 				count := 0
 				m.Range(func(k, v int) bool {
 					count++
@@ -1452,10 +1452,10 @@ func TestFlatMapOf_ConcurrentShrinkWithRangeProcess(t *testing.T) {
 
 	// Concurrent RangeProcess operations during shrink
 	wg.Add(numGoroutines)
-	for g := 0; g < numGoroutines; g++ {
+	for range numGoroutines {
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 50; i++ {
+			for range 50 {
 				processCount := 0
 				m.RangeProcess(func(key int, value int) (int, ComputeOp) {
 					processCount++
@@ -1474,10 +1474,10 @@ func TestFlatMapOf_ConcurrentShrinkWithRangeProcess(t *testing.T) {
 
 	// Concurrent operations during shrink
 	wg.Add(numGoroutines)
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		go func(base int) {
 			defer wg.Done()
-			for i := 0; i < 200; i++ {
+			for i := range 200 {
 				key := numEntries + base*200 + i
 				m.Store(key, key*5)
 				if val, ok := m.Load(key); !ok || val != key*5 {
@@ -1509,18 +1509,18 @@ func TestFlatMapOf_ShrinkStressTest(t *testing.T) {
 	const entriesPerCycle = 5000
 	const numGoroutines = 6
 
-	for cycle := 0; cycle < cycles; cycle++ {
+	for cycle := range cycles {
 		var wg sync.WaitGroup
 		var errors int64
 
 		// Fill the map
-		for i := 0; i < entriesPerCycle; i++ {
+		for i := range entriesPerCycle {
 			m.Store(i, i*7)
 		}
 
 		// Concurrent operations while triggering shrink
 		wg.Add(numGoroutines)
-		for g := 0; g < numGoroutines; g++ {
+		for g := range numGoroutines {
 			go func(base int) {
 				defer wg.Done()
 
@@ -1530,7 +1530,7 @@ func TestFlatMapOf_ShrinkStressTest(t *testing.T) {
 				}
 
 				// Perform reads/writes during shrink
-				for i := 0; i < 500; i++ {
+				for i := range 500 {
 					key := entriesPerCycle + base*500 + i
 					m.Store(key, key*7)
 					if val, ok := m.Load(key); !ok || val != key*7 {
@@ -1570,12 +1570,12 @@ func TestFlatMapOf_ShrinkSeqlockConsistency(t *testing.T) {
 	const numOperations = 800
 
 	// Pre-populate
-	for i := 0; i < numEntries; i++ {
+	for i := range numEntries {
 		m.Store(i, i*11)
 	}
 
 	// Delete most entries to trigger shrink
-	for i := 0; i < numEntries-300; i++ {
+	for i := range numEntries - 300 {
 		m.Delete(i)
 	}
 
@@ -1584,10 +1584,10 @@ func TestFlatMapOf_ShrinkSeqlockConsistency(t *testing.T) {
 
 	// Concurrent readers testing seqlock consistency during shrink
 	wg.Add(numGoroutines)
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		go func(base int) {
 			defer wg.Done()
-			for i := 0; i < numOperations; i++ {
+			for i := range numOperations {
 				// Test remaining keys
 				key := numEntries - 300 + (base*numOperations+i)%300
 				val, ok := m.Load(key)
@@ -1612,10 +1612,10 @@ func TestFlatMapOf_ShrinkSeqlockConsistency(t *testing.T) {
 
 	// Concurrent writers during shrink
 	wg.Add(numGoroutines)
-	for g := 0; g < numGoroutines; g++ {
+	for g := range numGoroutines {
 		go func(base int) {
 			defer wg.Done()
-			for i := 0; i < numOperations; i++ {
+			for i := range numOperations {
 				key := numEntries + base*numOperations + i
 				m.Store(key, key*11)
 
@@ -1651,7 +1651,7 @@ func TestFlatMapOf_RangeProcess_DuringResize(t *testing.T) {
 	m := NewFlatMapOf[int, int]()
 
 	// Pre-populate to trigger potential resize
-	for i := 0; i < 50; i++ {
+	for i := range 50 {
 		m.Store(i, i*2)
 	}
 
@@ -1683,7 +1683,7 @@ func TestFlatMapOf_RangeProcess_DuringResize(t *testing.T) {
 	const numRangeProcessors = 4
 	processCounts := make([]int64, numRangeProcessors)
 
-	for g := 0; g < numRangeProcessors; g++ {
+	for g := range numRangeProcessors {
 		wg.Add(1)
 		go func(goroutineID int) {
 			defer wg.Done()
@@ -1740,7 +1740,7 @@ func TestFlatMapOf_RangeProcess_EarlyTermination(t *testing.T) {
 	m := NewFlatMapOf[int, int]()
 
 	// Add data
-	for i := 0; i < 20; i++ {
+	for i := range 20 {
 		m.Store(i, i*5)
 	}
 

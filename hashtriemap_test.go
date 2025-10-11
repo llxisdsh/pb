@@ -20,7 +20,7 @@ func TestHashTrieMapStructSize(t *testing.T) {
 	structType := reflect.TypeOf(HashTrieMap[string, int]{})
 	t.Logf("Struct: %s", structType.Name())
 
-	for i := 0; i < structType.NumField(); i++ {
+	for i := range structType.NumField() {
 		field := structType.Field(i)
 		fieldName := field.Name
 		fieldType := field.Type
@@ -34,7 +34,7 @@ func TestHashTrieMapStructSize(t *testing.T) {
 	size = unsafe.Sizeof(indirect[string, int]{})
 	t.Log("indirect[string,int] size:", size)
 	structType = reflect.TypeOf(indirect[string, int]{})
-	for i := 0; i < structType.NumField(); i++ {
+	for i := range structType.NumField() {
 		field := structType.Field(i)
 		fieldName := field.Name
 		fieldType := field.Type
@@ -48,7 +48,7 @@ func TestHashTrieMapStructSize(t *testing.T) {
 	size = unsafe.Sizeof(entry[string, int]{})
 	t.Log("entry[string,int] size:", size)
 	structType = reflect.TypeOf(entry[string, int]{})
-	for i := 0; i < structType.NumField(); i++ {
+	for i := range structType.NumField() {
 		field := structType.Field(i)
 		fieldName := field.Name
 		fieldType := field.Type
@@ -1100,7 +1100,7 @@ func TestHashTrieMapLoadAndDelete(t *testing.T) {
 	t.Run("LoadAndDeleteOverflowChain", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		// Create multiple entries that might hash to same bucket
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(fmt.Sprintf("key%d", i), i*10)
 		}
 
@@ -1111,7 +1111,7 @@ func TestHashTrieMapLoadAndDelete(t *testing.T) {
 		}
 
 		// Verify other keys still exist
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			if i == 5 {
 				continue
 			}
@@ -1166,7 +1166,7 @@ func TestHashTrieMapSwap(t *testing.T) {
 	t.Run("SwapOverflowChain", func(t *testing.T) {
 		m := &HashTrieMap[string, int]{}
 		// Create multiple entries
-		for i := 0; i < 5; i++ {
+		for i := range 5 {
 			m.Store(fmt.Sprintf("key%d", i), i*10)
 		}
 
@@ -1460,12 +1460,12 @@ func TestHashTrieMapNodeCleanupCoverage(t *testing.T) {
 		m := &HashTrieMap[int, string]{}
 
 		// Add many entries to force tree expansion
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			m.Store(i, fmt.Sprintf("value%d", i))
 		}
 
 		// Delete entries to trigger node cleanup
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			value, loaded := m.LoadAndDelete(i)
 			if !loaded || value != fmt.Sprintf("value%d", i) {
 				t.Fatalf("Expected to delete entry %d, got loaded=%v, value=%s", i, loaded, value)
@@ -1501,7 +1501,7 @@ func TestHashTrieMapNodeCleanupCoverage(t *testing.T) {
 		m := &HashTrieMap[int, string]{}
 
 		// Force expansion by adding many entries
-		for i := 0; i < 64; i++ {
+		for i := range 64 {
 			m.Store(i, fmt.Sprintf("val%d", i))
 		}
 
@@ -1516,7 +1516,7 @@ func TestHashTrieMapNodeCleanupCoverage(t *testing.T) {
 		m := &HashTrieMap[int, string]{}
 
 		// Force tree expansion
-		for i := 0; i < 32; i++ {
+		for i := range 32 {
 			m.Store(i, fmt.Sprintf("initial%d", i))
 		}
 
@@ -1536,7 +1536,7 @@ func TestHashTrieMapNodeCleanupCoverage(t *testing.T) {
 		m := &HashTrieMap[int, string]{}
 
 		// Force tree expansion
-		for i := 0; i < 32; i++ {
+		for i := range 32 {
 			m.Store(i, fmt.Sprintf("orig%d", i))
 		}
 
@@ -1557,7 +1557,7 @@ func TestHashTrieMapNodeCleanupCoverage(t *testing.T) {
 		m := &HashTrieMap[int, string]{}
 
 		// Force tree expansion
-		for i := 0; i < 32; i++ {
+		for i := range 32 {
 			m.Store(i, fmt.Sprintf("data%d", i))
 		}
 
@@ -1583,7 +1583,7 @@ func TestHashTrieMapNodeCleanupCoverage(t *testing.T) {
 		m := &HashTrieMap[int, string]{}
 
 		// Force tree expansion
-		for i := 0; i < 32; i++ {
+		for i := range 32 {
 			m.Store(i, fmt.Sprintf("existing%d", i))
 		}
 
@@ -1860,7 +1860,7 @@ func TestHashTrieMapEdgeCases(t *testing.T) {
 		key := "test"
 
 		// Multiple stores
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			m.Store(key, i)
 			expectPresent(t, key, i)(m.Load(key))
 		}
@@ -1874,7 +1874,7 @@ func TestHashTrieMapEdgeCases(t *testing.T) {
 		}
 
 		// Multiple CompareAndSwap operations
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			oldVal := 99 + i
 			newVal := oldVal + 1
 			if !m.CompareAndSwap(key, oldVal, newVal) {
@@ -1897,10 +1897,10 @@ func TestHashTrieMapConcurrentOperations(t *testing.T) {
 		wg.Add(numGoroutines * 2)
 
 		// Concurrent stores
-		for i := 0; i < numGoroutines; i++ {
+		for i := range numGoroutines {
 			go func(base int) {
 				defer wg.Done()
-				for j := 0; j < numOperations; j++ {
+				for j := range numOperations {
 					key := base*numOperations + j
 					m.Store(key, key*2)
 				}
@@ -1908,10 +1908,10 @@ func TestHashTrieMapConcurrentOperations(t *testing.T) {
 		}
 
 		// Concurrent loads
-		for i := 0; i < numGoroutines; i++ {
+		for i := range numGoroutines {
 			go func(base int) {
 				defer wg.Done()
-				for j := 0; j < numOperations; j++ {
+				for j := range numOperations {
 					key := base*numOperations + j
 					// Load might not find the value due to timing, but shouldn't panic
 					m.Load(key)
@@ -1937,10 +1937,10 @@ func TestHashTrieMapConcurrentOperations(t *testing.T) {
 		var wg sync.WaitGroup
 		wg.Add(numGoroutines)
 
-		for i := 0; i < numGoroutines; i++ {
+		for range numGoroutines {
 			go func() {
 				defer wg.Done()
-				for j := 0; j < incrementsPerGoroutine; j++ {
+				for range incrementsPerGoroutine {
 					for {
 						val, ok := m.Load("counter")
 						if !ok {

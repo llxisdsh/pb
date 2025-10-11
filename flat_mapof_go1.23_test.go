@@ -46,7 +46,7 @@ func TestFlatMapOf_All(t *testing.T) {
 		expected := make(map[int]string)
 
 		// Add test data
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			value := fmt.Sprintf("value_%d", i)
 			m.Store(i, value)
 			expected[i] = value
@@ -74,7 +74,7 @@ func TestFlatMapOf_All(t *testing.T) {
 		m := NewFlatMapOf[int, int]()
 
 		// Add test data
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			m.Store(i, i*2)
 		}
 
@@ -99,7 +99,7 @@ func TestFlatMapOf_All(t *testing.T) {
 		m := NewFlatMapOf[int, string]()
 
 		// Pre-populate map
-		for i := 0; i < 100; i++ {
+		for i := range 100 {
 			m.Store(i, fmt.Sprintf("value_%d", i))
 		}
 
@@ -108,7 +108,7 @@ func TestFlatMapOf_All(t *testing.T) {
 		results := make([]map[int]string, numGoroutines)
 
 		// Start multiple goroutines iterating concurrently
-		for i := 0; i < numGoroutines; i++ {
+		for i := range numGoroutines {
 			wg.Add(1)
 			go func(idx int) {
 				defer wg.Done()
@@ -143,7 +143,7 @@ func TestFlatMapOf_All(t *testing.T) {
 		m := NewFlatMapOf[int, int]()
 
 		// Pre-populate map
-		for i := 0; i < 20; i++ {
+		for i := range 20 {
 			m.Store(i, i)
 		}
 
@@ -188,7 +188,7 @@ func TestFlatMapOf_All(t *testing.T) {
 
 		// Add pointer values
 		values := make(map[string]*int)
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			key := fmt.Sprintf("key_%d", i)
 			val := new(int)
 			*val = i * 10
@@ -222,7 +222,7 @@ func TestFlatMapOf_All(t *testing.T) {
 		const size = 1000
 
 		// Populate large dataset
-		for i := 0; i < size; i++ {
+		for i := range size {
 			m.Store(i, i*i)
 		}
 

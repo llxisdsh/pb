@@ -118,7 +118,7 @@ func TestMapOf_Keys(t *testing.T) {
 	t.Run("EarlyTermination", func(t *testing.T) {
 		m.Clear()
 		// Store multiple keys
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(fmt.Sprintf("key%d", i), i)
 		}
 
@@ -138,7 +138,7 @@ func TestMapOf_Keys(t *testing.T) {
 	t.Run("ConcurrentModification", func(t *testing.T) {
 		m.Clear()
 		// Store initial keys
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			m.Store(fmt.Sprintf("initial_%d", i), i)
 		}
 
@@ -163,7 +163,7 @@ func TestMapOf_Keys(t *testing.T) {
 		// Goroutine 2: Modify map during iteration
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 25; i++ {
+			for i := range 25 {
 				m.Store(fmt.Sprintf("concurrent_%d", i), i+1000)
 				if i%5 == 0 {
 					m.Delete(fmt.Sprintf("initial_%d", i))
@@ -180,7 +180,7 @@ func TestMapOf_Keys(t *testing.T) {
 
 		// Store many keys
 		expectedKeys := make(map[string]bool)
-		for i := 0; i < numKeys; i++ {
+		for i := range numKeys {
 			key := fmt.Sprintf("large_%d", i)
 			m.Store(key, i)
 			expectedKeys[key] = true
@@ -359,7 +359,7 @@ func TestMapOf_Keys(t *testing.T) {
 	t.Run("IteratorIndependence", func(t *testing.T) {
 		m.Clear()
 		// Store test keys
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(fmt.Sprintf("key%d", i), i)
 		}
 
@@ -509,7 +509,7 @@ func TestMapOf_Values(t *testing.T) {
 	t.Run("EarlyTermination", func(t *testing.T) {
 		m.Clear()
 		// Store multiple values
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(fmt.Sprintf("key%d", i), i*10)
 		}
 
@@ -530,7 +530,7 @@ func TestMapOf_Values(t *testing.T) {
 	t.Run("ConcurrentModification", func(t *testing.T) {
 		m.Clear()
 		// Store initial values
-		for i := 0; i < 50; i++ {
+		for i := range 50 {
 			m.Store(fmt.Sprintf("initial_%d", i), i*100)
 		}
 
@@ -555,7 +555,7 @@ func TestMapOf_Values(t *testing.T) {
 		// Goroutine 2: Modify map during iteration
 		go func() {
 			defer wg.Done()
-			for i := 0; i < 25; i++ {
+			for i := range 25 {
 				m.Store(fmt.Sprintf("concurrent_%d", i), i+5000)
 				if i%5 == 0 {
 					m.Delete(fmt.Sprintf("initial_%d", i))
@@ -572,7 +572,7 @@ func TestMapOf_Values(t *testing.T) {
 
 		// Store many values
 		expectedValues := make(map[int]bool)
-		for i := 0; i < numValues; i++ {
+		for i := range numValues {
 			value := i * 7 // Use a multiplier to create distinct values
 			m.Store(fmt.Sprintf("large_%d", i), value)
 			expectedValues[value] = true
@@ -778,7 +778,7 @@ func TestMapOf_Values(t *testing.T) {
 	t.Run("IteratorIndependence", func(t *testing.T) {
 		m.Clear()
 		// Store test values
-		for i := 0; i < 10; i++ {
+		for i := range 10 {
 			m.Store(fmt.Sprintf("key%d", i), i*100)
 		}
 
@@ -821,7 +821,7 @@ func TestMapOf_Values(t *testing.T) {
 
 		// Collect values multiple times
 		var collections [][]int
-		for run := 0; run < 3; run++ {
+		for range 3 {
 			var currentCollection []int
 			for value := range m.Values() {
 				currentCollection = append(currentCollection, value)
@@ -1093,7 +1093,7 @@ func TestMapOf_ProcessSpecified_EarlyTermination(t *testing.T) {
 	m := NewMapOf[string, int]()
 
 	// Setup test data
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		m.Store(string(rune('a'+i)), i)
 	}
 
@@ -1190,7 +1190,7 @@ func TestMapOf_ProcessAll_EarlyTermination(t *testing.T) {
 	m := NewMapOf[string, int]()
 
 	// Setup test data
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		m.Store(string(rune('a'+i)), i)
 	}
 
@@ -1276,7 +1276,7 @@ func TestMapOf_ProcessAll_Concurrent(t *testing.T) {
 	m := NewMapOf[int, int]()
 
 	// Setup test data
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		m.Store(i, i)
 	}
 
@@ -1284,7 +1284,7 @@ func TestMapOf_ProcessAll_Concurrent(t *testing.T) {
 	processed := make([]int, 2)
 
 	// Run two concurrent ProcessAll operations
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -1316,7 +1316,7 @@ func TestMapOf_ProcessSpecified_Concurrent(t *testing.T) {
 	m := NewMapOf[int, int]()
 
 	// Setup test data
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		m.Store(i, i)
 	}
 
@@ -1329,7 +1329,7 @@ func TestMapOf_ProcessSpecified_Concurrent(t *testing.T) {
 	processed := make([]int, 2)
 
 	// Run two concurrent ProcessSpecified operations
-	for i := 0; i < 2; i++ {
+	for i := range 2 {
 		wg.Add(1)
 		go func(idx int) {
 			defer wg.Done()
@@ -1375,7 +1375,7 @@ func benchmarkMapOfProcessAll(b *testing.B, data []string) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		count := 0
 		for entry := range m.ProcessAll() {
 			count++
@@ -1413,7 +1413,7 @@ func benchmarkMapOfProcessSpecified(b *testing.B, data []string) {
 
 	b.ReportAllocs()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for range b.N {
 		count := 0
 		for entry := range m.ProcessSpecified(keys...) {
 			count++
