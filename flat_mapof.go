@@ -231,13 +231,6 @@ func (b *flatBucket[K, V]) Unlock() {
 	b.meta.Store(*b.meta.Raw() &^ opLockMask)
 }
 
-//go:nosplit
-func (b *flatBucket[K, V]) UnlockWithMeta(
-	meta uint64,
-) {
-	b.meta.Store(meta &^ opLockMask)
-}
-
 // Load with per-bucket seqlock read
 func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := m.table.SeqLoad()

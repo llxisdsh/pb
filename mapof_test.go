@@ -9039,42 +9039,6 @@ func TestMapOf_UnlockWithMeta(t *testing.T) {
 			}
 		}
 	})
-
-	t.Run("FlatMapOf", func(t *testing.T) {
-		m := NewFlatMapOf[string, int]()
-
-		// Get a bucket to test UnlockWithMeta
-		key := "test"
-		hash := m.keyHash(unsafe.Pointer(&key), m.seed)
-		table := m.table.SeqLoad()
-		bucketIdx := int(hash) & table.mask
-		bucket := table.buckets.At(bucketIdx)
-
-		// Lock the bucket first
-		bucket.Lock()
-
-		// Test UnlockWithMeta with different meta values
-		testMetas := []uint64{
-			0,
-			0x123456789ABCDEF0,
-			^uint64(0), // max uint64
-		}
-
-		for _, meta := range testMetas {
-			bucket.UnlockWithMeta(meta)
-			// Verify the meta was set correctly (without lock bits)
-			storedMeta := bucket.meta.Load()
-			expectedMeta := meta &^ opLockMask
-			if storedMeta != expectedMeta {
-				t.Errorf("UnlockWithMeta(%x): stored meta = %x, want %x", meta, storedMeta, expectedMeta)
-			}
-
-			// Lock again for next iteration
-			if meta != testMetas[len(testMetas)-1] {
-				bucket.Lock()
-			}
-		}
-	})
 }
 
 func TestMapOf_EmbeddedHashOff(t *testing.T) {
