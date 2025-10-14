@@ -1057,9 +1057,9 @@ func TestMapOf_LoadOrProcessEntry(t *testing.T) {
 
 		// LoadOrProcessEntry should return existing value without calling valueFn
 		called := false
-		value, loaded := m.LoadOrProcessEntry("existing", func() (*EntryOf[string, int], int, bool) {
+		value, loaded := m.LoadOrProcessEntry("existing", func() *EntryOf[string, int] {
 			called = true
-			return &EntryOf[string, int]{Value: 999}, 999, true
+			return &EntryOf[string, int]{Value: 999}
 		})
 
 		if called {
@@ -1076,15 +1076,15 @@ func TestMapOf_LoadOrProcessEntry(t *testing.T) {
 	t.Run("ProcessNonExistentKey", func(t *testing.T) {
 		// LoadOrProcessEntry should call valueFn for non-existent key
 		called := false
-		value, loaded := m.LoadOrProcessEntry("new", func() (*EntryOf[string, int], int, bool) {
+		value, loaded := m.LoadOrProcessEntry("new", func() *EntryOf[string, int] {
 			called = true
-			return &EntryOf[string, int]{Value: 100}, 100, true
+			return &EntryOf[string, int]{Value: 100}
 		})
 
 		if !called {
 			t.Error("valueFn should be called for non-existent key")
 		}
-		if !loaded {
+		if loaded {
 			t.Error("loaded should be true when valueFn returns true")
 		}
 		if value != 100 {
@@ -1099,14 +1099,14 @@ func TestMapOf_LoadOrProcessEntry(t *testing.T) {
 
 	t.Run("ProcessNonExistentKeyWithNilEntry", func(t *testing.T) {
 		// LoadOrProcessEntry with nil entry should not store anything
-		value, loaded := m.LoadOrProcessEntry("nil_entry", func() (*EntryOf[string, int], int, bool) {
-			return nil, 200, false
+		value, loaded := m.LoadOrProcessEntry("nil_entry", func() *EntryOf[string, int] {
+			return nil
 		})
 
 		if loaded {
 			t.Error("loaded should be false when valueFn returns false")
 		}
-		if value != 200 {
+		if value != 0 {
 			t.Errorf("Expected value 200, got %d", value)
 		}
 
@@ -1129,11 +1129,11 @@ func TestMapOf_LoadOrProcessEntry(t *testing.T) {
 					key := fmt.Sprintf("concurrent_%d_%d", id, j)
 					expectedValue := id*1000 + j
 
-					value, loaded := m.LoadOrProcessEntry(key, func() (*EntryOf[string, int], int, bool) {
-						return &EntryOf[string, int]{Value: expectedValue}, expectedValue, true
+					value, loaded := m.LoadOrProcessEntry(key, func() *EntryOf[string, int] {
+						return &EntryOf[string, int]{Value: expectedValue}
 					})
 
-					if !loaded {
+					if loaded {
 						t.Errorf("Expected loaded=true for key %s", key)
 					}
 					if value != expectedValue {

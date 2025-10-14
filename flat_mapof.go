@@ -8,18 +8,18 @@ import (
 	"unsafe"
 )
 
-// FlatMapOf implements a flat hash map using seqlock. Table and K/V are
-// stored inline (flat). K/V is not limited by CPU word size. Consistency for
-// readers is guaranteed by per-bucket seqlock (sequence is even when stable;
-// writers make it odd during mutations and then even again).
+// FlatMapOf implements a flat hash map using seqlock.
+// Table and key/value pairs are stored inline (flat).
+// Value size is not limited by the CPU word size.
+// Readers use per-bucket seqlock: even sequence means stable; writers
+// flip the bucket sequence to odd during mutation, then even again.
 //
 // Concurrency model:
-//   - Readers: per-bucket seqlock read: s1=seq (must be even), read meta/entries,
-//     s2=seq; if s1!=s2 or s1 odd, retry this bucket.
-//   - Writers: acquire root bucket lock (opLock in meta), then for the bucket
-//     being modified: seq++ (odd), apply changes, seq++ (even), finally release
-//     root lock.
-//   - Resize: same approach as FlatMapOf; copy under root bucket lock.
+//   - Readers: read s1=seq (must be even), then meta/entries, then s2=seq;
+//     if s1!=s2 or s1 is odd, retry the bucket.
+//   - Writers: take the root-bucket lock (opLock in meta), then on the target
+//     bucket: seq++, apply changes, seq++, finally release the root lock.
+//   - Resize: copy under the root-bucket lock using the same discipline.
 type FlatMapOf[K comparable, V any] struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_        noCopy
@@ -74,7 +74,28 @@ type flatBucket[K comparable, V any] struct {
 	entries [entriesPerBucket]flatEntry[K, V]
 }
 
-// NewFlatMapOf creates a new seqlock-based flat map.
+// NewFlatMapOf creates a new seqlock-based flat hash map.
+//
+// Highlights:
+//   - Lock-free reads via per-bucket seqlock; automatic fallback under
+//     contention.
+//   - Writes coordinate via a lightweight root-bucket lock and per-bucket
+//     seqlock fencing.
+//   - Parallel resize (grow/shrink) with cooperative copying by readers and
+//     writers.
+//
+// Configuration options (aligned with MapOf):
+//   - WithPresize(sizeHint): pre-allocate capacity to reduce early resizes.
+//   - WithShrinkEnabled(): enable automatic shrinking when load drops.
+//   - WithKeyHasher / WithKeyHasherUnsafe / WithBuiltInHasher: custom or
+//     built-in hashing.
+//   - HashOptimization: control h1 distribution strategy (Linear/Shift/Auto).
+//
+// Example:
+//
+//	m := NewFlatMapOf[string,int](WithPresize(1024), WithShrinkEnabled())
+//	m.Store("a", 1)
+//	v, ok := m.Load("a")
 func NewFlatMapOf[K comparable, V any](
 	options ...func(*MapConfig),
 ) *FlatMapOf[K, V] {
@@ -231,7 +252,13 @@ func (b *flatBucket[K, V]) Unlock() {
 	b.meta.Store(*b.meta.Raw() &^ opLockMask)
 }
 
-// Load with per-bucket seqlock read
+// Load retrieves the value for a key.
+//
+//   - Fast path: per-bucket seqlock read; if the bucket sequence is even and
+//     stable across the read, the snapshot is consistent.
+//   - Contention handling: short spinning when write is observed (odd seq) or
+//     a torn read; falls back to locked lookup if needed.
+//   - Provides stable latency under high concurrency.
 func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := m.table.SeqLoad()
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
@@ -301,6 +328,11 @@ fallback:
 }
 
 // Range iterates all entries using per-bucket seqlock reads.
+//
+//   - Copies a consistent snapshot from each bucket when the seqlock sequence
+//     is stable; otherwise briefly spins and falls back to locked collection.
+//   - Yields outside of locks to minimize contention.
+//   - Returning false from the callback stops iteration early.
 func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	var s1, s2 uint64
 	var meta uint64
@@ -372,20 +404,28 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	}
 }
 
-// RangeProcess iterates over all key-value pairs and applies a function to
-// each. The function can return UpdateOp to modify the value, DeleteOp to
-// remove the entry, or CancelOp to leave it unchanged. Uses seqlock for
-// consistency during updates.
+// RangeProcess iterates over all key-value pairs and applies a user function.
 //
-// Parameters:
-//   - fn: callback that processes each entry and returns new value and
-//     operation
+// For each entry, calls:
 //
-// Notes:
-//   - Holds bucket lock for entire iteration - avoid long operations
-//   - Blocks concurrent map operations during execution
+//	fn(key K, value V) (newV V, op ComputeOp)
+//
+//	op:
+//	 - UpdateOp: update the entry value to newV (protected by bucket seqlock)
+//	 - DeleteOp: remove the entry (update meta, clear entry, adjust size)
+//	 - CancelOp: no change
+//
+// Concurrency & consistency:
+//   - Holds the root-bucket lock while processing its bucket chain to
+//     coordinate with concurrent writers/resize operations.
+//   - Uses per-bucket seqlock to minimize the odd (write) window and preserve
+//     read consistency.
+//   - If a resize is detected, it cooperates to finish copying and then
+//     continues on the new table.
+//
+// Recommendation: keep fn lightweight to reduce lock hold time.
 func (m *FlatMapOf[K, V]) RangeProcess(
-	fn func(key K, value V) (V, ComputeOp),
+	fn func(key K, value V) (newV V, op ComputeOp),
 ) {
 restart:
 	table := m.table.SeqLoad()
@@ -439,11 +479,43 @@ restart:
 	}
 }
 
-// Process applies a compute-style update with root bucket lock + per-bucket
-// seq fencing.
+// Process performs a compute-style, atomic update for the given key.
+//
+// Concurrency model:
+//   - Acquires the root-bucket lock to serialize write/resize cooperation.
+//   - Performs per-bucket seqlock writes (odd/even sequence) to minimize the
+//     write window and preserve reader consistency.
+//   - If a resize is observed, cooperates to finish copying and restarts on
+//     the latest table.
+//
+// Callback signature:
+//
+//	fn(old V, loaded bool) (newV V, op ComputeOp, ret V, status bool)
+//
+//	- old/loaded: the existing value and whether it was found.
+//	- newV/op: the operation to apply to the map:
+//	  • UpdateOp: update the existing value; if not found, insert newV.
+//	  • DeleteOp: delete the entry only if it exists.
+//	  • CancelOp: do not modify the map.
+//	- ret/status: values returned to the caller of Process, allowing the
+//	  callback to provide computed results (e.g., final value and hit status).
+//
+// Parameters:
+//
+//   - key: The key to process
+//   - fn: Callback function (called regardless of value existence)
+//
+// Returns:
+//   - (ret, status) as provided by the callback; typical conventions are
+//     ret=final value and status=hit/success.
+//
+// Typical use cases:
+//   - Upsert: overwrite if present, insert otherwise.
+//   - CAS-like logic: decide UpdateOp/CancelOp based on old.
+//   - Conditional delete: choose DeleteOp or CancelOp by business rule.
 func (m *FlatMapOf[K, V]) Process(
 	key K,
-	fn func(old V, loaded bool) (V, ComputeOp, V, bool),
+	fn func(old V, loaded bool) (newV V, op ComputeOp, ret V, status bool),
 ) (V, bool) {
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h1v := h1(hash, m.intKey)

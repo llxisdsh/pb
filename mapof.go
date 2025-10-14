@@ -1319,7 +1319,7 @@ func (m *MapOf[K, V]) copyBucketOf(
 //
 //   - Blocks concurrent map operations during execution
 func (m *MapOf[K, V]) RangeProcessEntry(
-	fn func(loaded *EntryOf[K, V]) *EntryOf[K, V],
+	fn func(loaded *EntryOf[K, V]) (newEntry *EntryOf[K, V]),
 ) {
 	m.rangeProcessEntryWithBreak(
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool) {
@@ -1800,11 +1800,11 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 //
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
-// the bucket will be blocked until the valueFn executes. Consider
+// the bucket will be blocked until the newValueFn executes. Consider
 // this when the function includes long-running operations.
 func (m *MapOf[K, V]) LoadOrStoreFn(
 	key K,
-	valueFn func() V,
+	newValueFn func() V,
 ) (actual V, loaded bool) {
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	if table == nil {
@@ -1824,7 +1824,7 @@ func (m *MapOf[K, V]) LoadOrStoreFn(
 			if loaded != nil {
 				return loaded, loaded.Value, true
 			}
-			newValue := valueFn()
+			newValue := newValueFn()
 			return &EntryOf[K, V]{Value: newValue}, newValue, false
 		},
 	)
@@ -1920,20 +1920,20 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 // present. Otherwise, it tries to compute the value using the
 // provided function and, if successful, stores and returns
 // the computed value. The loaded result is true if the value was
-// loaded, or false if computed. If valueFn returns true as the
+// loaded, or false if computed. If newValueFn returns true as the
 // cancel value, the computation is cancelled and the zero value
 // for type V is returned.
 //
 // This call locks a hash table bucket while the compute function
 // is executed. It means that modifications on other entries in
-// the bucket will be blocked until the valueFn executes. Consider
+// the bucket will be blocked until the newValueFn executes. Consider
 // this when the function includes long-running operations.
 //
 // Compatible with `xsync.MapOf`.
 func (m *MapOf[K, V]) LoadOrCompute(
 	key K,
-	valueFn func() (newValue V, cancel bool),
-) (value V, loaded bool) {
+	newValueFn func() (newValue V, cancel bool),
+) (actual V, loaded bool) {
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	if table == nil {
 		table = m.initSlow()
@@ -1952,7 +1952,7 @@ func (m *MapOf[K, V]) LoadOrCompute(
 			if loaded != nil {
 				return loaded, loaded.Value, true
 			}
-			newValue, cancel := valueFn()
+			newValue, cancel := newValueFn()
 			if cancel {
 				return nil, *new(V), false
 			}
@@ -1982,7 +1982,7 @@ const (
 // the returned [ComputeOp]. When the op returned by valueFn
 // is [UpdateOp], the value is updated to the new value. If
 // it is [DeleteOp], the entry is removed from the map
-// altogether. And finally, if the op is [CancelOp], then the
+// altogether. And finally, if the op is [CancelOp] then the
 // entry is left as-is. In other words, if it did not already
 // exist, it is not created, and if it did exist, it is not
 // updated. This is useful to synchronously execute some
@@ -2045,35 +2045,28 @@ func (m *MapOf[K, V]) Compute(
 	)
 }
 
-// LoadOrProcessEntry loads an existing value or computes a new one using
-// the provided function.
-//
-// If the key exists, its value is returned directly.
-// If the key doesn't exist, the provided function fn is called to compute a new
-// value.
+// LoadOrProcessEntry if key exists, its current value is returned;
+// otherwise newValueFn is called to create a new entry.
 //
 // Parameters:
 //   - key: The key to look up or process
-//   - valueFn: Only called when the value does not exist, return values are
-//     described below:
-//     Return *EntryOf[K, V]: New entry, nil means don't store any value.
-//     Return V: value it to return to the caller.
-//     Return bool: Whether the operation succeeded.
+//   - newValueFn: A function called only when the key does not exist.
+//     It should return a new *EntryOf[K, V]; returning nil means that
+//     no value should be stored.
 //
 // Returns:
-//   - value V: Existing value if key exists;
-//     otherwise the value returned by valueFn
-//   - loaded bool: true if key exists;
-//     otherwise the bool value returned by valueFn
+//   - actual: Existing value if key exists, otherwise the value returned
+//     by newValueFn
+//   - loaded: true if key exists, false otherwise.
 //
 // Notes:
-//   - The fn function is executed while holding an internal lock.
-//     Keep the execution time short to avoid blocking other operations.
+//   - The newValueFn is executed while holding an internal lock.
+//     Keep the callback short and non-blocking to avoid contention.
 //   - Avoid calling other map methods inside fn to prevent deadlocks.
 func (m *MapOf[K, V]) LoadOrProcessEntry(
 	key K,
-	valueFn func() (*EntryOf[K, V], V, bool),
-) (value V, loaded bool) {
+	newValueFn func() *EntryOf[K, V],
+) (actual V, loaded bool) {
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	if table == nil {
 		table = m.initSlow()
@@ -2092,7 +2085,11 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 			if loaded != nil {
 				return loaded, loaded.Value, true
 			}
-			return valueFn()
+			newEntry := newValueFn()
+			if newEntry == nil {
+				return newEntry, *new(V), false
+			}
+			return newEntry, newEntry.Value, false
 		},
 	)
 }
@@ -2103,21 +2100,24 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 // It provides. Complete control over key-value pairs, allowing atomic reading,
 // modification, deletion, or insertion of entries.
 //
+// Callback signature:
+//
+//	fn(loaded *EntryOf[K, V]) (newEntry *EntryOf[K, V], ret V, status bool)
+//
+//	 - loaded *EntryOf[K, V]: current entry (nil if key does not exist).
+//	 - newEntry: Executed only when the key is missing. It returns a new entry.
+//	   If it returns nil, the map will not store any value.
+//	 - ret/status: values returned to the caller of Process, allowing the
+//	   callback to provide computed results (e.g., final value and hit status)
+//
 // Parameters:
 //
 //   - key: The key to process
-//
-//   - fn: Called regardless of value existence; parameters and return values
-//     are described below:
-//     loaded *EntryOf[K, V]: current entry (nil if key doesn't exist),
-//     return *EntryOf[K, V]:  nil to delete, new entry to store; ==loaded
-//     for no modification,
-//     return V: value to be returned as ProcessEntry's value;
-//     return bool: status to be returned as ProcessEntry's status indicator
+//   - fn: Callback function (called regardless of value existence)
 //
 // Returns:
-//   - value V: First return value from fn
-//   - status bool: Second return value from fn
+//   - value: The ret value from fn
+//   - status: The status value from fn
 //
 // Notes:
 //   - The input parameter loaded is immutable and should not be modified
@@ -2130,7 +2130,7 @@ func (m *MapOf[K, V]) LoadOrProcessEntry(
 //   - Do not perform expensive computations or I/O operations inside fn.
 func (m *MapOf[K, V]) ProcessEntry(
 	key K,
-	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	fn func(loaded *EntryOf[K, V]) (newEntry *EntryOf[K, V], ret V, status bool),
 ) (value V, status bool) {
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	if table == nil {
@@ -2391,7 +2391,9 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 //
 //   - seq2: Iterator function that yields key-value pairs to process.
 //     The iterator should call yield(key, value) for each pair and
-//     return true to continue. - processFn: Function that receives key, value,
+//     return true to continue.
+//
+//   - fn: Function that receives key, value,
 //     and current entry (if exists), returns new entry,
 //     result value, and status.
 //
@@ -2408,11 +2410,11 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 //   - Pre-growing the map with growSize can improve performance for large
 //     datasets by avoiding multiple resize operations during processing.
 //
-//   - The processFn follows the same signature as other ProcessEntry functions,
+//   - The fn follows the same signature as other ProcessEntry functions,
 //     allowing for insert, update, delete, or conditional operations.
 func (m *MapOf[K, V]) BatchProcess(
 	seq2 func(yield func(K, V) bool),
-	processFn func(key K, value V, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	fn func(key K, value V, loaded *EntryOf[K, V]) (newEntry *EntryOf[K, V], ret V, status bool),
 	growSize ...int,
 ) {
 	if len(growSize) != 0 {
@@ -2421,7 +2423,7 @@ func (m *MapOf[K, V]) BatchProcess(
 	seq2(func(key K, value V) bool {
 		m.ProcessEntry(key,
 			func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-				return processFn(key, value, loaded)
+				return fn(key, value, loaded)
 			},
 		)
 		return true
@@ -2434,12 +2436,12 @@ func (m *MapOf[K, V]) BatchProcess(
 // Parameters:
 //   - immutableEntries: Slice of immutable key-value pairs to process.
 //   - growFactor: Capacity change coefficient (see batchProcess).
-//   - processFn: Function that receives entry and current value (if exists),
+//   - fn: Function that receives entry and current value (if exists),
 //     returns new value, result value, and status.
 //
 // Returns:
-//   - values []V: Slice of values from processFn.
-//   - status []bool: Slice of status values from processFn.
+//   - values []V: Slice of values from fn.
+//   - status []bool: Slice of status values from fn.
 //
 // Notes:
 //   - immutableEntries will be stored directly; as the name suggests,
@@ -2447,19 +2449,19 @@ func (m *MapOf[K, V]) BatchProcess(
 func (m *MapOf[K, V]) BatchProcessImmutableEntries(
 	immutableEntries []*EntryOf[K, V],
 	growFactor float64,
-	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	fn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (newEntry *EntryOf[K, V], ret V, status bool),
 ) (values []V, status []bool) {
 	return m.batchProcessImmutableEntries(
 		immutableEntries,
 		int(float64(len(immutableEntries))*growFactor),
-		processFn,
+		fn,
 	)
 }
 
 func (m *MapOf[K, V]) batchProcessImmutableEntries(
 	immutableEntries []*EntryOf[K, V],
 	growSize int,
-	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	fn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (values []V, status []bool) {
 	if len(immutableEntries) == 0 {
 		return
@@ -2473,7 +2475,7 @@ func (m *MapOf[K, V]) batchProcessImmutableEntries(
 		for i := start; i < end; i++ {
 			values[i], status[i] = m.ProcessEntry(immutableEntries[i].Key,
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-					return processFn(immutableEntries[i], loaded)
+					return fn(immutableEntries[i], loaded)
 				},
 			)
 		}
@@ -2488,33 +2490,33 @@ func (m *MapOf[K, V]) batchProcessImmutableEntries(
 // Parameters:
 //   - entries: slice of key-value pairs to process
 //   - growFactor: capacity change coefficient (see batchProcess)
-//   - processFn: function that receives entry and current value (if exists),
+//   - fn: function that receives entry and current value (if exists),
 //     returns new value, result value, and status
 //
 // Returns:
-//   - values []V: slice of values from processFn
-//   - status []bool: slice of status values from processFn
+//   - values []V: slice of values from fn
+//   - status []bool: slice of status values from fn
 //
 // Notes:
-//   - The processFn should not directly return `entry`,
+//   - The fn should not directly return `entry`,
 //     as this would prevent the entire `entries` from being garbage collected
 //     in a timely manner.
 func (m *MapOf[K, V]) BatchProcessEntries(
 	entries []EntryOf[K, V],
 	growFactor float64,
-	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	fn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (newEntry *EntryOf[K, V], ret V, status bool),
 ) (values []V, status []bool) {
 	return m.batchProcessEntries(
 		entries,
 		int(float64(len(entries))*growFactor),
-		processFn,
+		fn,
 	)
 }
 
 func (m *MapOf[K, V]) batchProcessEntries(
 	entries []EntryOf[K, V],
 	growSize int,
-	processFn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	fn func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (values []V, status []bool) {
 	if len(entries) == 0 {
 		return
@@ -2528,7 +2530,7 @@ func (m *MapOf[K, V]) batchProcessEntries(
 		for i := start; i < end; i++ {
 			values[i], status[i] = m.ProcessEntry(entries[i].Key,
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-					return processFn(&entries[i], loaded)
+					return fn(&entries[i], loaded)
 				},
 			)
 		}
@@ -2542,28 +2544,28 @@ func (m *MapOf[K, V]) batchProcessEntries(
 // Parameters:
 //   - keys: slice of keys to process
 //   - growFactor: capacity change coefficient (see batchProcess)
-//   - processFn: function that receives key and current value (if exists),
+//   - fn: function that receives key and current value (if exists),
 //     returns new value, result value, and status
 //
 // Returns:
-//   - values []V: slice of values from processFn
-//   - status []bool: slice of status values from processFn
+//   - values []V: slice of values from fn
+//   - status []bool: slice of status values from fn
 func (m *MapOf[K, V]) BatchProcessKeys(
 	keys []K,
 	growFactor float64,
-	processFn func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	fn func(key K, loaded *EntryOf[K, V]) (newEntry *EntryOf[K, V], ret V, status bool),
 ) (values []V, status []bool) {
 	return m.batchProcessKeys(
 		keys,
 		int(float64(len(keys))*growFactor),
-		processFn,
+		fn,
 	)
 }
 
 func (m *MapOf[K, V]) batchProcessKeys(
 	keys []K,
 	growSize int,
-	processFn func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
+	fn func(key K, loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (values []V, status []bool) {
 	if len(keys) == 0 {
 		return
@@ -2577,7 +2579,7 @@ func (m *MapOf[K, V]) batchProcessKeys(
 		for i := start; i < end; i++ {
 			values[i], status[i] = m.ProcessEntry(keys[i],
 				func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
-					return processFn(keys[i], loaded)
+					return fn(keys[i], loaded)
 				},
 			)
 		}
@@ -2601,7 +2603,7 @@ func (m *MapOf[K, V]) BatchUpsert(
 	return m.batchProcessEntries(
 		entries,
 		len(entries),
-		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
+		func(entry *EntryOf[K, V], loaded *EntryOf[K, V]) (newEntry *EntryOf[K, V], ret V, status bool) {
 			if loaded != nil {
 				return &EntryOf[K, V]{Value: entry.Value}, loaded.Value, true
 			}
