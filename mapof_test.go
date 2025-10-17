@@ -7183,6 +7183,7 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 				// Just return the same entry
 				return loaded
 			},
+			rand.IntN(1) == 0,
 		)
 
 		// Verify map is still intact

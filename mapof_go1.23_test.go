@@ -4,6 +4,7 @@ package pb
 
 import (
 	"fmt"
+	"math/rand/v2"
 	"sync"
 	"testing"
 )
@@ -1289,7 +1290,7 @@ func TestMapOf_ProcessAll_Concurrent(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			count := 0
-			for range m.ProcessAll() {
+			for range m.ProcessAll(rand.IntN(1) == 0) {
 				count++
 			}
 			processed[idx] = count

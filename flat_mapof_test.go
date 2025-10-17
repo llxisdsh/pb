@@ -1701,7 +1701,9 @@ func TestFlatMapOf_RangeProcess_DuringResize(t *testing.T) {
 							return value + 1, UpdateOp
 						}
 						return value, CancelOp
-					})
+					},
+						rand.IntN(1) == 0,
+					)
 					runtime.Gosched()
 				}
 			}

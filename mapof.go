@@ -1308,6 +1308,13 @@ func (m *MapOf[K, V]) copyBucketOf(
 // Parameters:
 //   - fn: callback that processes each entry.
 //     The loaded parameter is guaranteed to be non-nil during iteration.
+//   - oncePerEntry: optional flag (default = false).
+//     When true, ensures each entry is processed at most once across table
+//     generations (e.g., during or after resize). This mode adds global
+//     uniqueness tracking and synchronization overhead, making it roughly
+//     an order of magnitude slower.
+//     When false, an entry may be visited multiple times if it migrates during
+//     concurrent resize or split phases, but overall processing is much faster.
 //
 // Notes:
 //
@@ -1320,11 +1327,13 @@ func (m *MapOf[K, V]) copyBucketOf(
 //   - Blocks concurrent map operations during execution
 func (m *MapOf[K, V]) RangeProcessEntry(
 	fn func(loaded *EntryOf[K, V]) (newEntry *EntryOf[K, V]),
+	oncePerEntry ...bool,
 ) {
 	m.rangeProcessEntryWithBreak(
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool) {
 			return fn(loaded), true
 		},
+		oncePerEntry...,
 	)
 }
 
@@ -1339,12 +1348,17 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 //   - Return (any, false): stops iteration early
 func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool),
+	oncePerEntry ...bool,
 ) {
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	if table == nil {
 		return
 	}
-
+	var visited map[*EntryOf[K, V]]struct{}
+	once := len(oncePerEntry) != 0 && oncePerEntry[0]
+	if once {
+		visited = make(map[*EntryOf[K, V]]struct{}, table.SumSize())
+	}
 restart:
 	for i := 0; i <= table.mask; i++ {
 		root := table.buckets.At(i)
@@ -1371,7 +1385,13 @@ restart:
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
-
+					// Check if entry has been processed
+					if once {
+						if _, ok := visited[e]; ok {
+							continue
+						}
+						visited[e] = struct{}{}
+					}
 					newEntry, shouldContinue := fn(e)
 					if !shouldContinue {
 						root.Unlock()
@@ -1465,6 +1485,15 @@ func (e *IterEntry[K, V]) Delete() {
 //		}
 //	}
 //
+// Parameters:
+//   - oncePerEntry: optional flag (default = false).
+//     When true, ensures each entry is processed at most once across table
+//     generations (e.g., during or after resize). This mode adds global
+//     uniqueness tracking and synchronization overhead, making it roughly
+//     an order of magnitude slower.
+//     When false, an entry may be visited multiple times if it migrates during
+//     concurrent resize or split phases, but overall processing is much faster.
+//
 // Notes:
 //   - IterEntry.Loaded() will always return true during iteration
 //   - Holds bucket lock for entire iteration - avoid long operations/deadlock
@@ -1475,7 +1504,7 @@ func (e *IterEntry[K, V]) Delete() {
 //     performance
 //
 //go:nosplit
-func (m *MapOf[K, V]) ProcessAll() func(yield func(*IterEntry[K, V]) bool) {
+func (m *MapOf[K, V]) ProcessAll(oncePerEntry ...bool) func(yield func(*IterEntry[K, V]) bool) {
 	return func(yield func(*IterEntry[K, V]) bool) {
 		var e IterEntry[K, V]
 		// loaded can never be nil
@@ -1499,6 +1528,7 @@ func (m *MapOf[K, V]) ProcessAll() func(yield func(*IterEntry[K, V]) bool) {
 					return loaded, true
 				}
 			},
+			oncePerEntry...,
 		)
 	}
 }

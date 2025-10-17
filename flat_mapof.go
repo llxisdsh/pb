@@ -423,10 +423,26 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 //   - If a resize is detected, it cooperates to finish copying and then
 //     continues on the new table.
 //
+// Parameters:
+//   - fn: user function to apply to each key-value pair.
+//   - oncePerKey: optional flag (default = false).
+//     When true, ensures each key is processed at most once across table
+//     generations (e.g., during or after resize). This mode adds global
+//     uniqueness tracking and synchronization overhead, making it roughly
+//     an order of magnitude slower.
+//     When false, a key may be visited multiple times if it migrates during
+//     concurrent resize or split phases, but overall processing is much faster.
+//
 // Recommendation: keep fn lightweight to reduce lock hold time.
 func (m *FlatMapOf[K, V]) RangeProcess(
 	fn func(key K, value V) (newV V, op ComputeOp),
+	oncePerKey ...bool,
 ) {
+	var visited map[K]struct{}
+	once := len(oncePerKey) != 0 && oncePerKey[0]
+	if once {
+		visited = make(map[K]struct{}, m.Size())
+	}
 restart:
 	table := m.table.SeqLoad()
 	for i := 0; i <= table.mask; i++ {
@@ -451,6 +467,13 @@ restart:
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j)
+				if once {
+					// Check if entry has been processed
+					if _, ok := visited[e.key]; ok {
+						continue
+					}
+					visited[e.key] = struct{}{}
+				}
 				newV, op := fn(e.key, e.value)
 				switch op {
 				case CancelOp:
