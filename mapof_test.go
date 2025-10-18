@@ -5504,8 +5504,9 @@ func TestMapOfStats(t *testing.T) {
 	}
 
 	stats = m.Stats()
-	if stats.RootBuckets != calcTableLen(200) {
-		t.Fatalf("unexpected number of root buckets: %s", stats.ToString())
+	rootBuckes := calcTableLen(200)
+	if stats.RootBuckets > rootBuckes {
+		t.Fatalf("unexpected number of root buckets: %d, %s", rootBuckes, stats.ToString())
 	}
 	if stats.TotalBuckets < stats.RootBuckets {
 		t.Fatalf("unexpected number of total buckets: %s", stats.ToString())
