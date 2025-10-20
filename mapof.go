@@ -1357,7 +1357,7 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 	var visited map[K]struct{}
 	once := len(oncePerKey) != 0 && oncePerKey[0]
 	if once {
-		visited = make(map[K]struct{}, m.Size())
+		visited = make(map[K]struct{}, table.SumSize())
 	}
 restart:
 	for i := 0; i <= table.mask; i++ {

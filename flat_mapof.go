@@ -438,13 +438,13 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 	fn func(key K, value V) (newV V, op ComputeOp),
 	oncePerKey ...bool,
 ) {
+	table := m.table.SeqLoad()
 	var visited map[K]struct{}
 	once := len(oncePerKey) != 0 && oncePerKey[0]
 	if once {
-		visited = make(map[K]struct{}, m.Size())
+		visited = make(map[K]struct{}, table.SumSize())
 	}
 restart:
-	table := m.table.SeqLoad()
 	for i := 0; i <= table.mask; i++ {
 		root := table.buckets.At(i)
 		root.Lock()
@@ -454,11 +454,13 @@ restart:
 			rs.newTable.SeqInitDone() {
 			root.Unlock()
 			m.helpCopyAndWait(rs)
+			table = m.table.SeqLoad()
 			goto restart
 		}
 		// Check if table has been swapped during resize
 		if atomic.LoadUint32(&m.table.seq) != table.seq {
 			root.Unlock()
+			table = m.table.SeqLoad()
 			goto restart
 		}
 
