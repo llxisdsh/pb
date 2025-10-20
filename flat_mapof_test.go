@@ -1694,15 +1694,16 @@ func TestFlatMapOf_RangeProcess_DuringResize(t *testing.T) {
 					processCounts[goroutineID] = count
 					return
 				default:
-					m.RangeProcess(func(key int, value int) (int, ComputeOp) {
-						count++
-						// Occasionally update values
-						if count%100 == 0 {
-							return value + 1, UpdateOp
-						}
-						return value, CancelOp
-					},
-						rand.IntN(1) == 0,
+					m.RangeProcess(
+						func(key int, value int) (int, ComputeOp) {
+							count++
+							// Occasionally update values
+							if count%100 == 0 {
+								return value + 1, UpdateOp
+							}
+							return value, CancelOp
+						},
+						rand.IntN(2) == 0,
 					)
 					runtime.Gosched()
 				}

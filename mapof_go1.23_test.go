@@ -1290,7 +1290,7 @@ func TestMapOf_ProcessAll_Concurrent(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			count := 0
-			for range m.ProcessAll(rand.IntN(1) == 0) {
+			for range m.ProcessAll(rand.IntN(2) == 0) {
 				count++
 			}
 			processed[idx] = count
