@@ -58,7 +58,6 @@ type structKey struct {
 func TestMap_BucketOfStructSize(t *testing.T) {
 	t.Logf("CacheLineSize : %d", CacheLineSize)
 	t.Logf("entriesPerBucket : %d", entriesPerBucket)
-	t.Log("resizeState size:", unsafe.Sizeof(resizeState{}))
 
 	size := unsafe.Sizeof(counterStripe{})
 	t.Log("counterStripe size:", size)
@@ -77,6 +76,12 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 	t.Log("mapOfTable size:", size)
 	if size != CacheLineSize {
 		t.Fatalf("mapOfTable doesn't meet CacheLineSize: %d", size)
+	}
+
+	size = unsafe.Sizeof(rebuildState{})
+	t.Log("rebuildState size:", size)
+	if size != CacheLineSize {
+		t.Fatalf("rebuildState doesn't meet CacheLineSize: %d", size)
 	}
 
 	size = unsafe.Sizeof(MapOf[string, int]{})

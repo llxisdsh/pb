@@ -8,7 +8,37 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 )
+
+func TestFlatMapOf_BucketOfStructSize(t *testing.T) {
+	t.Logf("CacheLineSize : %d", CacheLineSize)
+	t.Logf("entriesPerBucket : %d", entriesPerBucket)
+
+	size := unsafe.Sizeof(FlatMapOf[string, int]{})
+	t.Log("FlatMapOf size:", size)
+	if size != CacheLineSize {
+		t.Fatalf("FlatMapOf doesn't meet CacheLineSize: %d", size)
+	}
+
+	size = unsafe.Sizeof(flatRebuildState[string, int]{})
+	t.Log("flatRebuildState size:", size)
+	if size != CacheLineSize {
+		t.Fatalf("flatRebuildState doesn't meet CacheLineSize: %d", size)
+	}
+
+	size = unsafe.Sizeof(flatTable[string, int]{})
+	t.Log("flatTable size:", size)
+	//if size != CacheLineSize {
+	//	t.Fatalf("flatTable doesn't meet CacheLineSize: %d", size)
+	//}
+
+	size = unsafe.Sizeof(flatBucket[string, int]{})
+	t.Log("flatBucket size:", size)
+	//if size != CacheLineSize {
+	//	t.Fatalf("flatBucket doesn't meet CacheLineSize: %d", size)
+	//}
+}
 
 // TestFlatMapOf_BasicOperations tests basic Load and Process operations
 func TestFlatMapOf_BasicOperations(t *testing.T) {
@@ -503,6 +533,21 @@ func TestFlatMapOf_Size(t *testing.T) {
 			)
 		}
 	}
+
+	// Test Clear and verify size becomes 0
+	m.Clear()
+	if size := m.Size(); size != 0 {
+		t.Errorf("After Clear(), expected size 0, got %d", size)
+	}
+
+	// Add items again after Clear to verify functionality
+	for i := range 3 {
+		value := fmt.Sprintf("after_clear_%d", i)
+		m.Store(i+100, &value)
+	}
+	if size := m.Size(); size != 3 {
+		t.Errorf("After adding 3 items post-Clear, expected size 3, got %d", size)
+	}
 }
 
 // TestFlatMapOf_IsZero tests the IsZero method
@@ -534,12 +579,26 @@ func TestFlatMapOf_IsZero(t *testing.T) {
 		t.Error("Expected IsZero() to return false for map with multiple items")
 	}
 
-	// Delete all items
-	for i := 1; i <= 10; i++ {
-		m.Delete(fmt.Sprintf("key_%d", i))
+	// Test Clear as an alternative to individual deletes
+	m.Clear()
+	if !m.IsZero() {
+		t.Error("Expected IsZero() to return true after Clear()")
+	}
+
+	// Verify Clear is equivalent to individual deletes
+	for i := 1; i <= 5; i++ {
+		m.Store(fmt.Sprintf("test_%d", i), i*100)
+	}
+	if m.IsZero() {
+		t.Error("Expected IsZero() to return false after adding items")
+	}
+
+	// Delete all items individually for comparison
+	for i := 1; i <= 5; i++ {
+		m.Delete(fmt.Sprintf("test_%d", i))
 	}
 	if !m.IsZero() {
-		t.Error("Expected IsZero() to return true after deleting all items")
+		t.Error("Expected IsZero() to return true after deleting all items individually")
 	}
 }
 
@@ -1776,5 +1835,353 @@ func TestFlatMapOf_RangeProcess_EarlyTermination(t *testing.T) {
 
 	if processedCount == 0 {
 		t.Error("Expected some entries to be processed")
+	}
+}
+
+// TestFlatMapOf_Clear tests the Clear method
+func TestFlatMapOf_Clear(t *testing.T) {
+	m := NewFlatMapOf[string, int]()
+
+	// Test clear on empty map
+	m.Clear()
+	if !m.IsZero() {
+		t.Error("Expected map to be empty after clearing empty map")
+	}
+	if size := m.Size(); size != 0 {
+		t.Errorf("Expected size 0 after clearing empty map, got %d", size)
+	}
+
+	// Add some data
+	for i := range 10 {
+		key := fmt.Sprintf("key_%d", i)
+		m.Store(key, i*10)
+	}
+
+	// Verify data exists
+	if size := m.Size(); size != 10 {
+		t.Errorf("Expected size 10 before clear, got %d", size)
+	}
+	if m.IsZero() {
+		t.Error("Expected map not to be empty before clear")
+	}
+
+	// Clear the map
+	m.Clear()
+
+	// Verify map is empty
+	if !m.IsZero() {
+		t.Error("Expected map to be empty after clear")
+	}
+	if size := m.Size(); size != 0 {
+		t.Errorf("Expected size 0 after clear, got %d", size)
+	}
+
+	// Verify all keys are gone
+	for i := range 10 {
+		key := fmt.Sprintf("key_%d", i)
+		if val, ok := m.Load(key); ok {
+			t.Errorf("Key %s should be gone after clear, but got (%v, %v)", key, val, ok)
+		}
+	}
+
+	// Verify Range returns no entries
+	count := 0
+	m.Range(func(k string, v int) bool {
+		count++
+		return true
+	})
+	if count != 0 {
+		t.Errorf("Expected 0 entries in Range after clear, got %d", count)
+	}
+}
+
+// TestFlatMapOf_ClearAndReinsert tests clearing and then reinserting data
+func TestFlatMapOf_ClearAndReinsert(t *testing.T) {
+	m := NewFlatMapOf[int, string]()
+
+	// Insert initial data
+	for i := range 20 {
+		value := fmt.Sprintf("initial_%d", i)
+		m.Store(i, value)
+	}
+	if size := m.Size(); size != 20 {
+		t.Errorf("Expected size 20 after initial insert, got %d", size)
+	}
+
+	// Clear the map
+	m.Clear()
+	if size := m.Size(); size != 0 {
+		t.Errorf("Expected size 0 after clear, got %d", size)
+	}
+
+	// Reinsert different data
+	for i := range 15 {
+		key := i + 100 // Different keys
+		value := fmt.Sprintf("new_%d", i)
+		m.Store(key, value)
+	}
+	if size := m.Size(); size != 15 {
+		t.Errorf("Expected size 15 after reinsert, got %d", size)
+	}
+
+	// Verify new data is accessible
+	for i := range 15 {
+		key := i + 100
+		expected := fmt.Sprintf("new_%d", i)
+		if val, ok := m.Load(key); !ok || val != expected {
+			t.Errorf("Key %d: expected (%s, true), got (%v, %v)", key, expected, val, ok)
+		}
+	}
+
+	// Verify old data is gone
+	for i := range 20 {
+		if val, ok := m.Load(i); ok {
+			t.Errorf("Old key %d should be gone, but got (%v, %v)", i, val, ok)
+		}
+	}
+}
+
+// TestFlatMapOf_ClearLargeMap tests clearing a large map
+func TestFlatMapOf_ClearLargeMap(t *testing.T) {
+	m := NewFlatMapOf[int, int](WithPresize(2048))
+
+	// Insert a large amount of data
+	const N = 1000
+	for i := range N {
+		m.Store(i, i*2)
+	}
+	if size := m.Size(); size != N {
+		t.Errorf("Expected size %d after insert, got %d", N, size)
+	}
+
+	// Clear the map
+	m.Clear()
+
+	// Verify it's empty
+	if size := m.Size(); size != 0 {
+		t.Errorf("Expected size 0 after clear, got %d", size)
+	}
+	if !m.IsZero() {
+		t.Error("Expected map to be empty after clear")
+	}
+
+	// Spot check that data is gone
+	testKeys := []int{0, N / 4, N / 2, 3 * N / 4, N - 1}
+	for _, key := range testKeys {
+		if val, ok := m.Load(key); ok {
+			t.Errorf("Key %d should be gone after clear, but got (%v, %v)", key, val, ok)
+		}
+	}
+}
+
+// TestFlatMapOf_ClearConcurrent tests concurrent access during clear
+func TestFlatMapOf_ClearConcurrent(t *testing.T) {
+	m := NewFlatMapOf[int, int]()
+
+	// Insert initial data
+	const N = 100
+	for i := range N {
+		m.Store(i, i*2)
+	}
+	if size := m.Size(); size != N {
+		t.Errorf("Expected size %d after insert, got %d", N, size)
+	}
+
+	var wg sync.WaitGroup
+	var clearDone atomic.Bool
+
+	// Start a goroutine that clears the map
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(10 * time.Millisecond) // Let readers start
+		m.Clear()
+		clearDone.Store(true)
+	}()
+
+	// Start readers that try to access data during clear
+	numReaders := 4
+	for r := range numReaders {
+		wg.Add(1)
+		go func(readerID int) {
+			defer wg.Done()
+			for i := 0; i < 200; i++ {
+				key := (readerID*50 + i) % N
+				m.Load(key) // May or may not find the key
+				if clearDone.Load() {
+					break
+				}
+				time.Sleep(time.Microsecond)
+			}
+		}(r)
+	}
+
+	wg.Wait()
+
+	// Verify map is empty after clear
+	if size := m.Size(); size != 0 {
+		t.Errorf("Expected size 0 after concurrent clear, got %d", size)
+	}
+	if !m.IsZero() {
+		t.Error("Expected map to be empty after concurrent clear")
+	}
+}
+
+// TestFlatMapOf_ClearConcurrentOperations tests clear with concurrent writes
+func TestFlatMapOf_ClearConcurrentOperations(t *testing.T) {
+	m := NewFlatMapOf[int, int]()
+
+	// Insert initial data
+	const N = 50
+	for i := range N {
+		m.Store(i, i)
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Start a goroutine that clears the map
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(20 * time.Millisecond)
+		m.Clear()
+		close(stop)
+	}()
+
+	// Start writers that try to insert during clear
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 100; i < 150; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				m.Store(i, i*3)
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	// Start readers
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < N; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				m.Load(i)
+				time.Sleep(time.Millisecond)
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	// The map should be in a consistent state
+	// Either completely clear or with some new insertions from the writer
+	finalSize := m.Size()
+
+	// Verify consistency - no old entries should remain
+	foundOldEntries := false
+	for i := range N {
+		if _, ok := m.Load(i); ok {
+			foundOldEntries = true
+			break
+		}
+	}
+
+	// Old entries should be gone after clear
+	if foundOldEntries {
+		t.Error("Found old entries that should have been cleared")
+	}
+
+	// Any remaining entries should be from the concurrent writer (100-149 range)
+	if finalSize > 0 {
+		validEntries := 0
+		for i := 100; i < 150; i++ {
+			if _, ok := m.Load(i); ok {
+				validEntries++
+			}
+		}
+		if validEntries != finalSize {
+			t.Errorf("Expected all remaining entries to be from concurrent writer, got %d valid out of %d total", validEntries, finalSize)
+		}
+	}
+}
+
+// TestFlatMapOf_ClearMultipleTimes tests clearing multiple times
+func TestFlatMapOf_ClearMultipleTimes(t *testing.T) {
+	m := NewFlatMapOf[int, int]()
+
+	for round := range 5 {
+		// Insert data
+		for i := range 20 {
+			key := i + round*100
+			m.Store(key, i*round)
+		}
+		if size := m.Size(); size != 20 {
+			t.Errorf("Round %d: expected size 20 after insert, got %d", round, size)
+		}
+
+		// Clear
+		m.Clear()
+		if size := m.Size(); size != 0 {
+			t.Errorf("Round %d: expected size 0 after clear, got %d", round, size)
+		}
+		if !m.IsZero() {
+			t.Errorf("Round %d: expected map to be empty after clear", round)
+		}
+	}
+
+	// Final verification
+	if size := m.Size(); size != 0 {
+		t.Errorf("Expected final size 0, got %d", size)
+	}
+	if !m.IsZero() {
+		t.Error("Expected map to be empty at the end")
+	}
+}
+
+// TestFlatMapOf_ClearWithShrinkEnabled tests clear with shrink enabled
+func TestFlatMapOf_ClearWithShrinkEnabled(t *testing.T) {
+	m := NewFlatMapOf[int, int](WithPresize(1024), WithShrinkEnabled())
+
+	// Insert data to grow the map
+	const N = 800
+	for i := range N {
+		m.Store(i, i)
+	}
+	if size := m.Size(); size != N {
+		t.Errorf("Expected size %d after insert, got %d", N, size)
+	}
+
+	// Clear the map
+	m.Clear()
+
+	// Verify it's empty
+	if size := m.Size(); size != 0 {
+		t.Errorf("Expected size 0 after clear, got %d", size)
+	}
+	if !m.IsZero() {
+		t.Error("Expected map to be empty after clear")
+	}
+
+	// The map should still be functional after clear
+	for i := range 10 {
+		m.Store(i, i*10)
+	}
+	if size := m.Size(); size != 10 {
+		t.Errorf("Expected size 10 after reinsert, got %d", size)
+	}
+
+	// Verify data is accessible
+	for i := range 10 {
+		if val, ok := m.Load(i); !ok || val != i*10 {
+			t.Errorf("Key %d: expected (%d, true), got (%v, %v)", i, i*10, val, ok)
+		}
 	}
 }

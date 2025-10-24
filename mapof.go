@@ -92,7 +92,7 @@ type MapOf[K comparable, V any] struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_        noCopy
 		table    unsafe.Pointer
-		resize   unsafe.Pointer
+		rb       unsafe.Pointer
 		growths  uint32
 		shrinks  uint32
 		seed     uintptr
@@ -105,7 +105,7 @@ type MapOf[K comparable, V any] struct {
 
 	_        noCopy
 	table    unsafe.Pointer // *mapOfTable
-	resize   unsafe.Pointer // *resizeState
+	rb       unsafe.Pointer // *rebuildState
 	growths  uint32
 	shrinks  uint32
 	seed     uintptr
@@ -462,9 +462,10 @@ func (b *bucketOf) At(i int) *unsafe.Pointer {
 	)
 }
 
-// resizeState represents the current state of a resizing operation
-type resizeState struct {
+// rebuildState represents the current state of a resizing operation
+type rebuildState struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
+		hint      mapRebuildHint
 		wg        sync.WaitGroup
 		table     unsafe.Pointer
 		newTable  unsafe.Pointer
@@ -472,6 +473,7 @@ type resizeState struct {
 		completed int32
 	}{})%CacheLineSize) % CacheLineSize]byte
 
+	hint      mapRebuildHint
 	wg        sync.WaitGroup
 	table     unsafe.Pointer // *mapOfTable
 	newTable  unsafe.Pointer // *mapOfTable
@@ -708,23 +710,19 @@ func (m *MapOf[K, V]) init(
 //
 //go:noinline
 func (m *MapOf[K, V]) initSlow() *mapOfTable {
-	rs := (*resizeState)(loadPointerNoMB(&m.resize))
-	if rs != nil {
-		rs.wg.Wait()
+	rb := (*rebuildState)(loadPointerNoMB(&m.rb))
+	if rb != nil {
+		rb.wg.Wait()
 		// Now the table should be initialized
 		return (*mapOfTable)(loadPointerNoMB(&m.table))
 	}
 
-	// Create a temporary WaitGroup for initialization synchronization
-	rs = new(resizeState)
-	rs.wg.Add(1)
-
-	// Try to set resizeWg, if successful it means we've acquired the "lock"
-	if !atomic.CompareAndSwapPointer(&m.resize, nil, unsafe.Pointer(rs)) {
+	rb, ok := m.beginRebuild(mapExclusiveRebuildHint)
+	if !ok {
 		// Another goroutine is initializing, wait for it to complete
-		rs = (*resizeState)(loadPointerNoMB(&m.resize))
-		if rs != nil {
-			rs.wg.Wait()
+		rb = (*rebuildState)(loadPointerNoMB(&m.rb))
+		if rb != nil {
+			rb.wg.Wait()
 		}
 		// Now the table should be initialized
 		return (*mapOfTable)(loadPointerNoMB(&m.table))
@@ -734,16 +732,14 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	// it might have been changed before that.
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	if table != nil {
-		atomic.StorePointer(&m.resize, nil)
-		rs.wg.Done()
+		m.endRebuild(rb)
 		return table
 	}
 
 	// Perform initialization
 	c := &MapConfig{}
 	table = m.init(c)
-	atomic.StorePointer(&m.resize, nil)
-	rs.wg.Done()
+	m.endRebuild(rb)
 	return table
 }
 
@@ -843,16 +839,24 @@ func (m *MapOf[K, V]) processEntry(
 
 		root.Lock()
 
-		// This is the first check, checking if there is a resize operation in
+		// This is the first check, checking if there is a rebuild operation in
 		// progress before acquiring the bucket lock
-		if rs := (*resizeState)(loadPointerNoMB(&m.resize)); rs != nil &&
-			loadPointerNoMB(&rs.table) != nil /*skip init*/ &&
-			loadPointerNoMB(&rs.newTable) != nil /*skip newTable is nil*/ {
-			root.Unlock()
-			// Wait for the current resize operation to complete
-			m.helpCopyAndWait(rs)
-			table = (*mapOfTable)(loadPointerNoMB(&m.table))
-			continue
+		if rb := (*rebuildState)(loadPointerNoMB(&m.rb)); rb != nil {
+			switch rb.hint {
+			case mapGrowHint, mapShrinkHint:
+				if loadPointerNoMB(&rb.table) != nil /*skip init*/ &&
+					loadPointerNoMB(&rb.newTable) != nil /*skip newTable is nil*/ {
+					root.Unlock()
+					m.helpCopyAndWait(rb)
+					table = (*mapOfTable)(loadPointerNoMB(&m.table))
+					continue
+				}
+			default:
+				root.Unlock()
+				rb.wg.Wait()
+				table = (*mapOfTable)(loadPointerNoMB(&m.table))
+				continue
+			}
 		}
 
 		// Verifies if table was replaced after lock acquisition.
@@ -937,7 +941,7 @@ func (m *MapOf[K, V]) processEntry(
 
 			// Check if table shrinking is needed
 			if m.shrinkOn && newMeta&metaDataMask == emptyMeta &&
-				loadPointerNoMB(&m.resize) == nil {
+				loadPointerNoMB(&m.rb) == nil {
 				tableLen := table.mask + 1
 				if m.minLen < tableLen {
 					size := table.SumSize()
@@ -990,7 +994,7 @@ func (m *MapOf[K, V]) processEntry(
 		table.AddSize(idx, 1)
 
 		// Check if the table needs to grow
-		if loadPointerNoMB(&m.resize) == nil {
+		if loadPointerNoMB(&m.rb) == nil {
 			tableLen := table.mask + 1
 			size := table.SumSize()
 			const sizeHintFactor = float64(entriesPerBucket) * loadFactor
@@ -1003,16 +1007,17 @@ func (m *MapOf[K, V]) processEntry(
 	}
 }
 
-type mapResizeHint int
+type mapRebuildHint uint8
 
 const (
-	mapGrowHint   mapResizeHint = 0
-	mapShrinkHint mapResizeHint = 1
-	mapClearHint  mapResizeHint = 2
+	mapGrowHint               mapRebuildHint = 0
+	mapShrinkHint             mapRebuildHint = 1
+	mapRebuildWithWritersHint mapRebuildHint = 2
+	mapExclusiveRebuildHint   mapRebuildHint = 3
 )
 
 func (m *MapOf[K, V]) doResize(
-	hint mapResizeHint,
+	hint mapRebuildHint,
 	sizeAdd int,
 ) {
 	var size int
@@ -1041,112 +1046,152 @@ func (m *MapOf[K, V]) doResize(
 				return
 			}
 		default:
-			if tableLen == m.minLen && table.IsZero() {
-				return
-			}
+			panic("unexpected hint")
 		}
-		// Wait resize finish
-		if rs := (*resizeState)(loadPointerNoMB(&m.resize)); rs != nil {
-			if loadPointerNoMB(&rs.table) != nil /*skip init*/ &&
-				loadPointerNoMB(&rs.newTable) != nil /*skip newTable is nil */ {
-				m.helpCopyAndWait(rs)
-			} else {
-				rs.wg.Wait()
+
+		// Help finishing rebuild if needed
+		if rb := (*rebuildState)(loadPointerNoMB(&m.rb)); rb != nil {
+			switch rb.hint {
+			case mapGrowHint, mapShrinkHint:
+				if loadPointerNoMB(&rb.table) != nil /*skip init*/ &&
+					loadPointerNoMB(&rb.newTable) != nil /*skip newTable is nil*/ {
+					m.helpCopyAndWait(rb)
+				} else {
+					runtime.Gosched()
+					continue
+					// rb.wg.Wait()
+				}
+			default:
+				rb.wg.Wait()
 			}
-			continue
 		}
 
 		m.tryResize(hint, size, sizeAdd)
 	}
 }
 
+func (m *MapOf[K, V]) beginRebuild(hint mapRebuildHint) (*rebuildState, bool) {
+	rb := new(rebuildState)
+	rb.hint = hint
+	rb.wg.Add(1)
+	if !atomic.CompareAndSwapPointer(&m.rb, nil, unsafe.Pointer(rb)) {
+		return nil, false
+	}
+	return rb, true
+}
+
+func (m *MapOf[K, V]) endRebuild(rb *rebuildState) {
+	atomic.StorePointer(&m.rb, nil)
+	rb.wg.Done()
+}
+
+// rebuild reorganizes the map. Only these hints are supported:
+//   - mapRebuildWithWritersHint: allows concurrent reads/writes
+//   - mapExclusiveRebuildHint: allows concurrent reads
+func (m *MapOf[K, V]) rebuild(
+	hint mapRebuildHint,
+	fn func(),
+) {
+	for {
+		// Help finishing rebuild if needed
+		if rb := (*rebuildState)(atomic.LoadPointer(&m.rb)); rb != nil {
+			switch rb.hint {
+			case mapGrowHint, mapShrinkHint:
+				if loadPointerNoMB(&rb.table) != nil /*skip init*/ &&
+					loadPointerNoMB(&rb.newTable) != nil /*skip newTable is nil*/ {
+					m.helpCopyAndWait(rb)
+				} else {
+					//rb.wg.Wait()
+					runtime.Gosched()
+					continue
+				}
+			default:
+				rb.wg.Wait()
+			}
+		}
+		if rb, ok := m.beginRebuild(hint); ok {
+			fn()
+			m.endRebuild(rb)
+			return
+		}
+	}
+}
+
 //go:noinline
 func (m *MapOf[K, V]) tryResize(
-	hint mapResizeHint,
+	hint mapRebuildHint,
 	size, sizeAdd int,
 ) {
-	// Create a new WaitGroup for the current resize operation
-	rs := new(resizeState)
-	rs.wg.Add(1)
-
-	// Try to set resizeWg, if successful it means we've acquired the "lock"
-	if !atomic.CompareAndSwapPointer(&m.resize, nil, unsafe.Pointer(rs)) {
-		return
-	}
-
-	// Resize start
-	cpus := runtime.GOMAXPROCS(0)
-	if hint == mapClearHint {
-		newTable := newMapOfTable(m.minLen, cpus)
-		atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
-		atomic.StorePointer(&m.resize, nil)
-		rs.wg.Done()
+	rb, ok := m.beginRebuild(hint)
+	if !ok {
 		return
 	}
 
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	tableLen := table.mask + 1
 	var newLen int
-	if hint == mapGrowHint {
+	switch hint {
+	case mapGrowHint:
 		if sizeAdd == 0 {
 			newLen = max(calcTableLen(size), tableLen<<1)
 		} else {
 			newLen = calcTableLen(size + sizeAdd)
 			if newLen <= tableLen {
-				atomic.StorePointer(&m.resize, nil)
-				rs.wg.Done()
+				m.endRebuild(rb)
 				return
 			}
 		}
 		atomic.AddUint32(&m.growths, 1)
-	} else {
+	case mapShrinkHint:
 		if sizeAdd == 0 {
 			newLen = tableLen >> 1
 		} else {
 			newLen = calcTableLen(size)
 		}
 		if newLen < m.minLen {
-			atomic.StorePointer(&m.resize, nil)
-			rs.wg.Done()
+			m.endRebuild(rb)
 			return
 		}
 		atomic.AddUint32(&m.shrinks, 1)
+	default:
+		panic("unexpected hint")
 	}
 
+	cpus := runtime.GOMAXPROCS(0)
 	if cpus > 1 &&
 		newLen*int(unsafe.Sizeof(bucketOf{})) >= asyncThreshold {
 		// The big table, use goroutines to create new table and copy entries
-		go m.finalizeResize(table, newLen, rs, cpus)
+		go m.finalizeResize(table, newLen, rb, cpus)
 	} else {
-		m.finalizeResize(table, newLen, rs, cpus)
+		m.finalizeResize(table, newLen, rb, cpus)
 	}
 }
 
 func (m *MapOf[K, V]) finalizeResize(
 	table *mapOfTable,
 	newLen int,
-	rs *resizeState,
+	rb *rebuildState,
 	cpus int,
 ) {
-	atomic.StorePointer(&rs.table, unsafe.Pointer(table))
+	atomic.StorePointer(&rb.table, unsafe.Pointer(table))
 	newTable := newMapOfTable(newLen, cpus)
-	atomic.StorePointer(&rs.newTable, unsafe.Pointer(newTable))
-	m.helpCopyAndWait(rs)
+	atomic.StorePointer(&rb.newTable, unsafe.Pointer(newTable))
+	m.helpCopyAndWait(rb)
 }
 
 //go:noinline
-func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
-	table := (*mapOfTable)(loadPointerNoMB(&rs.table))
+func (m *MapOf[K, V]) helpCopyAndWait(rb *rebuildState) {
+	table := (*mapOfTable)(loadPointerNoMB(&rb.table))
 	tableLen := table.mask + 1
 	chunks := int32(table.chunks)
 	chunkSz := table.chunkSz
-	newTable := (*mapOfTable)(loadPointerNoMB(&rs.newTable))
+	newTable := (*mapOfTable)(loadPointerNoMB(&rb.newTable))
 	isGrowth := (newTable.mask + 1) > tableLen
 	for {
-		process := atomic.AddInt32(&rs.process, 1)
+		process := atomic.AddInt32(&rb.process, 1)
 		if process > chunks {
 			// Wait copying completed
-			rs.wg.Wait()
+			rb.wg.Wait()
 			return
 		}
 		process--
@@ -1157,11 +1202,10 @@ func (m *MapOf[K, V]) helpCopyAndWait(rs *resizeState) {
 		} else {
 			m.copyBucketOfLock(table, start, end, newTable)
 		}
-		if atomic.AddInt32(&rs.completed, 1) == chunks {
+		if atomic.AddInt32(&rb.completed, 1) == chunks {
 			// Copying completed
 			atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
-			atomic.StorePointer(&m.resize, nil)
-			rs.wg.Done()
+			m.endRebuild(rb)
 			return
 		}
 	}
@@ -1308,13 +1352,10 @@ func (m *MapOf[K, V]) copyBucketOf(
 // Parameters:
 //   - fn: callback that processes each entry.
 //     The loaded parameter is guaranteed to be non-nil during iteration.
-//   - oncePerKey: optional flag (default = false).
-//     When true, ensures each key is processed at most once across table
-//     generations (e.g., during or after resize). This mode adds global
-//     uniqueness tracking and synchronization overhead, making it roughly
-//     an order of magnitude slower.
-//     When false, a key may be visited multiple times if it migrates during
-//     concurrent resize or split phases, but overall processing is much faster.
+//   - exclusiveWriteOpt: optional flag (default = false).
+//     When true, processes with exclusive concurrent writers;
+//     when false, allows concurrent writers.
+//     Resize (grow/shrink) is always exclusive.
 //
 // Notes:
 //
@@ -1327,13 +1368,13 @@ func (m *MapOf[K, V]) copyBucketOf(
 //   - Blocks concurrent map operations during execution
 func (m *MapOf[K, V]) RangeProcessEntry(
 	fn func(loaded *EntryOf[K, V]) (newEntry *EntryOf[K, V]),
-	oncePerKey ...bool,
+	exclusiveWriteOpt ...bool,
 ) {
 	m.rangeProcessEntryWithBreak(
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool) {
 			return fn(loaded), true
 		},
-		oncePerKey...,
+		exclusiveWriteOpt...,
 	)
 }
 
@@ -1348,78 +1389,55 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 //   - Return (any, false): stops iteration early
 func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool),
-	oncePerKey ...bool,
+	exclusiveWriteOpt ...bool,
 ) {
-	table := (*mapOfTable)(loadPointerNoMB(&m.table))
-	if table == nil {
+	if (*mapOfTable)(loadPointerNoMB(&m.table)) == nil {
 		return
 	}
-	var visited map[K]struct{}
-	once := len(oncePerKey) != 0 && oncePerKey[0]
-	if once {
-		visited = make(map[K]struct{}, table.SumSize())
+	hint := mapRebuildWithWritersHint
+	if len(exclusiveWriteOpt) != 0 && exclusiveWriteOpt[0] {
+		hint = mapExclusiveRebuildHint
 	}
-restart:
-	for i := 0; i <= table.mask; i++ {
-		root := table.buckets.At(i)
-		root.Lock()
+	m.rebuild(hint, func() {
+		table := (*mapOfTable)(loadPointerNoMB(&m.table))
+		for i := 0; i <= table.mask; i++ {
+			root := table.buckets.At(i)
+			root.Lock()
 
-		// Check if resize is in progress and help complete the copy
-		if rs := (*resizeState)(loadPointerNoMB(&m.resize)); rs != nil &&
-			loadPointerNoMB(&rs.table) != nil &&
-			loadPointerNoMB(&rs.newTable) != nil {
-			root.Unlock()
-			m.helpCopyAndWait(rs)
-			table = (*mapOfTable)(loadPointerNoMB(&m.table))
-			goto restart
-		}
-		// Check if table has been swapped during resize
-		if newTable := (*mapOfTable)(loadPointerNoMB(&m.table)); newTable != table {
-			root.Unlock()
-			table = newTable
-			goto restart
-		}
-
-		for b := root; b != nil; b = (*bucketOf)(b.next) {
-			meta := b.meta
-			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
-				j := firstMarkedByteIndex(marked)
-				if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
-					if once {
-						// Check if entry has been processed
-						if _, ok := visited[e.Key]; ok {
-							continue
+			for b := root; b != nil; b = (*bucketOf)(b.next) {
+				meta := b.meta
+				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
+					j := firstMarkedByteIndex(marked)
+					if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
+						newEntry, shouldContinue := fn(e)
+						if !shouldContinue {
+							root.Unlock()
+							return
 						}
-						visited[e.Key] = struct{}{}
-					}
-					newEntry, shouldContinue := fn(e)
-					if !shouldContinue {
-						root.Unlock()
-						return
-					}
 
-					if newEntry == e {
-						// No-op
-					} else if newEntry != nil {
-						// Update
-						if embeddedHash {
-							newEntry.setHash(e.getHash())
+						if newEntry == e {
+							// No-op
+						} else if newEntry != nil {
+							// Update
+							if embeddedHash {
+								newEntry.setHash(e.getHash())
+							}
+							newEntry.Key = e.Key
+							storePointerNoMB(b.At(j), unsafe.Pointer(newEntry))
+						} else {
+							// Delete
+							storePointerNoMB(b.At(j), nil)
+							// Keep snapshot fresh to prevent stale meta
+							meta = setByte(meta, emptySlot, j)
+							storeUint64NoMB(&b.meta, meta)
+							table.AddSize(i, -1)
 						}
-						newEntry.Key = e.Key
-						storePointerNoMB(b.At(j), unsafe.Pointer(newEntry))
-					} else {
-						// Delete
-						storePointerNoMB(b.At(j), nil)
-						// Keep snapshot fresh to prevent stale meta
-						meta = setByte(meta, emptySlot, j)
-						storeUint64NoMB(&b.meta, meta)
-						table.AddSize(i, -1)
 					}
 				}
 			}
+			root.Unlock()
 		}
-		root.Unlock()
-	}
+	})
 }
 
 // IterEntry represents an entry being processed in ProcessAll operations.
@@ -1486,13 +1504,10 @@ func (e *IterEntry[K, V]) Delete() {
 //	}
 //
 // Parameters:
-//   - oncePerKey: optional flag (default = false).
-//     When true, ensures each key is processed at most once across table
-//     generations (e.g., during or after resize). This mode adds global
-//     uniqueness tracking and synchronization overhead, making it roughly
-//     an order of magnitude slower.
-//     When false, a key may be visited multiple times if it migrates during
-//     concurrent resize or split phases, but overall processing is much faster.
+//   - exclusiveWriteOpt: optional flag (default = false).
+//     When true, processes with exclusive concurrent writers;
+//     when false, allows concurrent writers.
+//     Resize (grow/shrink) is always exclusive.
 //
 // Notes:
 //   - IterEntry.Loaded() will always return true during iteration
@@ -1504,7 +1519,7 @@ func (e *IterEntry[K, V]) Delete() {
 //     performance
 //
 //go:nosplit
-func (m *MapOf[K, V]) ProcessAll(oncePerKey ...bool) func(yield func(*IterEntry[K, V]) bool) {
+func (m *MapOf[K, V]) ProcessAll(exclusiveWriteOpt ...bool) func(yield func(*IterEntry[K, V]) bool) {
 	return func(yield func(*IterEntry[K, V]) bool) {
 		var e IterEntry[K, V]
 		// loaded can never be nil
@@ -1528,7 +1543,7 @@ func (m *MapOf[K, V]) ProcessAll(oncePerKey ...bool) func(yield func(*IterEntry[
 					return loaded, true
 				}
 			},
-			oncePerKey...,
+			exclusiveWriteOpt...,
 		)
 	}
 }
@@ -2177,7 +2192,11 @@ func (m *MapOf[K, V]) Clear() {
 	if table == nil {
 		return
 	}
-	m.doResize(mapClearHint, 0)
+	m.rebuild(mapExclusiveRebuildHint, func() {
+		cpus := runtime.GOMAXPROCS(0)
+		newTable := newMapOfTable(m.minLen, cpus)
+		atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
+	})
 }
 
 // Grow increases the map's capacity by sizeAdd entries to accommodate future
