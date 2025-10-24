@@ -24,7 +24,7 @@ type FlatMapOf[K comparable, V any] struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_        noCopy
 		table    flatTable[K, V]
-		resize   unsafe.Pointer
+		rb       unsafe.Pointer
 		seed     uintptr
 		keyHash  HashFunc
 		shrinkOn bool

@@ -1010,10 +1010,10 @@ func (m *MapOf[K, V]) processEntry(
 type mapRebuildHint uint8
 
 const (
-	mapGrowHint               mapRebuildHint = 0
-	mapShrinkHint             mapRebuildHint = 1
-	mapRebuildWithWritersHint mapRebuildHint = 2
-	mapExclusiveRebuildHint   mapRebuildHint = 3
+	mapGrowHint mapRebuildHint = iota
+	mapShrinkHint
+	mapRebuildWithWritersHint
+	mapExclusiveRebuildHint
 )
 
 func (m *MapOf[K, V]) doResize(
