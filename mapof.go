@@ -1094,7 +1094,7 @@ func (m *MapOf[K, V]) rebuild(
 ) {
 	for {
 		// Help finishing rebuild if needed
-		if rb := (*rebuildState)(atomic.LoadPointer(&m.rb)); rb != nil {
+		if rb := (*rebuildState)(loadPointerNoMB(&m.rb)); rb != nil {
 			switch rb.hint {
 			case mapGrowHint, mapShrinkHint:
 				if loadPointerNoMB(&rb.table) != nil /*skip init*/ &&
