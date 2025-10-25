@@ -851,7 +851,7 @@ func (m *MapOf[K, V]) processEntry(
 					table = (*mapOfTable)(loadPointerNoMB(&m.table))
 					continue
 				}
-			default:
+			case mapExclusiveRebuildHint:
 				root.Unlock()
 				rb.wg.Wait()
 				table = (*mapOfTable)(loadPointerNoMB(&m.table))
@@ -1101,14 +1101,15 @@ func (m *MapOf[K, V]) rebuild(
 					loadPointerNoMB(&rb.newTable) != nil /*skip newTable is nil*/ {
 					m.helpCopyAndWait(rb)
 				} else {
-					//rb.wg.Wait()
 					runtime.Gosched()
 					continue
+					// rb.wg.Wait()
 				}
 			default:
 				rb.wg.Wait()
 			}
 		}
+
 		if rb, ok := m.beginRebuild(hint); ok {
 			fn()
 			m.endRebuild(rb)

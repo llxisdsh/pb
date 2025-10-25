@@ -538,7 +538,7 @@ func (m *FlatMapOf[K, V]) Process(
 					m.helpCopyAndWait(rb)
 					continue
 				}
-			default:
+			case mapExclusiveRebuildHint:
 				root.Unlock()
 				rb.wg.Wait()
 				continue
