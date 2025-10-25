@@ -856,6 +856,8 @@ func (m *MapOf[K, V]) processEntry(
 				rb.wg.Wait()
 				table = (*mapOfTable)(loadPointerNoMB(&m.table))
 				continue
+			default:
+				// mapRebuildWithWritersHint - allow concurrent writers
 			}
 		}
 

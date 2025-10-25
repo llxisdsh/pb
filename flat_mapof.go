@@ -542,6 +542,8 @@ func (m *FlatMapOf[K, V]) Process(
 				root.Unlock()
 				rb.wg.Wait()
 				continue
+			default:
+				// mapRebuildWithWritersHint - allow concurrent writers
 			}
 		}
 		if atomic.LoadUint32(&m.table.seq) != table.seq {
