@@ -857,7 +857,7 @@ func (m *MapOf[K, V]) processEntry(
 				table = (*mapOfTable)(loadPointerNoMB(&m.table))
 				continue
 			default:
-				// mapRebuildWithWritersHint - allow concurrent writers
+				// mapRebuildWithWritersHint: allow concurrent writers
 			}
 		}
 
