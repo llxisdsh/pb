@@ -229,7 +229,7 @@ func (b *flatBucket[K, V]) Lock() {
 
 //go:nosplit
 func (b *flatBucket[K, V]) slowLock() {
-	spins := 0
+	var spins int
 	for !b.tryLock() {
 		delay(&spins)
 	}
@@ -251,6 +251,19 @@ func (b *flatBucket[K, V]) tryLock() bool {
 //go:nosplit
 func (b *flatBucket[K, V]) Unlock() {
 	b.meta.Store(*b.meta.Raw() &^ opLockMask)
+}
+
+//go:nosplit
+func (b *flatBucket[K, V]) IsLocked() bool {
+	return b.meta.Load()&opLockMask != 0
+}
+
+//go:nosplit
+func (b *flatBucket[K, V]) WaitUnlock() {
+	var spins int
+	for (b.meta.Load() & opLockMask) != 0 {
+		delay(&spins)
+	}
 }
 
 // Load retrieves the value for a key.
@@ -426,25 +439,32 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 //
 // Parameters:
 //   - fn: user function applied to each key-value pair.
-//   - exclusiveWriteOpt: optional flag (default = false).
-//     When true, processes with exclusive concurrent writers;
+//   - blockWritersOpt: optional flag (default = false).
+//     When true, block concurrent writers;
 //     when false, allows concurrent writers.
 //     Resize (grow/shrink) is always exclusive.
 //
 // Recommendation: keep fn lightweight to reduce lock hold time.
 func (m *FlatMapOf[K, V]) RangeProcess(
 	fn func(key K, value V) (newV V, op ComputeOp),
-	exclusiveWriteOpt ...bool,
+	blockWritersOpt ...bool,
 ) {
-	hint := mapRebuildWithWritersHint
-	if len(exclusiveWriteOpt) != 0 && exclusiveWriteOpt[0] {
-		hint = mapExclusiveRebuildHint
+	hint := mapRebuildAllowWritersHint
+	if len(blockWritersOpt) != 0 && blockWritersOpt[0] {
+		hint = mapRebuildBlockWritersHint
 	}
 	m.rebuild(hint, func() {
+		lock := hint == mapRebuildAllowWritersHint
 		table := m.table.SeqLoad()
 		for i := 0; i <= table.mask; i++ {
 			root := table.buckets.At(i)
-			root.Lock()
+			if lock {
+				root.Lock()
+			} else {
+				if root.IsLocked() {
+					root.WaitUnlock()
+				}
+			}
 
 			for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
 				meta := *b.meta.Raw()
@@ -470,12 +490,16 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 						*e = flatEntry[K, V]{}
 						table.AddSize(i, -1)
 					default:
-						root.Unlock()
+						if lock {
+							root.Unlock()
+						}
 						panic("unexpected op")
 					}
 				}
 			}
-			root.Unlock()
+			if lock {
+				root.Unlock()
+			}
 		}
 	})
 }
@@ -538,7 +562,7 @@ func (m *FlatMapOf[K, V]) Process(
 					m.helpCopyAndWait(rb)
 					continue
 				}
-			case mapExclusiveRebuildHint:
+			case mapRebuildBlockWritersHint:
 				root.Unlock()
 				rb.wg.Wait()
 				continue
@@ -666,7 +690,7 @@ func (m *FlatMapOf[K, V]) Process(
 			table.AddSize(idx, -1)
 			// Check if table shrinking is needed
 			if m.shrinkOn && newMeta&metaDataMask == emptyMeta &&
-				loadPointerNoMB(&m.rb) == nil {
+				atomic.LoadPointer(&m.rb) == nil {
 				tableLen := table.mask + 1
 				if minTableLen < tableLen {
 					size := table.SumSize()
@@ -729,7 +753,7 @@ func (m *FlatMapOf[K, V]) LoadOrStoreFn(
 
 // Clear clears all key-value pairs from the map.
 func (m *FlatMapOf[K, V]) Clear() {
-	m.rebuild(mapExclusiveRebuildHint, func() {
+	m.rebuild(mapRebuildBlockWritersHint, func() {
 		var newTable flatTable[K, V]
 		cpus := runtime.GOMAXPROCS(0)
 		newTable.makeTable(minTableLen, cpus)

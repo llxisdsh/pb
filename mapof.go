@@ -425,7 +425,7 @@ func (b *bucketOf) Lock() {
 
 //go:nosplit
 func (b *bucketOf) slowLock() {
-	spins := 0
+	var spins int
 	for !b.tryLock() {
 		delay(&spins)
 	}
@@ -452,6 +452,19 @@ func (b *bucketOf) Unlock() {
 //go:nosplit
 func (b *bucketOf) UnlockWithMeta(meta uint64) {
 	atomic.StoreUint64(&b.meta, meta&^opLockMask)
+}
+
+//go:nosplit
+func (b *bucketOf) IsLocked() bool {
+	return loadUint64NoMB(&b.meta)&opLockMask != 0
+}
+
+//go:nosplit
+func (b *bucketOf) WaitUnlock() {
+	var spins int
+	for loadUint64NoMB(&b.meta)&opLockMask != 0 {
+		delay(&spins)
+	}
 }
 
 //go:nosplit
@@ -538,17 +551,16 @@ func (table *mapOfTable) SumSize() int {
 	return int(sum)
 }
 
-// IsZero checks if the table is empty by verifying all counter-stripes are
-// zero.
-//
 //go:nosplit
-func (table *mapOfTable) IsZero() bool {
-	for i := 0; i <= table.sizeMask; i++ {
-		if loadUintptrNoMB(&table.size.At(i).c) != 0 {
-			return false
+func (t *mapOfTable) SumSizeExceeds(limit int) bool {
+	var sum uintptr
+	for i := 0; i <= int(t.sizeMask); i++ {
+		sum += loadUintptrNoMB(&t.size.At(i).c)
+		if int(sum) > limit {
+			return true
 		}
 	}
-	return true
+	return false
 }
 
 // IHashCode defines a custom hash function interface for key types.
@@ -717,7 +729,7 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 		return (*mapOfTable)(loadPointerNoMB(&m.table))
 	}
 
-	rb, ok := m.beginRebuild(mapExclusiveRebuildHint)
+	rb, ok := m.beginRebuild(mapRebuildBlockWritersHint)
 	if !ok {
 		// Another goroutine is initializing, wait for it to complete
 		rb = (*rebuildState)(loadPointerNoMB(&m.rb))
@@ -851,7 +863,7 @@ func (m *MapOf[K, V]) processEntry(
 					table = (*mapOfTable)(loadPointerNoMB(&m.table))
 					continue
 				}
-			case mapExclusiveRebuildHint:
+			case mapRebuildBlockWritersHint:
 				root.Unlock()
 				rb.wg.Wait()
 				table = (*mapOfTable)(loadPointerNoMB(&m.table))
@@ -1014,8 +1026,8 @@ type mapRebuildHint uint8
 const (
 	mapGrowHint mapRebuildHint = iota
 	mapShrinkHint
-	mapRebuildWithWritersHint
-	mapExclusiveRebuildHint
+	mapRebuildAllowWritersHint
+	mapRebuildBlockWritersHint
 )
 
 func (m *MapOf[K, V]) doResize(
@@ -1355,8 +1367,8 @@ func (m *MapOf[K, V]) copyBucketOf(
 // Parameters:
 //   - fn: callback that processes each entry.
 //     The loaded parameter is guaranteed to be non-nil during iteration.
-//   - exclusiveWriteOpt: optional flag (default = false).
-//     When true, processes with exclusive concurrent writers;
+//   - blockWritersOpt: optional flag (default = false).
+//     When true, block concurrent writers;
 //     when false, allows concurrent writers.
 //     Resize (grow/shrink) is always exclusive.
 //
@@ -1371,13 +1383,13 @@ func (m *MapOf[K, V]) copyBucketOf(
 //   - Blocks concurrent map operations during execution
 func (m *MapOf[K, V]) RangeProcessEntry(
 	fn func(loaded *EntryOf[K, V]) (newEntry *EntryOf[K, V]),
-	exclusiveWriteOpt ...bool,
+	blockWritersOpt ...bool,
 ) {
 	m.rangeProcessEntryWithBreak(
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool) {
 			return fn(loaded), true
 		},
-		exclusiveWriteOpt...,
+		blockWritersOpt...,
 	)
 }
 
@@ -1392,20 +1404,27 @@ func (m *MapOf[K, V]) RangeProcessEntry(
 //   - Return (any, false): stops iteration early
 func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool),
-	exclusiveWriteOpt ...bool,
+	blockWritersOpt ...bool,
 ) {
 	if (*mapOfTable)(loadPointerNoMB(&m.table)) == nil {
 		return
 	}
-	hint := mapRebuildWithWritersHint
-	if len(exclusiveWriteOpt) != 0 && exclusiveWriteOpt[0] {
-		hint = mapExclusiveRebuildHint
+	hint := mapRebuildAllowWritersHint
+	if len(blockWritersOpt) != 0 && blockWritersOpt[0] {
+		hint = mapRebuildBlockWritersHint
 	}
 	m.rebuild(hint, func() {
+		lock := hint == mapRebuildAllowWritersHint
 		table := (*mapOfTable)(loadPointerNoMB(&m.table))
 		for i := 0; i <= table.mask; i++ {
 			root := table.buckets.At(i)
-			root.Lock()
+			if lock {
+				root.Lock()
+			} else {
+				if root.IsLocked() {
+					root.WaitUnlock()
+				}
+			}
 
 			for b := root; b != nil; b = (*bucketOf)(b.next) {
 				meta := b.meta
@@ -1438,7 +1457,9 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 					}
 				}
 			}
-			root.Unlock()
+			if lock {
+				root.Unlock()
+			}
 		}
 	})
 }
@@ -1507,8 +1528,8 @@ func (e *IterEntry[K, V]) Delete() {
 //	}
 //
 // Parameters:
-//   - exclusiveWriteOpt: optional flag (default = false).
-//     When true, processes with exclusive concurrent writers;
+//   - blockWritersOpt: optional flag (default = false).
+//     When true, block concurrent writers;
 //     when false, allows concurrent writers.
 //     Resize (grow/shrink) is always exclusive.
 //
@@ -1522,7 +1543,7 @@ func (e *IterEntry[K, V]) Delete() {
 //     performance
 //
 //go:nosplit
-func (m *MapOf[K, V]) ProcessAll(exclusiveWriteOpt ...bool) func(yield func(*IterEntry[K, V]) bool) {
+func (m *MapOf[K, V]) ProcessAll(blockWritersOpt ...bool) func(yield func(*IterEntry[K, V]) bool) {
 	return func(yield func(*IterEntry[K, V]) bool) {
 		var e IterEntry[K, V]
 		// loaded can never be nil
@@ -1546,7 +1567,7 @@ func (m *MapOf[K, V]) ProcessAll(exclusiveWriteOpt ...bool) func(yield func(*Ite
 					return loaded, true
 				}
 			},
-			exclusiveWriteOpt...,
+			blockWritersOpt...,
 		)
 	}
 }
@@ -2195,7 +2216,7 @@ func (m *MapOf[K, V]) Clear() {
 	if table == nil {
 		return
 	}
-	m.rebuild(mapExclusiveRebuildHint, func() {
+	m.rebuild(mapRebuildBlockWritersHint, func() {
 		cpus := runtime.GOMAXPROCS(0)
 		newTable := newMapOfTable(m.minLen, cpus)
 		atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
@@ -2338,7 +2359,7 @@ func (m *MapOf[K, V]) IsZero() bool {
 	if table == nil {
 		return true
 	}
-	return table.IsZero()
+	return !table.SumSizeExceeds(0)
 }
 
 // ToMap collect all entries and return a map[K]V
