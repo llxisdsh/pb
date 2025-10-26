@@ -1414,18 +1414,10 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 		hint = mapRebuildBlockWritersHint
 	}
 	m.rebuild(hint, func() {
-		lock := hint == mapRebuildAllowWritersHint
 		table := (*mapOfTable)(loadPointerNoMB(&m.table))
 		for i := 0; i <= table.mask; i++ {
 			root := table.buckets.At(i)
-			if lock {
-				root.Lock()
-			} else {
-				if root.IsLocked() {
-					root.WaitUnlock()
-				}
-			}
-
+			root.Lock()
 			for b := root; b != nil; b = (*bucketOf)(b.next) {
 				meta := b.meta
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
@@ -1457,9 +1449,7 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 					}
 				}
 			}
-			if lock {
-				root.Unlock()
-			}
+			root.Unlock()
 		}
 	})
 }
