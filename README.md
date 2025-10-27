@@ -44,92 +44,92 @@ const countLoadOrStore = countStore
 const countLoad = min(1_000_000, countStore)
 
 func mixRand(i int) int {
-	return i & (8 - 1)
+    return i & (8 - 1)
 }
 
 func BenchmarkStore_original_syncMap(b *testing.B) {
-	b.ReportAllocs()
-	var m sync.Map
-	runtime.GC()
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			m.Store(i, i)
-			i++
-			if i >= countStore {
-				i = 0
-			}
-		}
-	})
+    b.ReportAllocs()
+    var m sync.Map
+    runtime.GC()
+    b.ResetTimer()
+    b.RunParallel(func(pb *testing.PB) {
+        i := 0
+        for pb.Next() {
+            m.Store(i, i)
+            i++
+            if i >= countStore {
+                i = 0
+            }
+        }
+    })
 }
 
 func BenchmarkLoadOrStore_original_syncMap(b *testing.B) {
-	b.ReportAllocs()
-	var m sync.Map
-	runtime.GC()
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			_, _ = m.LoadOrStore(i, i)
-			i++
-			if i >= countLoadOrStore {
-				i = 0
-			}
-		}
-	})
+    b.ReportAllocs()
+    var m sync.Map
+    runtime.GC()
+    b.ResetTimer()
+    b.RunParallel(func(pb *testing.PB) {
+        i := 0
+        for pb.Next() {
+            _, _ = m.LoadOrStore(i, i)
+            i++
+            if i >= countLoadOrStore {
+                i = 0
+            }
+        }
+    })
 }
 
 func BenchmarkLoad_original_syncMap(b *testing.B) {
 
-	b.ReportAllocs()
-	var m sync.Map
-	for i := 0; i < countLoad; i++ {
-		m.Store(i, i)
-	}
-	runtime.GC()
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			_, _ = m.Load(i)
-			i++
-			if i >= countLoad {
-				i = 0
-			}
-		}
-	})
+    b.ReportAllocs()
+    var m sync.Map
+    for i := 0; i < countLoad; i++ {
+        m.Store(i, i)
+    }
+    runtime.GC()
+    b.ResetTimer()
+    b.RunParallel(func(pb *testing.PB) {
+        i := 0
+        for pb.Next() {
+            _, _ = m.Load(i)
+            i++
+            if i >= countLoad {
+                i = 0
+            }
+        }
+    })
 }
 
 func BenchmarkMixed_original_syncMap(b *testing.B) {
-	b.ReportAllocs()
-	var m sync.Map
-	for i := 0; i < countLoad; i++ {
-		m.Store(i, i)
-	}
-	runtime.GC()
+    b.ReportAllocs()
+    var m sync.Map
+    for i := 0; i < countLoad; i++ {
+        m.Store(i, i)
+    }
+    runtime.GC()
 
-	b.ResetTimer()
-	b.RunParallel(func(pb *testing.PB) {
-		i := 0
-		for pb.Next() {
-			r := mixRand(i)
-			if r == 0 {
-				m.Store(i, i)
-			} else if r == 1 {
-				m.Delete(i)
-			} else if r == 2 {
-				_, _ = m.LoadOrStore(i, i)
-			} else {
-				_, _ = m.Load(i)
-			}
-			i++
-			if i >= countLoad<<1 {
-				i = 0
-			}
-		}
-	})
+    b.ResetTimer()
+    b.RunParallel(func(pb *testing.PB) {
+        i := 0
+        for pb.Next() {
+            r := mixRand(i)
+            if r == 0 {
+                m.Store(i, i)
+            } else if r == 1 {
+                m.Delete(i)
+            } else if r == 2 {
+                _, _ = m.LoadOrStore(i, i)
+            } else {
+                _, _ = m.Load(i)
+            }
+            i++
+            if i >= countLoad<<1 {
+                i = 0
+            }
+        }
+    })
 }
 
 ```
@@ -207,71 +207,71 @@ func BenchmarkMixed_original_syncMap(b *testing.B) {
 const total = 100_000_000
 
 func testInsert_pb_MapOf(t *testing.T, total int, numCPU int, preSize bool) {
-	time.Sleep(2 * time.Second)
-	runtime.GC()
-	
-	var m *MapOf[int, int]
-	if preSize {
-		m = NewMapOf[int, int](WithPresize(total))
-	} else {
-		m = NewMapOf[int, int]()
-	}
+    time.Sleep(2 * time.Second)
+    runtime.GC()
+    
+    var m *MapOf[int, int]
+    if preSize {
+        m = NewMapOf[int, int](WithPresize(total))
+    } else {
+        m = NewMapOf[int, int]()
+    }
 
-	var wg sync.WaitGroup
-	wg.Add(numCPU)
+    var wg sync.WaitGroup
+    wg.Add(numCPU)
 
-	start := time.Now()
+    start := time.Now()
 
-	batchSize := total / numCPU
+    batchSize := total / numCPU
 
-	for i := 0; i < numCPU; i++ {
-		go func(start, end int) {
-			//defer wg.Done()
+    for i := 0; i < numCPU; i++ {
+        go func(start, end int) {
+            //defer wg.Done()
 
-			for j := start; j < end; j++ {
-				m.Store(j, j)
-			}
-			wg.Done()
-		}(i*batchSize, min((i+1)*batchSize, total))
-	}
+            for j := start; j < end; j++ {
+                m.Store(j, j)
+            }
+            wg.Done()
+        }(i*batchSize, min((i+1)*batchSize, total))
+    }
 
-	wg.Wait()
+    wg.Wait()
 
-	elapsed := time.Since(start)
+    elapsed := time.Since(start)
 
-	size := m.Size()
-	if size != total {
-		t.Errorf("Expected size %d, got %d", total, size)
-	}
+    size := m.Size()
+    if size != total {
+        t.Errorf("Expected size %d, got %d", total, size)
+    }
 
-	t.Logf("Inserted %d items in %v", total, elapsed)
-	t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
-	t.Logf("Throughput: %.2f million ops/sec", float64(total)/(elapsed.Seconds()*1000000))
+    t.Logf("Inserted %d items in %v", total, elapsed)
+    t.Logf("Average: %.2f ns/op", float64(elapsed.Nanoseconds())/float64(total))
+    t.Logf("Throughput: %.2f million ops/sec", float64(total)/(elapsed.Seconds()*1000000))
 
-	// rand check
-	for i := 0; i < 1000; i++ {
-		idx := i * (total / 1000)
-		if val, ok := m.Load(idx); !ok || val != idx {
-			t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val, ok)
-		}
-	}
+    // rand check
+    for i := 0; i < 1000; i++ {
+        idx := i * (total / 1000)
+        if val, ok := m.Load(idx); !ok || val != idx {
+            t.Errorf("Expected value %d at key %d, got %d, exists: %v", idx, idx, val, ok)
+        }
+    }
 }
 
 func TestInsert_pb_MapOf(t *testing.T) {
-	t.Run("1 no_pre_size", func(t *testing.T) {
-		testInsert_pb_MapOf(t, total, 1, false)
-	})
+    t.Run("1 no_pre_size", func(t *testing.T) {
+        testInsert_pb_MapOf(t, total, 1, false)
+    })
 
-	t.Run("64 no_pre_size", func(t *testing.T) {
-		testInsert_pb_MapOf(t, total, runtime.GOMAXPROCS(0), false)
-	})
-	t.Run("1 pre_size", func(t *testing.T) {
-		testInsert_pb_MapOf(t, total, 1, true)
-	})
+    t.Run("64 no_pre_size", func(t *testing.T) {
+        testInsert_pb_MapOf(t, total, runtime.GOMAXPROCS(0), false)
+    })
+    t.Run("1 pre_size", func(t *testing.T) {
+        testInsert_pb_MapOf(t, total, 1, true)
+    })
 
-	t.Run("64 pre_size", func(t *testing.T) {
-		testInsert_pb_MapOf(t, total, runtime.GOMAXPROCS(0), true)
-	})
+    t.Run("64 pre_size", func(t *testing.T) {
+        testInsert_pb_MapOf(t, total, runtime.GOMAXPROCS(0), true)
+    })
 }
 ```
 </details>
@@ -314,26 +314,26 @@ func TestInsert_pb_MapOf(t *testing.T) {
 
 ```go
 func Test_MemoryPeakReduction(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping memory test in short mode")
-	}
-	
-	const numItems = 100000
-	
-	var m1, m2 runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&m1)
-	
-	m := NewMapOf[int, int]()
-	
-	for i := 0; i < numItems; i++ {
-		m.Store(i, i)
-	}
-	runtime.GC()
-	runtime.ReadMemStats(&m2)
-	
-	peak := m2.Alloc - m1.Alloc
-	t.Logf("pb_MapOf memory usage: %d bytes, items: %d", peak, m.Size())
+    if testing.Short() {
+        t.Skip("Skipping memory test in short mode")
+    }
+    
+    const numItems = 100000
+    
+    var m1, m2 runtime.MemStats
+    runtime.GC()
+    runtime.ReadMemStats(&m1)
+    
+    m := NewMapOf[int, int]()
+    
+    for i := 0; i < numItems; i++ {
+        m.Store(i, i)
+    }
+    runtime.GC()
+    runtime.ReadMemStats(&m2)
+    
+    peak := m2.Alloc - m1.Alloc
+    t.Logf("pb_MapOf memory usage: %d bytes, items: %d", peak, m.Size())
 }
 ```
 </details>
@@ -597,6 +597,42 @@ import (
 func batchOperations() {
     cache := pb.NewMapOf[string, int]()
 
+    // Batch process all entries
+    // NOTE: loaded parameter is guaranteed to be non-nil during iteration
+    // WriterPolicy options:
+    //   cache.RangeProcessEntry(fn)                  // allow concurrent writes (default)
+    //   cache.RangeProcessEntry(fn, pb.BlockWriters) // block concurrent writes
+    cache.RangeProcessEntry(func(loaded *pb.EntryOf[string, int]) *pb.EntryOf[string, int] {
+        if loaded.Value < 100 {
+            // Double all values less than 100
+            return &pb.EntryOf[string, int]{Value: loaded.Value * 2}
+        }
+        return loaded // Keep unchanged
+    })
+
+
+    // Batch processing with Go 1.23+ iterator syntax
+    // WriterPolicy options:
+    //   cache.ProcessAll()                // allow concurrent writes (default)
+    //   cache.ProcessAll(pb.BlockWriters) // block concurrent writes
+    for e := range cache.ProcessAll() {
+        switch e.Key() {
+        case "batch1":
+            e.Update(e.Value() + 500)
+        case "batch2":
+            e.Delete()
+        default:
+            // no-op
+        }
+    }
+
+    // Process entries with specified keys (Go 1.23+ iterator support)
+    for e := range cache.ProcessSpecified("batch1", "batch4") {
+        if e.Loaded() && e.Value() < 1000 {
+            e.Delete()
+        }
+    }
+
     // Store multiple values
     batchData := map[string]int{
         "batch1": 1000,
@@ -617,35 +653,6 @@ func batchOperations() {
 
     // Delete multiple values using BatchDelete
     cache.BatchDelete([]string{"batch1", "batch2"})
-
-    // Batch process all entries
-    // Note: loaded parameter is guaranteed to be non-nil during iteration
-    cache.RangeProcessEntry(func(loaded *pb.EntryOf[string, int]) *pb.EntryOf[string, int] {
-        if loaded.Value < 100 {
-            // Double all values less than 100
-            return &pb.EntryOf[string, int]{Value: loaded.Value * 2}
-        }
-        return loaded // Keep unchanged
-    })
-
-    // Process all entries with callback (Go 1.23+ iterator support)
-    for e := range cache.ProcessAll() {
-        switch e.Key() {
-            case "batch1":
-                e.Update(e.Value() + 500)
-            case "batch2":
-                e.Delete()
-            default:
-                // no-op
-        }
-    }
-
-    // Process entries with specified keys (Go 1.23+ iterator support)
-    for e := range cache.ProcessSpecified("batch1", "batch4") {
-        if e.Loaded() && e.Value() < 1000 {
-            e.Delete()
-        }
-    }
 
     // BatchProcess: Batch process iterator data
     data := map[string]int{"a": 1, "b": 2, "c": 3}
