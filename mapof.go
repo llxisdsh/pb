@@ -535,18 +535,18 @@ func newMapOfTable(tableLen, cpus int) *mapOfTable {
 // AddSize atomically adds delta to the size counter for the given bucket index.
 //
 //go:nosplit
-func (table *mapOfTable) AddSize(idx, delta int) {
-	atomic.AddUintptr(&table.size.At(table.sizeMask&idx).c, uintptr(delta))
+func (t *mapOfTable) AddSize(idx, delta int) {
+	atomic.AddUintptr(&t.size.At(t.sizeMask&idx).c, uintptr(delta))
 }
 
 // SumSize calculates the total number of entries in the table
 // by summing all counter-stripes.
 //
 //go:nosplit
-func (table *mapOfTable) SumSize() int {
+func (t *mapOfTable) SumSize() int {
 	var sum uintptr
-	for i := 0; i <= table.sizeMask; i++ {
-		sum += loadUintptrNoMB(&table.size.At(i).c)
+	for i := 0; i <= t.sizeMask; i++ {
+		sum += loadUintptrNoMB(&t.size.At(i).c)
 	}
 	return int(sum)
 }
@@ -554,7 +554,7 @@ func (table *mapOfTable) SumSize() int {
 //go:nosplit
 func (t *mapOfTable) SumSizeExceeds(limit int) bool {
 	var sum uintptr
-	for i := 0; i <= int(t.sizeMask); i++ {
+	for i := 0; i <= t.sizeMask; i++ {
 		sum += loadUintptrNoMB(&t.size.At(i).c)
 		if int(sum) > limit {
 			return true
@@ -1413,11 +1413,19 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 	if len(blockWritersOpt) != 0 && blockWritersOpt[0] {
 		hint = mapRebuildBlockWritersHint
 	}
+
 	m.rebuild(hint, func() {
+		lock := hint == mapRebuildAllowWritersHint
 		table := (*mapOfTable)(loadPointerNoMB(&m.table))
 		for i := 0; i <= table.mask; i++ {
 			root := table.buckets.At(i)
-			root.Lock()
+			if lock {
+				root.Lock()
+			} else {
+				if root.IsLocked() {
+					root.WaitUnlock()
+				}
+			}
 			for b := root; b != nil; b = (*bucketOf)(b.next) {
 				meta := b.meta
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
@@ -1425,7 +1433,9 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 					if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
 						newEntry, shouldContinue := fn(e)
 						if !shouldContinue {
-							root.Unlock()
+							if lock {
+								root.Unlock()
+							}
 							return
 						}
 
@@ -1449,7 +1459,9 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 					}
 				}
 			}
-			root.Unlock()
+			if lock {
+				root.Unlock()
+			}
 		}
 	})
 }
