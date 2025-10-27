@@ -455,19 +455,6 @@ func (b *bucketOf) UnlockWithMeta(meta uint64) {
 }
 
 //go:nosplit
-func (b *bucketOf) IsLocked() bool {
-	return loadUint64NoMB(&b.meta)&opLockMask != 0
-}
-
-//go:nosplit
-func (b *bucketOf) WaitUnlock() {
-	var spins int
-	for loadUint64NoMB(&b.meta)&opLockMask != 0 {
-		delay(&spins)
-	}
-}
-
-//go:nosplit
 func (b *bucketOf) At(i int) *unsafe.Pointer {
 	return (*unsafe.Pointer)(unsafe.Add(
 		unsafe.Pointer(&b.entries),
@@ -1415,17 +1402,10 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 	}
 
 	m.rebuild(hint, func() {
-		lock := hint == mapRebuildAllowWritersHint
 		table := (*mapOfTable)(loadPointerNoMB(&m.table))
 		for i := 0; i <= table.mask; i++ {
 			root := table.buckets.At(i)
-			if lock {
-				root.Lock()
-			} else {
-				if root.IsLocked() {
-					root.WaitUnlock()
-				}
-			}
+			root.Lock()
 			for b := root; b != nil; b = (*bucketOf)(b.next) {
 				meta := b.meta
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
@@ -1433,9 +1413,7 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 					if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
 						newEntry, shouldContinue := fn(e)
 						if !shouldContinue {
-							if lock {
-								root.Unlock()
-							}
+							root.Unlock()
 							return
 						}
 
@@ -1459,9 +1437,7 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 					}
 				}
 			}
-			if lock {
-				root.Unlock()
-			}
+			root.Unlock()
 		}
 	})
 }

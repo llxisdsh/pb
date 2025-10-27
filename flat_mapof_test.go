@@ -2185,3 +2185,539 @@ func TestFlatMapOf_ClearWithShrinkEnabled(t *testing.T) {
 		}
 	}
 }
+
+// TestFlatMapOf_RangeProcess_BlockWriters_Strict tests RangeProcess with
+// blockWritersOpt=true under heavy concurrent load to ensure writers are
+// properly blocked and no torn reads occur.
+func TestFlatMapOf_RangeProcess_BlockWriters_Strict(t *testing.T) {
+	type testValue struct {
+		X, Y    uint64 // Invariant: Y == ^X
+		Counter uint32
+	}
+
+	m := NewFlatMapOf[int, testValue]()
+	const N = 512
+
+	// Initialize with values maintaining invariant
+	for i := range N {
+		val := testValue{
+			X:       uint64(i * 123456789),
+			Y:       ^uint64(i * 123456789),
+			Counter: 0,
+		}
+		m.Store(i, val)
+	}
+
+	var (
+		wg               sync.WaitGroup
+		stop             = make(chan struct{})
+		tornReads        atomic.Uint64
+		blockedWrites    atomic.Uint64
+		rangeProcessRuns atomic.Uint64
+	)
+
+	// RangeProcess goroutine with blockWritersOpt=true
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.RangeProcess(func(k int, v testValue) (testValue, ComputeOp) {
+					// Verify invariant during processing
+					if v.Y != ^v.X {
+						tornReads.Add(1)
+						t.Errorf("Torn read detected in RangeProcess: key=%d, X=%x, Y=%x", k, v.X, v.Y)
+					}
+					// Update counter while maintaining invariant
+					newV := testValue{
+						X:       v.X,
+						Y:       v.Y,
+						Counter: v.Counter + 1,
+					}
+					return newV, UpdateOp
+				}, true) // blockWritersOpt = true
+				rangeProcessRuns.Add(1)
+				runtime.Gosched()
+			}
+		}
+	}()
+
+	// Concurrent writers that should be blocked during RangeProcess
+	writerN := 4
+	for i := range writerN {
+		wg.Add(1)
+		go func(writerID int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					key := rand.IntN(N)
+					startTime := time.Now()
+					m.Process(key, func(old testValue, loaded bool) (testValue, ComputeOp, testValue, bool) {
+						if !loaded {
+							return testValue{}, CancelOp, testValue{}, false
+						}
+						// Check if we were blocked for a significant time
+						if time.Since(startTime) > 10*time.Millisecond {
+							blockedWrites.Add(1)
+						}
+						// Maintain invariant while updating
+						newV := testValue{
+							X:       old.X + uint64(writerID),
+							Y:       ^(old.X + uint64(writerID)),
+							Counter: old.Counter,
+						}
+						return newV, UpdateOp, newV, true
+					})
+					runtime.Gosched()
+				}
+			}
+		}(i)
+	}
+
+	// Concurrent readers to detect torn reads
+	readerN := 6
+	for range readerN {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					key := rand.IntN(N)
+					if val, ok := m.Load(key); ok {
+						if val.Y != ^val.X {
+							tornReads.Add(1)
+							t.Errorf("Torn read detected in Load: key=%d, X=%x, Y=%x", key, val.X, val.Y)
+						}
+					}
+					runtime.Gosched()
+				}
+			}
+		}()
+	}
+
+	// Run test for a reasonable duration
+	time.Sleep(500 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	// Verify no torn reads occurred
+	if torn := tornReads.Load(); torn > 0 {
+		t.Fatalf("Detected %d torn reads during test", torn)
+	}
+
+	// Verify RangeProcess ran multiple times
+	if runs := rangeProcessRuns.Load(); runs == 0 {
+		t.Fatal("RangeProcess should have run at least once")
+	}
+
+	t.Logf("Test completed: RangeProcess runs=%d, blocked writes=%d",
+		rangeProcessRuns.Load(), blockedWrites.Load())
+}
+
+// TestFlatMapOf_RangeProcess_AllowWriters_Concurrent tests RangeProcess with
+// blockWritersOpt=false to verify concurrent writers are allowed and data
+// consistency is maintained.
+func TestFlatMapOf_RangeProcess_AllowWriters_Concurrent(t *testing.T) {
+	type testValue struct {
+		A, B uint64 // Invariant: B == ^A
+		Seq  uint32
+	}
+
+	m := NewFlatMapOf[int, testValue]()
+	const N = 256
+
+	// Initialize map
+	for i := range N {
+		val := testValue{
+			A:   uint64(i * 987654321),
+			B:   ^uint64(i * 987654321),
+			Seq: 0,
+		}
+		m.Store(i, val)
+	}
+
+	var (
+		wg               sync.WaitGroup
+		stop             = make(chan struct{})
+		tornReads        atomic.Uint64
+		concurrentWrites atomic.Uint64
+		rangeProcessRuns atomic.Uint64
+	)
+
+	// RangeProcess with blockWritersOpt=false (allow concurrent writes)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.RangeProcess(func(k int, v testValue) (testValue, ComputeOp) {
+					// Verify invariant
+					if v.B != ^v.A {
+						tornReads.Add(1)
+						t.Errorf("Torn read in RangeProcess: key=%d, A=%x, B=%x", k, v.A, v.B)
+					}
+					// Increment sequence while maintaining invariant
+					newV := testValue{
+						A:   v.A,
+						B:   v.B,
+						Seq: v.Seq + 1,
+					}
+					return newV, UpdateOp
+				}, false) // blockWritersOpt = false
+				rangeProcessRuns.Add(1)
+				runtime.Gosched()
+			}
+		}
+	}()
+
+	// Concurrent writers (should NOT be blocked)
+	writerN := 6
+	for i := range writerN {
+		wg.Add(1)
+		go func(writerID int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					key := rand.IntN(N)
+					m.Process(key, func(old testValue, loaded bool) (testValue, ComputeOp, testValue, bool) {
+						if !loaded {
+							return testValue{}, CancelOp, testValue{}, false
+						}
+						concurrentWrites.Add(1)
+						// Update while maintaining invariant
+						newA := old.A + uint64(writerID*1000)
+						newV := testValue{
+							A:   newA,
+							B:   ^newA,
+							Seq: old.Seq,
+						}
+						return newV, UpdateOp, newV, true
+					})
+					runtime.Gosched()
+				}
+			}
+		}(i)
+	}
+
+	// Concurrent readers
+	readerN := 4
+	for range readerN {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					key := rand.IntN(N)
+					if val, ok := m.Load(key); ok {
+						if val.B != ^val.A {
+							tornReads.Add(1)
+							t.Errorf("Torn read in Load: key=%d, A=%x, B=%x", key, val.A, val.B)
+						}
+					}
+					runtime.Gosched()
+				}
+			}
+		}()
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+
+	// Verify no torn reads
+	if torn := tornReads.Load(); torn > 0 {
+		t.Fatalf("Detected %d torn reads during test", torn)
+	}
+
+	// Verify concurrent writes occurred (writers were not blocked)
+	if writes := concurrentWrites.Load(); writes == 0 {
+		t.Fatal("Expected concurrent writes to occur when blockWritersOpt=false")
+	}
+
+	t.Logf("Test completed: RangeProcess runs=%d, concurrent writes=%d",
+		rangeProcessRuns.Load(), concurrentWrites.Load())
+}
+
+// TestFlatMapOf_RangeProcess_TornReadDetection_Stress performs intensive
+// stress testing to detect any torn reads during RangeProcess operations.
+func TestFlatMapOf_RangeProcess_TornReadDetection_Stress(t *testing.T) {
+	type complexValue struct {
+		ID       uint64
+		Checksum uint64 // Should equal ^ID
+		Data     [4]uint64
+		Tail     uint64 // Should equal ID
+	}
+
+	m := NewFlatMapOf[int, complexValue]()
+	const N = 1024
+
+	// Initialize with complex values maintaining multiple invariants
+	for i := range N {
+		id := uint64(i * 0x123456789ABCDEF)
+		val := complexValue{
+			ID:       id,
+			Checksum: ^id,
+			Data:     [4]uint64{id, id + 1, id + 2, id + 3},
+			Tail:     id,
+		}
+		m.Store(i, val)
+	}
+
+	var (
+		wg               sync.WaitGroup
+		stop             = make(chan struct{})
+		tornReads        atomic.Uint64
+		validationErrors atomic.Uint64
+	)
+
+	// Validation function to check all invariants
+	validateValue := func(k int, v complexValue, context string) {
+		if v.Checksum != ^v.ID {
+			tornReads.Add(1)
+			t.Errorf("Torn read in %s: key=%d, ID=%x, Checksum=%x", context, k, v.ID, v.Checksum)
+		}
+		if v.Tail != v.ID {
+			tornReads.Add(1)
+			t.Errorf("Torn read in %s: key=%d, ID=%x, Tail=%x", context, k, v.ID, v.Tail)
+		}
+		for i, d := range v.Data {
+			if d != v.ID+uint64(i) {
+				validationErrors.Add(1)
+				t.Errorf("Data corruption in %s: key=%d, Data[%d]=%x, expected=%x",
+					context, k, i, d, v.ID+uint64(i))
+			}
+		}
+	}
+
+	// RangeProcess with blockWritersOpt=true for maximum stress
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				m.RangeProcess(func(k int, v complexValue) (complexValue, ComputeOp) {
+					validateValue(k, v, "RangeProcess")
+
+					// Modify while maintaining invariants
+					newID := v.ID + 0x1000
+					newV := complexValue{
+						ID:       newID,
+						Checksum: ^newID,
+						Data:     [4]uint64{newID, newID + 1, newID + 2, newID + 3},
+						Tail:     newID,
+					}
+					return newV, UpdateOp
+				}, true) // Block writers for maximum consistency
+				runtime.Gosched()
+			}
+		}
+	}()
+
+	// Heavy concurrent readers using different access patterns
+	readerN := 8
+	for r := range readerN {
+		wg.Add(1)
+		go func(readerID int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					switch readerID % 3 {
+					case 0:
+						// Sequential access
+						for i := 0; i < N; i++ {
+							select {
+							case <-stop:
+								return
+							default:
+								if val, ok := m.Load(i); ok {
+									validateValue(i, val, "Load-Sequential")
+								}
+							}
+						}
+					case 1:
+						// Random access
+						key := rand.IntN(N)
+						if val, ok := m.Load(key); ok {
+							validateValue(key, val, "Load-Random")
+						}
+					case 2:
+						// Range access
+						m.Range(func(k int, v complexValue) bool {
+							validateValue(k, v, "Range")
+							return true
+						})
+					}
+					runtime.Gosched()
+				}
+			}
+		}(r)
+	}
+
+	// Concurrent writers (should be blocked by RangeProcess)
+	writerN := 2
+	for i := range writerN {
+		wg.Add(1)
+		go func(writerID int) {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					key := rand.IntN(N)
+					m.Process(key, func(old complexValue, loaded bool) (complexValue, ComputeOp, complexValue, bool) {
+						if !loaded {
+							return complexValue{}, CancelOp, complexValue{}, false
+						}
+
+						// Create new value maintaining invariants
+						newID := old.ID + uint64(writerID*0x10000)
+						newV := complexValue{
+							ID:       newID,
+							Checksum: ^newID,
+							Data:     [4]uint64{newID, newID + 1, newID + 2, newID + 3},
+							Tail:     newID,
+						}
+						return newV, UpdateOp, newV, true
+					})
+					runtime.Gosched()
+				}
+			}
+		}(i)
+	}
+
+	// Run stress test
+	time.Sleep(1 * time.Second)
+	close(stop)
+	wg.Wait()
+
+	// Final validation
+	if torn := tornReads.Load(); torn > 0 {
+		t.Fatalf("Detected %d torn reads during stress test", torn)
+	}
+
+	if errors := validationErrors.Load(); errors > 0 {
+		t.Fatalf("Detected %d validation errors during stress test", errors)
+	}
+
+	t.Log("Stress test completed successfully - no torn reads or validation errors detected")
+}
+
+// TestFlatMapOf_RangeProcess_WriterBlocking_Verification verifies that when
+// blockWritersOpt=true, writers are actually blocked and cannot proceed
+// during RangeProcess execution.
+func TestFlatMapOf_RangeProcess_WriterBlocking_Verification(t *testing.T) {
+	m := NewFlatMapOf[int, int]()
+	const N = 100
+
+	// Initialize map
+	for i := range N {
+		m.Store(i, i)
+	}
+
+	var (
+		wg                  sync.WaitGroup
+		rangeProcessStarted = make(chan struct{})
+		rangeProcessDone    = make(chan struct{})
+		writerBlocked       atomic.Bool
+		writerCompleted     atomic.Bool
+	)
+
+	// RangeProcess that takes some time and blocks writers
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		close(rangeProcessStarted)
+
+		m.RangeProcess(func(k, v int) (int, ComputeOp) {
+			// Simulate some processing time
+			time.Sleep(10 * time.Millisecond)
+			return v + 1, UpdateOp
+		}, true) // blockWritersOpt = true
+
+		close(rangeProcessDone)
+	}()
+
+	// Writer that should be blocked
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		// Wait for RangeProcess to start
+		<-rangeProcessStarted
+		time.Sleep(1 * time.Millisecond) // Ensure RangeProcess is running
+
+		startTime := time.Now()
+		writerBlocked.Store(true)
+
+		// This should be blocked until RangeProcess completes
+		m.Store(0, 999)
+
+		duration := time.Since(startTime)
+		writerCompleted.Store(true)
+
+		// Verify we were blocked for a reasonable time
+		if duration < 50*time.Millisecond {
+			t.Errorf("Writer was not blocked long enough: %v", duration)
+		}
+	}()
+
+	// Verify writer is blocked while RangeProcess runs
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+
+		<-rangeProcessStarted
+		time.Sleep(5 * time.Millisecond)
+
+		// At this point, writer should be blocked
+		if !writerBlocked.Load() {
+			t.Error("Writer should be blocked at this point")
+		}
+
+		if writerCompleted.Load() {
+			t.Error("Writer should not have completed while RangeProcess is running")
+		}
+
+		// Wait for RangeProcess to complete
+		<-rangeProcessDone
+
+		// Give writer a chance to complete
+		time.Sleep(5 * time.Millisecond)
+
+		if !writerCompleted.Load() {
+			t.Error("Writer should have completed after RangeProcess finished")
+		}
+	}()
+
+	wg.Wait()
+
+	// Verify final state
+	if val, ok := m.Load(0); !ok || val != 999 {
+		t.Errorf("Expected final value 999, got %v (ok=%v)", val, ok)
+	}
+}

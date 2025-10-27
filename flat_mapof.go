@@ -253,19 +253,6 @@ func (b *flatBucket[K, V]) Unlock() {
 	b.meta.Store(*b.meta.Raw() &^ opLockMask)
 }
 
-//go:nosplit
-func (b *flatBucket[K, V]) IsLocked() bool {
-	return b.meta.Load()&opLockMask != 0
-}
-
-//go:nosplit
-func (b *flatBucket[K, V]) WaitUnlock() {
-	var spins int
-	for (b.meta.Load() & opLockMask) != 0 {
-		delay(&spins)
-	}
-}
-
 // Load retrieves the value for a key.
 //
 //   - Fast path: per-bucket seqlock read; if the bucket sequence is even and
@@ -455,17 +442,10 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 	}
 
 	m.rebuild(hint, func() {
-		lock := hint == mapRebuildAllowWritersHint
 		table := m.table.SeqLoad()
 		for i := 0; i <= table.mask; i++ {
 			root := table.buckets.At(i)
-			if lock {
-				root.Lock()
-			} else {
-				if root.IsLocked() {
-					root.WaitUnlock()
-				}
-			}
+			root.Lock()
 			for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
 				meta := *b.meta.Raw()
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
@@ -490,16 +470,12 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 						*e = flatEntry[K, V]{}
 						table.AddSize(i, -1)
 					default:
-						if lock {
-							root.Unlock()
-						}
+						root.Unlock()
 						panic("unexpected op")
 					}
 				}
 			}
-			if lock {
-				root.Unlock()
-			}
+			root.Unlock()
 		}
 	})
 }
