@@ -1094,7 +1094,7 @@ func TestMapOf_ProcessSpecified_EarlyTermination(t *testing.T) {
 
 	// Setup test data
 	for i := range 10 {
-		m.Store(string('a'+i), i)
+		m.Store(string(rune('a'+i)), i)
 	}
 
 	keys := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
@@ -1191,7 +1191,7 @@ func TestMapOf_ProcessAll_EarlyTermination(t *testing.T) {
 
 	// Setup test data
 	for i := range 10 {
-		m.Store(string('a'+i), i)
+		m.Store(string(rune('a'+i)), i)
 	}
 
 	count := 0
