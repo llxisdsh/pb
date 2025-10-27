@@ -495,9 +495,9 @@ type mapOfTable struct {
 	buckets unsafeSlice[bucketOf]
 	mask    int
 	// striped counter for number of table entries;
-	// used to determine if a table shrinking is needed
-	// occupies min(buckets_memory/1024, 64KB) of memory
-	// when the compile option `mapof_opt_enablepadding` is enabled
+	// used to determine if a table resize is needed
+	// occupies min(buckets_memory/1024, 64KB) of memory when
+	// the compile option `mapof_opt_enablepadding` is enabled
 	size     unsafeSlice[counterStripe]
 	sizeMask int
 	// number of chunks and chunks size for resizing
@@ -1339,6 +1339,26 @@ func (m *MapOf[K, V]) copyBucketOf(
 	}
 }
 
+// WriterPolicy indicates whether concurrent writers are allowed
+// during RangeProcess series operations.
+// The default zero value is AllowWriters.
+type WriterPolicy uint8
+
+const (
+	// AllowWriters concurrent reads/writes are allowed
+	AllowWriters WriterPolicy = iota
+	// BlockWriters concurrent reads allowed, writers are blocked
+	BlockWriters
+)
+
+// hint maps a WriterPolicy to the internal rebuild hint.
+func (p WriterPolicy) hint() mapRebuildHint {
+	if p == BlockWriters {
+		return mapRebuildBlockWritersHint
+	}
+	return mapRebuildAllowWritersHint
+}
+
 // RangeProcessEntry iterates through all map entries while holding the
 // bucket lock, applying fn to each entry. The iteration is thread-safe
 // due to bucket-level locking.
@@ -1354,52 +1374,41 @@ func (m *MapOf[K, V]) copyBucketOf(
 // Parameters:
 //   - fn: callback that processes each entry.
 //     The loaded parameter is guaranteed to be non-nil during iteration.
-//   - blockWritersOpt: optional flag (default = false).
-//     When true, block concurrent writers;
-//     when false, allows concurrent writers.
+//   - policyOpt: optional WriterPolicy (default = AllowWriters).
+//     BlockWriters blocks concurrent writers; AllowWriters permits them.
 //     Resize (grow/shrink) is always exclusive.
 //
 // Notes:
-//
 //   - The input parameter loaded is immutable and should not be modified
 //     directly
-//
+//   - If a resize/rebuild is detected, it cooperates to completion, then
+//     iterates the new table while blocking subsequent resize/rebuild.
 //   - Holds bucket lock for entire iteration - avoid long operations/deadlock
 //     risks
-//
-//   - Blocks concurrent map operations during execution
 func (m *MapOf[K, V]) RangeProcessEntry(
 	fn func(loaded *EntryOf[K, V]) (newEntry *EntryOf[K, V]),
-	blockWritersOpt ...bool,
+	policyOpt ...WriterPolicy,
 ) {
 	m.rangeProcessEntryWithBreak(
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool) {
 			return fn(loaded), true
 		},
-		blockWritersOpt...,
+		policyOpt...,
 	)
 }
 
-// rangeProcessEntryWithBreak iterates through all map entries while holding the
-// bucket lock, applying fn to each entry. The iteration is thread-safe
-// due to bucket-level locking.
-//
-// The fn callback controls entry modification and iteration:
-//   - Return (modified entry, true): updates the value and continues
-//   - Return (nil, true): deletes the entry and continues
-//   - Return (original entry, true): no change and continues
-//   - Return (any, false): stops iteration early
 func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], bool),
-	blockWritersOpt ...bool,
+	policyOpt ...WriterPolicy,
 ) {
 	if (*mapOfTable)(loadPointerNoMB(&m.table)) == nil {
 		return
 	}
-	hint := mapRebuildAllowWritersHint
-	if len(blockWritersOpt) != 0 && blockWritersOpt[0] {
-		hint = mapRebuildBlockWritersHint
+	policy := AllowWriters
+	if len(policyOpt) != 0 {
+		policy = policyOpt[0]
 	}
+	hint := policy.hint()
 
 	m.rebuild(hint, func() {
 		table := (*mapOfTable)(loadPointerNoMB(&m.table))
@@ -1506,22 +1515,22 @@ func (e *IterEntry[K, V]) Delete() {
 //	}
 //
 // Parameters:
-//   - blockWritersOpt: optional flag (default = false).
-//     When true, block concurrent writers;
-//     when false, allows concurrent writers.
+//   - policyOpt: optional WriterPolicy (default = AllowWriters).
+//     BlockWriters blocks concurrent writers; AllowWriters permits them.
 //     Resize (grow/shrink) is always exclusive.
 //
 // Notes:
 //   - IterEntry.Loaded() will always return true during iteration
+//   - If a resize/rebuild is detected, it cooperates to completion, then
+//     iterates the new table while blocking subsequent resize/rebuild.
 //   - Holds bucket lock for entire iteration - avoid long operations/deadlock
 //     risks
-//   - Blocks concurrent map operations during execution
 //   - The iteration order is not guaranteed to be deterministic
 //   - For read-only iteration, prefer Range() or All() methods for better
 //     performance
 //
 //go:nosplit
-func (m *MapOf[K, V]) ProcessAll(blockWritersOpt ...bool) func(yield func(*IterEntry[K, V]) bool) {
+func (m *MapOf[K, V]) ProcessAll(policyOpt ...WriterPolicy) func(yield func(*IterEntry[K, V]) bool) {
 	return func(yield func(*IterEntry[K, V]) bool) {
 		var e IterEntry[K, V]
 		// loaded can never be nil
@@ -1545,7 +1554,7 @@ func (m *MapOf[K, V]) ProcessAll(blockWritersOpt ...bool) func(yield func(*IterE
 					return loaded, true
 				}
 			},
-			blockWritersOpt...,
+			policyOpt...,
 		)
 	}
 }
@@ -1885,10 +1894,8 @@ func (m *MapOf[K, V]) LoadOrStoreFn(
 //   - value: The new value to set if the key exists.
 //
 // Returns:
-//
 //   - previous: The old value associated with the key (if it existed),
 //     otherwise a zero-value of V.
-//
 //   - loaded: True if the key existed and the value was updated,
 //     false otherwise.
 func (m *MapOf[K, V]) LoadAndUpdate(key K, value V) (previous V, loaded bool) {
@@ -2233,16 +2240,13 @@ func (m *MapOf[K, V]) Shrink() {
 }
 
 // RangeEntry iterates over all entries in the map.
-//
 //   - yield: callback that processes each entry and return a boolean
 //     to control iteration.
 //     Return true to continue iteration, false to stop early.
 //     The loaded parameter is guaranteed to be non-nil during iteration.
 //
 // Notes:
-//
 //   - Never modify the Key or Value in an Entry under any circumstances.
-//
 //   - The iteration directly traverses bucket data. The data is not guaranteed
 //     to be real-time but provides eventual consistency.
 //     In extreme cases, the same value may be traversed twice
@@ -2439,28 +2443,21 @@ func (m *MapOf[K, V]) UnmarshalJSON(data []byte) error {
 // external sources like databases, files, or other iterables.
 //
 // Parameters:
-//
 //   - seq2: Iterator function that yields key-value pairs to process.
 //     The iterator should call yield(key, value) for each pair and
 //     return true to continue.
-//
 //   - fn: Function that receives key, value,
 //     and current entry (if exists), returns new entry,
 //     result value, and status.
-//
 //   - growSize: Optional capacity pre-allocation hint. If provided, the map
 //     will grow by this amount before processing to reduce resize overhead.
 //
 // Notes:
-//
 //   - The function processes items sequentially as yielded by the iterator.
-//
 //   - Unlike batch functions that return slices, this function processes items
 //     immediately without collecting results.
-//
 //   - Pre-growing the map with growSize can improve performance for large
 //     datasets by avoiding multiple resize operations during processing.
-//
 //   - The fn follows the same signature as other ProcessEntry functions,
 //     allowing for insert, update, delete, or conditional operations.
 func (m *MapOf[K, V]) BatchProcess(
@@ -2835,9 +2832,7 @@ func (m *MapOf[K, V]) Merge(
 //   - A new MapOf instance with the same key-value pairs.
 //
 // Notes:
-//
 //   - This operation is not atomic with respect to concurrent modifications.
-//
 //   - The returned map will have the same configuration as the source.
 func (m *MapOf[K, V]) Clone() *MapOf[K, V] {
 	clone := &MapOf[K, V]{}
@@ -3170,15 +3165,11 @@ func firstMarkedByteIndex(w uint64) int {
 // that byte is zero.
 //
 // Notes:
-//
 //   - This SWAR algorithm identifies byte positions containing zero values.
-//
 //   - The operation (w - 0x0101010101010101) triggers underflow for zero-value
 //     bytes, causing their most significant bit (MSB) to flip to 1.
-//
 //   - The subsequent & (^w) operation isolates the MSB markers specifically for
 //     bytes, that were originally zero.
-//
 //   - Finally, & emptyMetaMask filters to only consider relevant data slots,
 //     using the mask-defined marker bits (MSB of each byte).
 //

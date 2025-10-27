@@ -1762,7 +1762,6 @@ func TestFlatMapOf_RangeProcess_DuringResize(t *testing.T) {
 							}
 							return value, CancelOp
 						},
-						rand.IntN(2) == 0,
 					)
 					runtime.Gosched()
 				}
@@ -2238,7 +2237,7 @@ func TestFlatMapOf_RangeProcess_BlockWriters_Strict(t *testing.T) {
 						Counter: v.Counter + 1,
 					}
 					return newV, UpdateOp
-				}, true) // blockWritersOpt = true
+				}, BlockWriters) // policyOpt = BlockWriters
 				rangeProcessRuns.Add(1)
 				runtime.Gosched()
 			}
@@ -2375,7 +2374,7 @@ func TestFlatMapOf_RangeProcess_AllowWriters_Concurrent(t *testing.T) {
 						Seq: v.Seq + 1,
 					}
 					return newV, UpdateOp
-				}, false) // blockWritersOpt = false
+				}, AllowWriters) // policyOpt = AllowWriters
 				rangeProcessRuns.Add(1)
 				runtime.Gosched()
 			}
@@ -2528,7 +2527,7 @@ func TestFlatMapOf_RangeProcess_TornReadDetection_Stress(t *testing.T) {
 						Tail:     newID,
 					}
 					return newV, UpdateOp
-				}, true) // Block writers for maximum consistency
+				}, BlockWriters) // policyOpt = BlockWriters
 				runtime.Gosched()
 			}
 		}
@@ -2657,7 +2656,7 @@ func TestFlatMapOf_RangeProcess_WriterBlocking_Verification(t *testing.T) {
 			// Simulate some processing time
 			time.Sleep(10 * time.Millisecond)
 			return v + 1, UpdateOp
-		}, true) // blockWritersOpt = true
+		}, BlockWriters) // policyOpt = BlockWriters
 
 		close(rangeProcessDone)
 	}()

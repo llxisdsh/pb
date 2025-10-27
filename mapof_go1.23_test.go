@@ -4,7 +4,6 @@ package pb
 
 import (
 	"fmt"
-	"math/rand/v2"
 	"sync"
 	"testing"
 )
@@ -1095,7 +1094,7 @@ func TestMapOf_ProcessSpecified_EarlyTermination(t *testing.T) {
 
 	// Setup test data
 	for i := range 10 {
-		m.Store(string(rune('a'+i)), i)
+		m.Store(string('a'+i), i)
 	}
 
 	keys := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
@@ -1192,7 +1191,7 @@ func TestMapOf_ProcessAll_EarlyTermination(t *testing.T) {
 
 	// Setup test data
 	for i := range 10 {
-		m.Store(string(rune('a'+i)), i)
+		m.Store(string('a'+i), i)
 	}
 
 	count := 0
@@ -1290,7 +1289,7 @@ func TestMapOf_ProcessAll_Concurrent(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			count := 0
-			for range m.ProcessAll(rand.IntN(2) == 0) {
+			for range m.ProcessAll() {
 				count++
 			}
 			processed[idx] = count

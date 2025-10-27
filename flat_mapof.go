@@ -417,29 +417,29 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 //	 - CancelOp: no change
 //
 // Concurrency & consistency:
+//   - If a resize/rebuild is detected, it cooperates to completion, then
+//     iterates the new table while blocking subsequent resize/rebuild.
 //   - Holds the root-bucket lock while processing its bucket chain to
 //     coordinate with concurrent writers/resize operations.
 //   - Uses per-bucket seqlock to minimize the odd (write) window and preserve
 //     read consistency.
-//   - If a resize is detected, it cooperates to finish copying and then
-//     continues on the new table.
 //
 // Parameters:
 //   - fn: user function applied to each key-value pair.
-//   - blockWritersOpt: optional flag (default = false).
-//     When true, block concurrent writers;
-//     when false, allows concurrent writers.
+//   - policyOpt: optional WriterPolicy (default = AllowWriters).
+//     BlockWriters blocks concurrent writers; AllowWriters permits them.
 //     Resize (grow/shrink) is always exclusive.
 //
 // Recommendation: keep fn lightweight to reduce lock hold time.
 func (m *FlatMapOf[K, V]) RangeProcess(
 	fn func(key K, value V) (newV V, op ComputeOp),
-	blockWritersOpt ...bool,
+	policyOpt ...WriterPolicy,
 ) {
-	hint := mapRebuildAllowWritersHint
-	if len(blockWritersOpt) != 0 && blockWritersOpt[0] {
-		hint = mapRebuildBlockWritersHint
+	policy := AllowWriters
+	if len(policyOpt) != 0 {
+		policy = policyOpt[0]
 	}
+	hint := policy.hint()
 
 	m.rebuild(hint, func() {
 		table := m.table.SeqLoad()

@@ -7189,7 +7189,6 @@ func TestMapOfRangeProcessEntry(t *testing.T) {
 				// Just return the same entry
 				return loaded
 			},
-			rand.IntN(2) == 0,
 		)
 
 		// Verify map is still intact
@@ -9488,7 +9487,7 @@ func TestMapOf_RangeProcess_BlockWriters_Strict(t *testing.T) {
 						Counter: v.Counter + 1,
 					}
 					return &EntryOf[int, testValue]{Value: newV}
-				}, true) // blockWritersOpt = true
+				}, BlockWriters) // policyOpt = BlockWriters
 				rangeProcessRuns.Add(1)
 				runtime.Gosched()
 			}
@@ -9626,7 +9625,7 @@ func TestMapOf_RangeProcess_AllowWriters_Concurrent(t *testing.T) {
 						Seq: v.Seq + 1,
 					}
 					return &EntryOf[int, testValue]{Value: newV}
-				}, false) // blockWritersOpt = false
+				}, AllowWriters) // policyOpt = AllowWriters
 				rangeProcessRuns.Add(1)
 				runtime.Gosched()
 			}
@@ -9780,7 +9779,7 @@ func TestMapOf_RangeProcess_TornReadDetection_Stress(t *testing.T) {
 						Tail:     newID,
 					}
 					return &EntryOf[int, complexValue]{Value: newV}
-				}, true) // Block writers for maximum consistency
+				}, BlockWriters) // policyOpt = BlockWriters
 				runtime.Gosched()
 			}
 		}
@@ -9875,8 +9874,6 @@ func TestMapOf_RangeProcess_TornReadDetection_Stress(t *testing.T) {
 	if errors := validationErrors.Load(); errors > 0 {
 		t.Fatalf("Detected %d validation errors during stress test", errors)
 	}
-
-	t.Log("Stress test completed successfully - no torn reads or validation errors detected")
 }
 
 // TestMapOf_RangeProcess_WriterBlocking_Verification verifies that when
@@ -9909,7 +9906,7 @@ func TestMapOf_RangeProcess_WriterBlocking_Verification(t *testing.T) {
 			// Simulate some processing time
 			time.Sleep(10 * time.Millisecond)
 			return &EntryOf[int, int]{Value: loaded.Value + 1}
-		}, true) // blockWritersOpt = true
+		}, BlockWriters) // policyOpt = BlockWriters
 
 		close(rangeProcessDone)
 	}()
