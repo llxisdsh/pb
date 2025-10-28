@@ -854,8 +854,8 @@ Systematic comparison with MapOf
   - FlatMapOf: inline entries avoid “one allocation per entry,” but incur “hole cost” (reserved space in partially filled buckets); when V is large or occupancy is sparse, bucket size inflation increases baseline memory usage.
   - MapOf: buckets store pointers and entries are separate objects; with automatic shrinking (WithShrinkEnabled), MapOf is typically more memory-elastic and efficient, especially for large V or underutilized tables.
 - API capabilities and ecosystem:
-  - FlatMapOf: provides core operations (Load/Store/Delete/LoadOrStore/LoadOrStoreFn/Range/Process/RangeProcess/Clear/Size/IsZero). It does not currently offer dedicated convenience APIs such as CompareAndSwap/CompareAndDelete/LoadAndUpdate/Swap, but such semantics can be expressed using Process.
-  - MapOf: a more complete API surface including multiple CompareAnd*, Swap, and batch operations, plus richer customization of equality and hashing, making it more mature for migration and production use.
+  - FlatMapOf: it does not currently offer dedicated convenience APIs such as CompareAndSwap/CompareAndDelete, but such semantics can be expressed using Process.
+  - MapOf: a more complete API surface including multiple CompareAnd*, and batch operations, plus richer customization of equality and hashing, making it more mature for migration and production use.
 - Hashing and optimizations:
   - Both support WithKeyHasher/IHashCode/IHashOpts; FlatMapOf also supports WithPresize and WithShrinkEnabled.
 
@@ -878,11 +878,10 @@ Usage guidance and boundaries
   - Range/scan tasks that benefit from improved sequential locality.
 - Prefer MapOf for:
   - Memory efficiency under resource constraints, or large value types with sparse occupancy;
-  - A full set of CompareAnd* / Swap / LoadAndUpdate convenience APIs;
   - Write-heavy or high-contention workloads where a more mature write path is desirable.
 
 API overview
-- Provided: Load, Store, Delete, LoadOrStore, LoadOrStoreFn, Range, Process, RangeProcess, Clear, Size, IsZero.
+- Provided: Load, Store, Delete, LoadOrStore, LoadOrStoreFn, LoadAndDelete, LoadAndUpdate, Swap, Range, Process, RangeProcess, Clear, Size, IsZero.
 - Compositional semantics: Process can express atomic read-modify-write, conditional updates, and conditional deletes.
 - Construction and configuration: supports WithPresize and WithShrinkEnabled for capacity and shrinking; supports custom hashing and distribution via IHashCode/IHashOpts/WithKeyHasher.
 
