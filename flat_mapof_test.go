@@ -251,6 +251,50 @@ func TestFlatMapOf_Store(t *testing.T) {
 	}
 }
 
+// TestFlatMapOf_LoadOrStore tests the LoadOrStore method
+func TestFlatMapOf_LoadOrStore(t *testing.T) {
+	m := NewFlatMapOf[string, int]()
+
+	// Test store new key
+	actual, loaded := m.LoadOrStore("key1", 100)
+	if loaded || actual != 100 {
+		t.Errorf("Expected (0, false), got (%v, %v)", actual, loaded)
+	}
+
+	// Test load existing key
+	actual, loaded = m.LoadOrStore("key1", 200)
+	if !loaded || actual != 100 {
+		t.Errorf("Expected (100, true), got (%v, %v)", actual, loaded)
+	}
+
+	// Verify value wasn't changed
+	if val, ok := m.Load("key1"); !ok || val != 100 {
+		t.Errorf("Expected (100, true), got (%v, %v)", val, ok)
+	}
+}
+
+// TestFlatMapOf_LoadOrStoreFn tests the LoadOrStoreFn method
+func TestFlatMapOf_LoadOrStoreFn(t *testing.T) {
+	m := NewFlatMapOf[string, int]()
+
+	// Test store new key
+	actual, loaded := m.LoadOrStoreFn("key1", func() int { return 100 })
+	if loaded || actual != 100 {
+		t.Errorf("Expected (0, false), got (%v, %v)", actual, loaded)
+	}
+
+	// Test load existing key
+	actual, loaded = m.LoadOrStoreFn("key1", func() int { return 200 })
+	if !loaded || actual != 100 {
+		t.Errorf("Expected (100, true), got (%v, %v)", actual, loaded)
+	}
+
+	// Verify value wasn't changed
+	if val, ok := m.Load("key1"); !ok || val != 100 {
+		t.Errorf("Expected (100, true), got (%v, %v)", val, ok)
+	}
+}
+
 // TestFlatMapOf_Delete tests the Delete method
 func TestFlatMapOf_Delete(t *testing.T) {
 	m := NewFlatMapOf[string, int]()
@@ -269,6 +313,72 @@ func TestFlatMapOf_Delete(t *testing.T) {
 
 	// Delete non-existent key (should not panic)
 	m.Delete("nonexistent")
+}
+
+func TestFlatMapOf_Swap(t *testing.T) {
+	m := NewFlatMapOf[string, int]()
+
+	// Swap on empty: returns zero, loaded=false, sets value
+	prev, loaded := m.Swap("a", 1)
+	if loaded || prev != 0 {
+		t.Errorf("first swap got (%d,%v), want (0,false)", prev, loaded)
+	}
+	if v, ok := m.Load("a"); !ok || v != 1 {
+		t.Errorf("post swap got (%d,%v), want (1,true)", v, ok)
+	}
+
+	// Swap on existing: returns previous, loaded=true, updates value
+	prev, loaded = m.Swap("a", 2)
+	if !loaded || prev != 1 {
+		t.Errorf("second swap got (%d,%v), want (1,true)", prev, loaded)
+	}
+	if v, ok := m.Load("a"); !ok || v != 2 {
+		t.Errorf("final value got (%d,%v), want (2,true)", v, ok)
+	}
+}
+
+func TestFlatMapOf_LoadAndDelete(t *testing.T) {
+	m := NewFlatMapOf[string, int]()
+
+	m.Store("x", 100)
+	prev, loaded := m.LoadAndDelete("x")
+	if !loaded || prev != 100 {
+		t.Errorf("load+del got (%d,%v), want (100,true)", prev, loaded)
+	}
+	if v, ok := m.Load("x"); ok {
+		t.Errorf("after delete found key: (%d,%v)", v, ok)
+	}
+
+	// Deleting missing key: zero, false
+	prev, loaded = m.LoadAndDelete("x")
+	if loaded || prev != 0 {
+		t.Errorf("delete missing got (%d,%v), want (0,false)", prev, loaded)
+	}
+	if v, ok := m.Load("y"); ok {
+		t.Errorf("missing key y found: (%d,%v)", v, ok)
+	}
+}
+
+func TestFlatMapOf_LoadAndUpdate(t *testing.T) {
+	m := NewFlatMapOf[string, int]()
+
+	m.Store("k", 7)
+	prev, loaded := m.LoadAndUpdate("k", 9)
+	if !loaded || prev != 7 {
+		t.Errorf("load+update got (%d,%v), want (7,true)", prev, loaded)
+	}
+	if v, ok := m.Load("k"); !ok || v != 9 {
+		t.Errorf("updated value got (%d,%v), want (9,true)", v, ok)
+	}
+
+	// Missing key: should not insert, returns zero, false
+	prev, loaded = m.LoadAndUpdate("missing", 1)
+	if loaded || prev != 0 {
+		t.Errorf("update missing got (%d,%v), want (0,false)", prev, loaded)
+	}
+	if _, ok := m.Load("missing"); ok {
+		t.Errorf("missing inserted by update unexpectedly")
+	}
 }
 
 // TestFlatMapOf_Concurrent tests concurrent operations
@@ -400,50 +510,6 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 	wg.Wait()
 
 	// t.Log("Concurrent read/write test completed successfully")
-}
-
-// TestFlatMapOf_LoadOrStore tests the LoadOrStore method
-func TestFlatMapOf_LoadOrStore(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
-
-	// Test store new key
-	actual, loaded := m.LoadOrStore("key1", 100)
-	if loaded || actual != 100 {
-		t.Errorf("Expected (0, false), got (%v, %v)", actual, loaded)
-	}
-
-	// Test load existing key
-	actual, loaded = m.LoadOrStore("key1", 200)
-	if !loaded || actual != 100 {
-		t.Errorf("Expected (100, true), got (%v, %v)", actual, loaded)
-	}
-
-	// Verify value wasn't changed
-	if val, ok := m.Load("key1"); !ok || val != 100 {
-		t.Errorf("Expected (100, true), got (%v, %v)", val, ok)
-	}
-}
-
-// TestFlatMapOf_LoadOrStoreFn tests the LoadOrStoreFn method
-func TestFlatMapOf_LoadOrStoreFn(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
-
-	// Test store new key
-	actual, loaded := m.LoadOrStoreFn("key1", func() int { return 100 })
-	if loaded || actual != 100 {
-		t.Errorf("Expected (0, false), got (%v, %v)", actual, loaded)
-	}
-
-	// Test load existing key
-	actual, loaded = m.LoadOrStoreFn("key1", func() int { return 200 })
-	if !loaded || actual != 100 {
-		t.Errorf("Expected (100, true), got (%v, %v)", actual, loaded)
-	}
-
-	// Verify value wasn't changed
-	if val, ok := m.Load("key1"); !ok || val != 100 {
-		t.Errorf("Expected (100, true), got (%v, %v)", val, ok)
-	}
 }
 
 // TestFlatMapOf_Range tests the Range method
@@ -608,7 +674,7 @@ func TestFlatMapOf_LoadOrStoreFn_OnceUnderRace(t *testing.T) {
 	m := NewFlatMapOf[int, int]()
 	var called int32
 	var wg sync.WaitGroup
-	workers := max(2, runtime.GOMAXPROCS(0)) // Reduce Concurrency​
+	workers := max(2, runtime.GOMAXPROCS(0)) // Reduce Concurrency
 	wg.Add(workers)
 	for range workers {
 		go func() {
@@ -786,7 +852,7 @@ func TestFlatMapOf_SeqlockConsistency_StressABA(t *testing.T) {
 		seq  uint32
 	)
 
-	writerN := 4 // Reduce Concurrency​
+	writerN := 4 // Reduce Concurrency
 	for range writerN {
 		wg.Add(1)
 		go func() {
@@ -809,7 +875,7 @@ func TestFlatMapOf_SeqlockConsistency_StressABA(t *testing.T) {
 		}()
 	}
 
-	readerN := 4 // Reduce Concurrency​
+	readerN := 4 // Reduce Concurrency
 	for range readerN {
 		wg.Add(1)
 		go func() {
@@ -833,7 +899,7 @@ func TestFlatMapOf_SeqlockConsistency_StressABA(t *testing.T) {
 		}()
 	}
 
-	time.Sleep(150 * time.Millisecond) // Reduce Duration​
+	time.Sleep(150 * time.Millisecond) // Reduce Duration
 	close(stop)
 	wg.Wait()
 }
@@ -1174,7 +1240,7 @@ func TestFlatMapOf_Range_NoDuplicateVisit(t *testing.T) {
 	}
 
 	var stop uint32
-	writerN := max(2, runtime.GOMAXPROCS(0)/2) // Reduce Concurrency​
+	writerN := max(2, runtime.GOMAXPROCS(0)/2) // Reduce Concurrency
 	var wg sync.WaitGroup
 	wg.Add(writerN)
 	for w := range writerN {

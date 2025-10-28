@@ -690,6 +690,14 @@ func (m *FlatMapOf[K, V]) Store(key K, value V) {
 	})
 }
 
+// Swap stores value for key and returns the previous value if any.
+// The loaded result reports whether the key was present.
+func (m *FlatMapOf[K, V]) Swap(key K, value V) (previous V, loaded bool) {
+	return m.Process(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {
+		return value, UpdateOp, old, loaded
+	})
+}
+
 // LoadOrStore returns the existing value for the key if present.
 // Otherwise, it stores and returns the given value.
 // The loaded result is true if the value was loaded, false if stored.
@@ -727,6 +735,32 @@ func (m *FlatMapOf[K, V]) LoadOrStoreFn(
 	})
 }
 
+// Delete deletes the value for a key.
+func (m *FlatMapOf[K, V]) Delete(key K) {
+	m.Process(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {
+		return old, DeleteOp, old, loaded
+	})
+}
+
+// LoadAndDelete deletes the value for a key, returning the previous value.
+// The loaded result reports whether the key was present.
+func (m *FlatMapOf[K, V]) LoadAndDelete(key K) (previous V, loaded bool) {
+	return m.Process(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {
+		return old, DeleteOp, old, loaded
+	})
+}
+
+// LoadAndUpdate updates the value for key if it exists, returning the previous
+// value. The loaded result reports whether the key was present.
+func (m *FlatMapOf[K, V]) LoadAndUpdate(key K, value V) (previous V, loaded bool) {
+	return m.Process(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {
+		if loaded {
+			return value, UpdateOp, old, loaded
+		}
+		return old, CancelOp, old, loaded
+	})
+}
+
 // Clear clears all key-value pairs from the map.
 func (m *FlatMapOf[K, V]) Clear() {
 	m.rebuild(mapRebuildBlockWritersHint, func() {
@@ -734,13 +768,6 @@ func (m *FlatMapOf[K, V]) Clear() {
 		cpus := runtime.GOMAXPROCS(0)
 		newTable.makeTable(minTableLen, cpus)
 		m.table.SeqStore(&newTable)
-	})
-}
-
-// Delete deletes the value for a key.
-func (m *FlatMapOf[K, V]) Delete(key K) {
-	m.Process(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {
-		return old, DeleteOp, old, loaded
 	})
 }
 
