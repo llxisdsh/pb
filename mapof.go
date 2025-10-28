@@ -16,8 +16,6 @@ import (
 )
 
 const (
-	ptrSize = unsafe.Sizeof(unsafe.Pointer(nil))
-
 	// opByteIdx reserves the highest byte of meta for extended status flags
 	opByteIdx    = 7
 	opLockMask   = uint64(1) << (opByteIdx*8 + 7)
@@ -32,7 +30,7 @@ const (
 			meta uint64
 			// entries [entriesPerBucket]unsafe.Pointer
 			next unsafe.Pointer
-		}{})))/int(ptrSize),
+		}{})))/int(unsafe.Sizeof(unsafe.Pointer(nil))),
 	)
 
 	// Metadata constants for bucket entry management
@@ -92,7 +90,7 @@ type MapOf[K comparable, V any] struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_        noCopy
 		table    unsafe.Pointer
-		rb       unsafe.Pointer
+		rs       unsafe.Pointer
 		growths  uint32
 		shrinks  uint32
 		seed     uintptr
@@ -105,7 +103,7 @@ type MapOf[K comparable, V any] struct {
 
 	_        noCopy
 	table    unsafe.Pointer // *mapOfTable
-	rb       unsafe.Pointer // *rebuildState
+	rs       unsafe.Pointer // *rebuildState
 	growths  uint32
 	shrinks  uint32
 	seed     uintptr
@@ -458,7 +456,7 @@ func (b *bucketOf) UnlockWithMeta(meta uint64) {
 func (b *bucketOf) At(i int) *unsafe.Pointer {
 	return (*unsafe.Pointer)(unsafe.Add(
 		unsafe.Pointer(&b.entries),
-		uintptr(i)*ptrSize),
+		uintptr(i)*unsafe.Sizeof(unsafe.Pointer(nil))),
 	)
 }
 
@@ -709,19 +707,19 @@ func (m *MapOf[K, V]) init(
 //
 //go:noinline
 func (m *MapOf[K, V]) initSlow() *mapOfTable {
-	rb := (*rebuildState)(loadPointerNoMB(&m.rb))
-	if rb != nil {
-		rb.wg.Wait()
+	rs := (*rebuildState)(loadPointerNoMB(&m.rs))
+	if rs != nil {
+		rs.wg.Wait()
 		// Now the table should be initialized
 		return (*mapOfTable)(loadPointerNoMB(&m.table))
 	}
 
-	rb, ok := m.beginRebuild(mapRebuildBlockWritersHint)
+	rs, ok := m.beginRebuild(mapRebuildBlockWritersHint)
 	if !ok {
 		// Another goroutine is initializing, wait for it to complete
-		rb = (*rebuildState)(loadPointerNoMB(&m.rb))
-		if rb != nil {
-			rb.wg.Wait()
+		rs = (*rebuildState)(loadPointerNoMB(&m.rs))
+		if rs != nil {
+			rs.wg.Wait()
 		}
 		// Now the table should be initialized
 		return (*mapOfTable)(loadPointerNoMB(&m.table))
@@ -731,14 +729,14 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	// it might have been changed before that.
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	if table != nil {
-		m.endRebuild(rb)
+		m.endRebuild(rs)
 		return table
 	}
 
 	// Perform initialization
 	c := &MapConfig{}
 	table = m.init(c)
-	m.endRebuild(rb)
+	m.endRebuild(rs)
 	return table
 }
 
@@ -840,19 +838,19 @@ func (m *MapOf[K, V]) processEntry(
 
 		// This is the first check, checking if there is a rebuild operation in
 		// progress before acquiring the bucket lock
-		if rb := (*rebuildState)(loadPointerNoMB(&m.rb)); rb != nil {
-			switch rb.hint {
+		if rs := (*rebuildState)(loadPointerNoMB(&m.rs)); rs != nil {
+			switch rs.hint {
 			case mapGrowHint, mapShrinkHint:
-				if loadPointerNoMB(&rb.table) != nil /*skip init*/ &&
-					loadPointerNoMB(&rb.newTable) != nil /*skip newTable is nil*/ {
+				if loadPointerNoMB(&rs.table) != nil /*skip init*/ &&
+					loadPointerNoMB(&rs.newTable) != nil /*skip newTable is nil*/ {
 					root.Unlock()
-					m.helpCopyAndWait(rb)
+					m.helpCopyAndWait(rs)
 					table = (*mapOfTable)(loadPointerNoMB(&m.table))
 					continue
 				}
 			case mapRebuildBlockWritersHint:
 				root.Unlock()
-				rb.wg.Wait()
+				rs.wg.Wait()
 				table = (*mapOfTable)(loadPointerNoMB(&m.table))
 				continue
 			default:
@@ -942,7 +940,7 @@ func (m *MapOf[K, V]) processEntry(
 
 			// Check if table shrinking is needed
 			if m.shrinkOn && newMeta&metaDataMask == emptyMeta &&
-				loadPointerNoMB(&m.rb) == nil {
+				loadPointerNoMB(&m.rs) == nil {
 				tableLen := table.mask + 1
 				if m.minLen < tableLen {
 					size := table.SumSize()
@@ -995,7 +993,7 @@ func (m *MapOf[K, V]) processEntry(
 		table.AddSize(idx, 1)
 
 		// Check if the table needs to grow
-		if loadPointerNoMB(&m.rb) == nil {
+		if loadPointerNoMB(&m.rs) == nil {
 			tableLen := table.mask + 1
 			size := table.SumSize()
 			const sizeHintFactor = float64(entriesPerBucket) * loadFactor
@@ -1051,19 +1049,19 @@ func (m *MapOf[K, V]) doResize(
 		}
 
 		// Help finishing rebuild if needed
-		if rb := (*rebuildState)(loadPointerNoMB(&m.rb)); rb != nil {
-			switch rb.hint {
+		if rs := (*rebuildState)(loadPointerNoMB(&m.rs)); rs != nil {
+			switch rs.hint {
 			case mapGrowHint, mapShrinkHint:
-				if loadPointerNoMB(&rb.table) != nil /*skip init*/ &&
-					loadPointerNoMB(&rb.newTable) != nil /*skip newTable is nil*/ {
-					m.helpCopyAndWait(rb)
+				if loadPointerNoMB(&rs.table) != nil /*skip init*/ &&
+					loadPointerNoMB(&rs.newTable) != nil /*skip newTable is nil*/ {
+					m.helpCopyAndWait(rs)
 				} else {
 					runtime.Gosched()
 					continue
-					// rb.wg.Wait()
+					// rs.wg.Wait()
 				}
 			default:
-				rb.wg.Wait()
+				rs.wg.Wait()
 			}
 		}
 
@@ -1072,18 +1070,18 @@ func (m *MapOf[K, V]) doResize(
 }
 
 func (m *MapOf[K, V]) beginRebuild(hint mapRebuildHint) (*rebuildState, bool) {
-	rb := new(rebuildState)
-	rb.hint = hint
-	rb.wg.Add(1)
-	if !atomic.CompareAndSwapPointer(&m.rb, nil, unsafe.Pointer(rb)) {
+	rs := new(rebuildState)
+	rs.hint = hint
+	rs.wg.Add(1)
+	if !atomic.CompareAndSwapPointer(&m.rs, nil, unsafe.Pointer(rs)) {
 		return nil, false
 	}
-	return rb, true
+	return rs, true
 }
 
-func (m *MapOf[K, V]) endRebuild(rb *rebuildState) {
-	atomic.StorePointer(&m.rb, nil)
-	rb.wg.Done()
+func (m *MapOf[K, V]) endRebuild(rs *rebuildState) {
+	atomic.StorePointer(&m.rs, nil)
+	rs.wg.Done()
 }
 
 // rebuild reorganizes the map. Only these hints are supported:
@@ -1095,25 +1093,25 @@ func (m *MapOf[K, V]) rebuild(
 ) {
 	for {
 		// Help finishing rebuild if needed
-		if rb := (*rebuildState)(loadPointerNoMB(&m.rb)); rb != nil {
-			switch rb.hint {
+		if rs := (*rebuildState)(loadPointerNoMB(&m.rs)); rs != nil {
+			switch rs.hint {
 			case mapGrowHint, mapShrinkHint:
-				if loadPointerNoMB(&rb.table) != nil /*skip init*/ &&
-					loadPointerNoMB(&rb.newTable) != nil /*skip newTable is nil*/ {
-					m.helpCopyAndWait(rb)
+				if loadPointerNoMB(&rs.table) != nil /*skip init*/ &&
+					loadPointerNoMB(&rs.newTable) != nil /*skip newTable is nil*/ {
+					m.helpCopyAndWait(rs)
 				} else {
 					runtime.Gosched()
 					continue
-					// rb.wg.Wait()
+					// rs.wg.Wait()
 				}
 			default:
-				rb.wg.Wait()
+				rs.wg.Wait()
 			}
 		}
 
-		if rb, ok := m.beginRebuild(hint); ok {
+		if rs, ok := m.beginRebuild(hint); ok {
 			fn()
-			m.endRebuild(rb)
+			m.endRebuild(rs)
 			return
 		}
 	}
@@ -1124,7 +1122,7 @@ func (m *MapOf[K, V]) tryResize(
 	hint mapRebuildHint,
 	size, sizeAdd int,
 ) {
-	rb, ok := m.beginRebuild(hint)
+	rs, ok := m.beginRebuild(hint)
 	if !ok {
 		return
 	}
@@ -1139,7 +1137,7 @@ func (m *MapOf[K, V]) tryResize(
 		} else {
 			newLen = calcTableLen(size + sizeAdd)
 			if newLen <= tableLen {
-				m.endRebuild(rb)
+				m.endRebuild(rs)
 				return
 			}
 		}
@@ -1151,7 +1149,7 @@ func (m *MapOf[K, V]) tryResize(
 			newLen = calcTableLen(size)
 		}
 		if newLen < m.minLen {
-			m.endRebuild(rb)
+			m.endRebuild(rs)
 			return
 		}
 		atomic.AddUint32(&m.shrinks, 1)
@@ -1163,37 +1161,37 @@ func (m *MapOf[K, V]) tryResize(
 	if cpus > 1 &&
 		newLen*int(unsafe.Sizeof(bucketOf{})) >= asyncThreshold {
 		// The big table, use goroutines to create new table and copy entries
-		go m.finalizeResize(table, newLen, rb, cpus)
+		go m.finalizeResize(table, newLen, rs, cpus)
 	} else {
-		m.finalizeResize(table, newLen, rb, cpus)
+		m.finalizeResize(table, newLen, rs, cpus)
 	}
 }
 
 func (m *MapOf[K, V]) finalizeResize(
 	table *mapOfTable,
 	newLen int,
-	rb *rebuildState,
+	rs *rebuildState,
 	cpus int,
 ) {
-	atomic.StorePointer(&rb.table, unsafe.Pointer(table))
+	atomic.StorePointer(&rs.table, unsafe.Pointer(table))
 	newTable := newMapOfTable(newLen, cpus)
-	atomic.StorePointer(&rb.newTable, unsafe.Pointer(newTable))
-	m.helpCopyAndWait(rb)
+	atomic.StorePointer(&rs.newTable, unsafe.Pointer(newTable))
+	m.helpCopyAndWait(rs)
 }
 
 //go:noinline
-func (m *MapOf[K, V]) helpCopyAndWait(rb *rebuildState) {
-	table := (*mapOfTable)(loadPointerNoMB(&rb.table))
+func (m *MapOf[K, V]) helpCopyAndWait(rs *rebuildState) {
+	table := (*mapOfTable)(loadPointerNoMB(&rs.table))
 	tableLen := table.mask + 1
 	chunks := int32(table.chunks)
 	chunkSz := table.chunkSz
-	newTable := (*mapOfTable)(loadPointerNoMB(&rb.newTable))
+	newTable := (*mapOfTable)(loadPointerNoMB(&rs.newTable))
 	isGrowth := (newTable.mask + 1) > tableLen
 	for {
-		process := atomic.AddInt32(&rb.process, 1)
+		process := atomic.AddInt32(&rs.process, 1)
 		if process > chunks {
 			// Wait copying completed
-			rb.wg.Wait()
+			rs.wg.Wait()
 			return
 		}
 		process--
@@ -1204,10 +1202,10 @@ func (m *MapOf[K, V]) helpCopyAndWait(rb *rebuildState) {
 		} else {
 			m.copyBucketOfLock(table, start, end, newTable)
 		}
-		if atomic.AddInt32(&rb.completed, 1) == chunks {
+		if atomic.AddInt32(&rs.completed, 1) == chunks {
 			// Copying completed
 			atomic.StorePointer(&m.table, unsafe.Pointer(newTable))
-			m.endRebuild(rb)
+			m.endRebuild(rs)
 			return
 		}
 	}

@@ -24,7 +24,7 @@ type FlatMapOf[K comparable, V any] struct {
 	_ [(CacheLineSize - unsafe.Sizeof(struct {
 		_        noCopy
 		table    flatTable[K, V]
-		rb       unsafe.Pointer
+		rs       unsafe.Pointer
 		seed     uintptr
 		keyHash  HashFunc
 		shrinkOn bool
@@ -33,7 +33,7 @@ type FlatMapOf[K comparable, V any] struct {
 
 	_        noCopy
 	table    flatTable[K, V]
-	rb       unsafe.Pointer // *flatRebuildState[K,V]
+	rs       unsafe.Pointer // *flatRebuildState[K,V]
 	seed     uintptr
 	keyHash  HashFunc
 	shrinkOn bool // WithShrinkEnabled
@@ -530,17 +530,17 @@ func (m *FlatMapOf[K, V]) Process(
 		root.Lock()
 
 		// Help finishing rebuild if needed
-		if rb := (*flatRebuildState[K, V])(atomic.LoadPointer(&m.rb)); rb != nil {
-			switch rb.hint {
+		if rs := (*flatRebuildState[K, V])(atomic.LoadPointer(&m.rs)); rs != nil {
+			switch rs.hint {
 			case mapGrowHint, mapShrinkHint:
-				if rb.newTable.SeqInitDone() {
+				if rs.newTable.SeqInitDone() {
 					root.Unlock()
-					m.helpCopyAndWait(rb)
+					m.helpCopyAndWait(rs)
 					continue
 				}
 			case mapRebuildBlockWritersHint:
 				root.Unlock()
-				rb.wg.Wait()
+				rs.wg.Wait()
 				continue
 			default:
 				// mapRebuildWithWritersHint: allow concurrent writers
@@ -639,7 +639,7 @@ func (m *FlatMapOf[K, V]) Process(
 			root.Unlock()
 			table.AddSize(idx, 1)
 			// Auto-grow check (parallel resize)
-			if atomic.LoadPointer(&m.rb) == nil {
+			if atomic.LoadPointer(&m.rs) == nil {
 				tableLen := table.mask + 1
 				size := table.SumSize()
 				const sizeHintFactor = float64(entriesPerBucket) * loadFactor
@@ -666,7 +666,7 @@ func (m *FlatMapOf[K, V]) Process(
 			table.AddSize(idx, -1)
 			// Check if table shrinking is needed
 			if m.shrinkOn && newMeta&metaDataMask == emptyMeta &&
-				atomic.LoadPointer(&m.rb) == nil {
+				atomic.LoadPointer(&m.rs) == nil {
 				tableLen := table.mask + 1
 				if minTableLen < tableLen {
 					size := table.SumSize()
@@ -772,18 +772,18 @@ func (m *FlatMapOf[K, V]) IsZero() bool {
 }
 
 func (m *FlatMapOf[K, V]) beginRebuild(hint mapRebuildHint) (*flatRebuildState[K, V], bool) {
-	rb := new(flatRebuildState[K, V])
-	rb.hint = hint
-	rb.wg.Add(1)
-	if !atomic.CompareAndSwapPointer(&m.rb, nil, unsafe.Pointer(rb)) {
+	rs := new(flatRebuildState[K, V])
+	rs.hint = hint
+	rs.wg.Add(1)
+	if !atomic.CompareAndSwapPointer(&m.rs, nil, unsafe.Pointer(rs)) {
 		return nil, false
 	}
-	return rb, true
+	return rs, true
 }
 
-func (m *FlatMapOf[K, V]) endRebuild(rb *flatRebuildState[K, V]) {
-	atomic.StorePointer(&m.rb, nil)
-	rb.wg.Done()
+func (m *FlatMapOf[K, V]) endRebuild(rs *flatRebuildState[K, V]) {
+	atomic.StorePointer(&m.rs, nil)
+	rs.wg.Done()
 }
 
 // rebuild reorganizes the map. Only these hints are supported:
@@ -795,23 +795,23 @@ func (m *FlatMapOf[K, V]) rebuild(
 ) {
 	for {
 		// Help finishing rebuild if needed
-		if rb := (*flatRebuildState[K, V])(atomic.LoadPointer(&m.rb)); rb != nil {
-			switch rb.hint {
+		if rs := (*flatRebuildState[K, V])(atomic.LoadPointer(&m.rs)); rs != nil {
+			switch rs.hint {
 			case mapGrowHint, mapShrinkHint:
-				if rb.newTable.SeqInitDone() {
-					m.helpCopyAndWait(rb)
+				if rs.newTable.SeqInitDone() {
+					m.helpCopyAndWait(rs)
 				} else {
 					runtime.Gosched()
 					continue
-					// rb.wg.Wait()
+					// rs.wg.Wait()
 				}
 			default:
-				rb.wg.Wait()
+				rs.wg.Wait()
 			}
 		}
-		if rb, ok := m.beginRebuild(hint); ok {
+		if rs, ok := m.beginRebuild(hint); ok {
 			fn()
-			m.endRebuild(rb)
+			m.endRebuild(rs)
 			return
 		}
 	}
@@ -819,7 +819,7 @@ func (m *FlatMapOf[K, V]) rebuild(
 
 //go:noinline
 func (m *FlatMapOf[K, V]) tryResize(hint mapRebuildHint, size, sizeAdd int) {
-	rb, ok := m.beginRebuild(hint)
+	rs, ok := m.beginRebuild(hint)
 	if !ok {
 		return
 	}
@@ -834,7 +834,7 @@ func (m *FlatMapOf[K, V]) tryResize(hint mapRebuildHint, size, sizeAdd int) {
 		} else {
 			newLen = calcTableLen(size + sizeAdd)
 			if newLen <= tableLen {
-				m.endRebuild(rb)
+				m.endRebuild(rs)
 				return
 			}
 		}
@@ -845,7 +845,7 @@ func (m *FlatMapOf[K, V]) tryResize(hint mapRebuildHint, size, sizeAdd int) {
 			newLen = calcTableLen(size)
 		}
 		if newLen < minTableLen {
-			m.endRebuild(rb)
+			m.endRebuild(rs)
 			return
 		}
 	default:
@@ -855,41 +855,41 @@ func (m *FlatMapOf[K, V]) tryResize(hint mapRebuildHint, size, sizeAdd int) {
 	cpus := runtime.GOMAXPROCS(0)
 	if cpus > 1 &&
 		newLen*int(unsafe.Sizeof(flatBucket[K, V]{})) >= asyncThreshold {
-		go m.finalizeResize(table, newLen, rb, cpus)
+		go m.finalizeResize(table, newLen, rs, cpus)
 	} else {
-		m.finalizeResize(table, newLen, rb, cpus)
+		m.finalizeResize(table, newLen, rs, cpus)
 	}
 }
 
 func (m *FlatMapOf[K, V]) finalizeResize(
 	table *flatTable[K, V],
 	newLen int,
-	rb *flatRebuildState[K, V],
+	rs *flatRebuildState[K, V],
 	cpus int,
 ) {
 	overCpus := cpus * resizeOverPartition
 	_, chunks := calcParallelism(table.mask+1, minBucketsPerCPU, overCpus)
-	rb.chunks = int32(chunks)
+	rs.chunks = int32(chunks)
 	newTable := new(flatTable[K, V])
 	newTable.makeTable(newLen, cpus)
-	// Release rb
-	rb.newTable.SeqStore(newTable)
-	m.helpCopyAndWait(rb)
+	// Release rs
+	rs.newTable.SeqStore(newTable)
+	m.helpCopyAndWait(rs)
 }
 
 //go:noinline
-func (m *FlatMapOf[K, V]) helpCopyAndWait(rb *flatRebuildState[K, V]) {
+func (m *FlatMapOf[K, V]) helpCopyAndWait(rs *flatRebuildState[K, V]) {
 	table := &m.table
 	tableLen := table.mask + 1
-	// Acquire rb
-	newTable := rb.newTable.SeqLoad()
-	chunks := rb.chunks
+	// Acquire rs
+	newTable := rs.newTable.SeqLoad()
+	chunks := rs.chunks
 	chunkSz := (tableLen + int(chunks) - 1) / int(chunks)
 	isGrowth := (newTable.mask + 1) > tableLen
 	for {
-		process := atomic.AddInt32(&rb.process, 1)
+		process := atomic.AddInt32(&rs.process, 1)
 		if process > chunks {
-			rb.wg.Wait()
+			rs.wg.Wait()
 			return
 		}
 		process--
@@ -900,9 +900,9 @@ func (m *FlatMapOf[K, V]) helpCopyAndWait(rb *flatRebuildState[K, V]) {
 		} else {
 			m.copyBucketLock(table, start, end, &newTable)
 		}
-		if atomic.AddInt32(&rb.completed, 1) == chunks {
+		if atomic.AddInt32(&rs.completed, 1) == chunks {
 			m.table.SeqStore(&newTable)
-			m.endRebuild(rb)
+			m.endRebuild(rs)
 			return
 		}
 	}
