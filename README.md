@@ -868,7 +868,6 @@ Limitations and caveats (FlatMapOf)
 - Large V or sparse occupancy amplifies the “hole cost,” increasing memory consumption.
 - Under sustained write contention with longer critical sections, reads may retry or fall back to the slow path, reducing throughput.
 - Dedicated CompareAnd* convenience APIs are currently unavailable; use Process to compose equivalent atomic semantics.
-- Experimental implementation; future APIs and semantics may be refined. Prefer NewFlatMapOf for initialization and explicit configuration.
 
 Usage guidance and boundaries
 - Prefer FlatMapOf for:
@@ -883,7 +882,7 @@ Usage guidance and boundaries
 API overview
 - Provided: Load, Store, Delete, LoadOrStore, LoadOrStoreFn, LoadAndDelete, LoadAndUpdate, Swap, Range, Process, RangeProcess, Clear, Size, IsZero.
 - Compositional semantics: Process can express atomic read-modify-write, conditional updates, and conditional deletes.
-- Construction and configuration: supports WithPresize and WithShrinkEnabled for capacity and shrinking; supports custom hashing and distribution via IHashCode/IHashOpts/WithKeyHasher.
+- Construction and configuration: supports zero-initialization; supports WithPresize and WithShrinkEnabled for capacity and shrinking; supports custom hashing and distribution via IHashCode/IHashOpts/WithKeyHasher.
 
 ---
 
