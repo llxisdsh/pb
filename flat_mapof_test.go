@@ -42,7 +42,7 @@ func TestFlatMapOf_BucketOfStructSize(t *testing.T) {
 
 // TestFlatMapOf_BasicOperations tests basic Load and Process operations
 func TestFlatMapOf_BasicOperations(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
+	var m FlatMapOf[string, int]
 
 	// Test empty map
 	if val, ok := m.Load("nonexistent"); ok {
@@ -131,7 +131,7 @@ func TestFlatMapOf_BasicOperations(t *testing.T) {
 
 // TestFlatMapOf_EdgeCases tests edge cases and error conditions
 func TestFlatMapOf_EdgeCases(t *testing.T) {
-	m := NewFlatMapOf[string, *string]()
+	var m FlatMapOf[string, *string]
 
 	// Test with empty string key
 	m.Process(
@@ -173,7 +173,7 @@ func TestFlatMapOf_EdgeCases(t *testing.T) {
 
 // TestFlatMapOf_MultipleKeys tests operations with multiple keys
 func TestFlatMapOf_MultipleKeys(t *testing.T) {
-	m := NewFlatMapOf[int, *string]()
+	var m FlatMapOf[int, *string]
 
 	// Insert multiple keys
 	for i := range 100 {
@@ -236,7 +236,7 @@ func TestFlatMapOf_MultipleKeys(t *testing.T) {
 
 // TestFlatMapOf_Store tests the Store method
 func TestFlatMapOf_Store(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
+	var m FlatMapOf[string, int]
 
 	// Test store new key
 	m.Store("key1", 100)
@@ -253,7 +253,7 @@ func TestFlatMapOf_Store(t *testing.T) {
 
 // TestFlatMapOf_LoadOrStore tests the LoadOrStore method
 func TestFlatMapOf_LoadOrStore(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
+	var m FlatMapOf[string, int]
 
 	// Test store new key
 	actual, loaded := m.LoadOrStore("key1", 100)
@@ -275,7 +275,7 @@ func TestFlatMapOf_LoadOrStore(t *testing.T) {
 
 // TestFlatMapOf_LoadOrStoreFn tests the LoadOrStoreFn method
 func TestFlatMapOf_LoadOrStoreFn(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
+	var m FlatMapOf[string, int]
 
 	// Test store new key
 	actual, loaded := m.LoadOrStoreFn("key1", func() int { return 100 })
@@ -297,7 +297,7 @@ func TestFlatMapOf_LoadOrStoreFn(t *testing.T) {
 
 // TestFlatMapOf_Delete tests the Delete method
 func TestFlatMapOf_Delete(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
+	var m FlatMapOf[string, int]
 
 	// Store a key
 	m.Store("key1", 100)
@@ -316,7 +316,7 @@ func TestFlatMapOf_Delete(t *testing.T) {
 }
 
 func TestFlatMapOf_Swap(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
+	var m FlatMapOf[string, int]
 
 	// Swap on empty: returns zero, loaded=false, sets value
 	prev, loaded := m.Swap("a", 1)
@@ -338,7 +338,7 @@ func TestFlatMapOf_Swap(t *testing.T) {
 }
 
 func TestFlatMapOf_LoadAndDelete(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
+	var m FlatMapOf[string, int]
 
 	m.Store("x", 100)
 	prev, loaded := m.LoadAndDelete("x")
@@ -360,7 +360,7 @@ func TestFlatMapOf_LoadAndDelete(t *testing.T) {
 }
 
 func TestFlatMapOf_LoadAndUpdate(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
+	var m FlatMapOf[string, int]
 
 	m.Store("k", 7)
 	prev, loaded := m.LoadAndUpdate("k", 9)
@@ -383,7 +383,7 @@ func TestFlatMapOf_LoadAndUpdate(t *testing.T) {
 
 // TestFlatMapOf_Concurrent tests concurrent operations
 func TestFlatMapOf_Concurrent(t *testing.T) {
-	m := NewFlatMapOf[int, int]()
+	var m FlatMapOf[int, int]
 	const numGoroutines = 10
 	const numOpsPerGoroutine = 1000
 
@@ -439,7 +439,7 @@ func TestFlatMapOf_Concurrent(t *testing.T) {
 
 // TestFlatMapOf_ConcurrentReadWrite tests heavy concurrent read/write load
 func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
-	m := NewFlatMapOf[int, int]()
+	var m FlatMapOf[int, int]
 
 	// Reduce test duration and concurrency for coverage mode
 	var duration time.Duration
@@ -514,7 +514,7 @@ func TestFlatMapOf_ConcurrentReadWrite(t *testing.T) {
 
 // TestFlatMapOf_Range tests the Range method
 func TestFlatMapOf_Range(t *testing.T) {
-	m := NewFlatMapOf[int, *string]()
+	var m FlatMapOf[int, *string]
 
 	// Test empty map
 	count := 0
@@ -564,7 +564,7 @@ func TestFlatMapOf_Range(t *testing.T) {
 
 // TestFlatMapOf_Size tests the Size method
 func TestFlatMapOf_Size(t *testing.T) {
-	m := NewFlatMapOf[int, *string]()
+	var m FlatMapOf[int, *string]
 
 	// Test empty map
 	if size := m.Size(); size != 0 {
@@ -618,7 +618,7 @@ func TestFlatMapOf_Size(t *testing.T) {
 
 // TestFlatMapOf_IsZero tests the IsZero method
 func TestFlatMapOf_IsZero(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
+	var m FlatMapOf[string, int]
 
 	// Test empty map
 	if !m.IsZero() {
@@ -1905,7 +1905,7 @@ func TestFlatMapOf_RangeProcess_EarlyTermination(t *testing.T) {
 
 // TestFlatMapOf_Clear tests the Clear method
 func TestFlatMapOf_Clear(t *testing.T) {
-	m := NewFlatMapOf[string, int]()
+	var m FlatMapOf[string, int]
 
 	// Test clear on empty map
 	m.Clear()

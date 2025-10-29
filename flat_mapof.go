@@ -104,7 +104,14 @@ func NewFlatMapOf[K comparable, V any](
 	for _, opt := range options {
 		opt(&cfg)
 	}
+	m := &FlatMapOf[K, V]{}
+	m.init(&cfg)
+	return m
+}
 
+func (m *FlatMapOf[K, V]) init(
+	cfg *MapConfig,
+) {
 	// parse interface
 	if cfg.KeyHash == nil {
 		var zeroK K
@@ -119,7 +126,6 @@ func NewFlatMapOf[K comparable, V any](
 		}
 	}
 
-	m := &FlatMapOf[K, V]{}
 	m.seed = uintptr(rand.Uint64())
 	m.keyHash, _, m.intKey = defaultHasher[K, V]()
 	if cfg.KeyHash != nil {
@@ -137,120 +143,20 @@ func NewFlatMapOf[K comparable, V any](
 	m.shrinkOn = cfg.ShrinkEnabled
 	tableLen := calcTableLen(cfg.SizeHint)
 	m.table.makeTable(tableLen, runtime.GOMAXPROCS(0))
-	return m
 }
 
-func (t *flatTable[K, V]) makeTable(
-	tableLen, cpus int,
-) {
-	b := make([]flatBucket[K, V], tableLen)
-	sizeLen := calcSizeLen(tableLen, cpus)
-	t.buckets = makeUnsafeSlice(b)
-	t.mask = tableLen - 1
-	//if sizeLen <= 1 {
-	//	t.size.ptr = unsafe.Pointer(&t.smallSz)
-	//} else {
-	t.size = makeUnsafeSlice(make([]counterStripe, sizeLen))
-	//}
-	t.sizeMask = uint32(sizeLen - 1)
-}
-
-//go:nosplit
-func (t *flatTable[K, V]) SeqLoad() flatTable[K, V] {
-	for {
-		s1 := atomic.LoadUint32(&t.seq)
-		if s1&1 == 0 {
-			v := *t
-			s2 := atomic.LoadUint32(&t.seq)
-			if s1 == s2 {
-				return v
-			}
+//go:noinline
+func (m *FlatMapOf[K, V]) initSlow() {
+	m.rebuild(mapRebuildBlockWritersHint, func() {
+		// The table may have been altered prior to our changes.
+		table := m.table.SeqLoad()
+		if table.buckets.ptr != nil {
+			return
 		}
-	}
-}
 
-func (t *flatTable[K, V]) SeqStore(v *flatTable[K, V]) {
-	s := atomic.LoadUint32(&t.seq)
-	atomic.StoreUint32(&t.seq, s+1)
-	t.buckets = v.buckets
-	t.mask = v.mask
-	t.size = v.size
-	t.sizeMask = v.sizeMask
-	atomic.StoreUint32(&t.seq, s+2)
-}
-
-//go:nosplit
-func (t *flatTable[K, V]) SeqInitDone() bool {
-	return atomic.LoadUint32(&t.seq) == 2
-}
-
-//go:nosplit
-func (t *flatTable[K, V]) AddSize(idx, delta int) {
-	atomic.AddUintptr(&t.size.At(int(t.sizeMask)&idx).c, uintptr(delta))
-}
-
-//go:nosplit
-func (t *flatTable[K, V]) SumSize() int {
-	var sum uintptr
-	for i := 0; i <= int(t.sizeMask); i++ {
-		sum += atomic.LoadUintptr(&t.size.At(i).c)
-	}
-	return int(sum)
-}
-
-//go:nosplit
-func (t *flatTable[K, V]) SumSizeExceeds(limit int) bool {
-	var sum uintptr
-	for i := 0; i <= int(t.sizeMask); i++ {
-		sum += atomic.LoadUintptr(&t.size.At(i).c)
-		if int(sum) > limit {
-			return true
-		}
-	}
-	return false
-}
-
-//go:nosplit
-func (b *flatBucket[K, V]) At(i int) *flatEntry[K, V] {
-	return (*flatEntry[K, V])(unsafe.Add(
-		unsafe.Pointer(&b.entries),
-		uintptr(i)*unsafe.Sizeof(flatEntry[K, V]{}),
-	))
-}
-
-//go:nosplit
-func (b *flatBucket[K, V]) Lock() {
-	cur := b.meta.Load()
-	if b.meta.CompareAndSwap(cur&(^opLockMask), cur|opLockMask) {
-		return
-	}
-	b.slowLock()
-}
-
-//go:nosplit
-func (b *flatBucket[K, V]) slowLock() {
-	var spins int
-	for !b.tryLock() {
-		delay(&spins)
-	}
-}
-
-//go:nosplit
-func (b *flatBucket[K, V]) tryLock() bool {
-	for {
-		cur := b.meta.Load()
-		if cur&opLockMask != 0 {
-			return false
-		}
-		if b.meta.CompareAndSwap(cur, cur|opLockMask) {
-			return true
-		}
-	}
-}
-
-//go:nosplit
-func (b *flatBucket[K, V]) Unlock() {
-	b.meta.Store(*b.meta.Raw() &^ opLockMask)
+		c := &MapConfig{}
+		m.init(c)
+	})
 }
 
 // Load retrieves the value for a key.
@@ -262,6 +168,10 @@ func (b *flatBucket[K, V]) Unlock() {
 //   - Provides stable latency under high concurrency.
 func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := m.table.SeqLoad()
+	if table.buckets.ptr == nil {
+		return
+	}
+
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
@@ -335,6 +245,11 @@ fallback:
 //   - Yields outside of locks to minimize contention.
 //   - Returning false from the callback stops iteration early.
 func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
+	table := m.table.SeqLoad()
+	if table.buckets.ptr == nil {
+		return
+	}
+
 	var s1, s2 uint64
 	var meta uint64
 	// Reusable cache, to avoid reading entry fields after s2 check
@@ -344,7 +259,6 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	}
 	var cache [entriesPerBucket]kvEntry
 	var cacheCount int
-	table := m.table.SeqLoad()
 	for i := 0; i <= table.mask; i++ {
 		root := table.buckets.At(i)
 		for b := root; b != nil; b = (*flatBucket[K, V])(atomic.LoadPointer(&b.next)) {
@@ -439,10 +353,13 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 	if len(policyOpt) != 0 {
 		policy = policyOpt[0]
 	}
-	hint := policy.hint()
 
-	m.rebuild(hint, func() {
+	m.rebuild(policy.hint(), func() {
 		table := m.table.SeqLoad()
+		if table.buckets.ptr == nil {
+			return
+		}
+
 		for i := 0; i <= table.mask; i++ {
 			root := table.buckets.At(i)
 			root.Lock()
@@ -518,13 +435,18 @@ func (m *FlatMapOf[K, V]) Process(
 	key K,
 	fn func(old V, loaded bool) (newV V, op ComputeOp, ret V, status bool),
 ) (V, bool) {
+	table := m.table.SeqLoad()
+	if table.buckets.ptr == nil {
+		m.initSlow()
+		table = m.table.SeqLoad()
+	}
+
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h1v := h1(hash, m.intKey)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 
 	for {
-		table := m.table.SeqLoad()
 		idx := table.mask & h1v
 		root := table.buckets.At(idx)
 		root.Lock()
@@ -536,11 +458,13 @@ func (m *FlatMapOf[K, V]) Process(
 				if rs.newTable.SeqInitDone() {
 					root.Unlock()
 					m.helpCopyAndWait(rs)
+					table = m.table.SeqLoad()
 					continue
 				}
 			case mapRebuildBlockWritersHint:
 				root.Unlock()
 				rs.wg.Wait()
+				table = m.table.SeqLoad()
 				continue
 			default:
 				// mapRebuildWithWritersHint: allow concurrent writers
@@ -548,6 +472,7 @@ func (m *FlatMapOf[K, V]) Process(
 		}
 		if atomic.LoadUint32(&m.table.seq) != table.seq {
 			root.Unlock()
+			table = m.table.SeqLoad()
 			continue
 		}
 
@@ -763,6 +688,11 @@ func (m *FlatMapOf[K, V]) LoadAndUpdate(key K, value V) (previous V, loaded bool
 
 // Clear clears all key-value pairs from the map.
 func (m *FlatMapOf[K, V]) Clear() {
+	table := m.table.SeqLoad()
+	if table.buckets.ptr == nil {
+		return
+	}
+
 	m.rebuild(mapRebuildBlockWritersHint, func() {
 		var newTable flatTable[K, V]
 		cpus := runtime.GOMAXPROCS(0)
@@ -786,6 +716,10 @@ func (m *FlatMapOf[K, V]) All() func(yield func(K, V) bool) {
 //go:nosplit
 func (m *FlatMapOf[K, V]) Size() int {
 	table := m.table.SeqLoad()
+	if table.buckets.ptr == nil {
+		return 0
+	}
+
 	return table.SumSize()
 }
 
@@ -795,6 +729,10 @@ func (m *FlatMapOf[K, V]) Size() int {
 //go:nosplit
 func (m *FlatMapOf[K, V]) IsZero() bool {
 	table := m.table.SeqLoad()
+	if table.buckets.ptr == nil {
+		return true
+	}
+
 	return !table.SumSizeExceeds(0)
 }
 
@@ -1063,6 +1001,119 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 	if copied != 0 {
 		newTable.AddSize(start, copied)
 	}
+}
+
+func (t *flatTable[K, V]) makeTable(
+	tableLen, cpus int,
+) {
+	b := make([]flatBucket[K, V], tableLen)
+	sizeLen := calcSizeLen(tableLen, cpus)
+	t.buckets = makeUnsafeSlice(b)
+	t.mask = tableLen - 1
+	//if sizeLen <= 1 {
+	//	t.size.ptr = unsafe.Pointer(&t.smallSz)
+	//} else {
+	t.size = makeUnsafeSlice(make([]counterStripe, sizeLen))
+	//}
+	t.sizeMask = uint32(sizeLen - 1)
+}
+
+//go:nosplit
+func (t *flatTable[K, V]) SeqLoad() flatTable[K, V] {
+	for {
+		s1 := atomic.LoadUint32(&t.seq)
+		if s1&1 == 0 {
+			v := *t
+			s2 := atomic.LoadUint32(&t.seq)
+			if s1 == s2 {
+				return v
+			}
+		}
+	}
+}
+
+func (t *flatTable[K, V]) SeqStore(v *flatTable[K, V]) {
+	s := atomic.LoadUint32(&t.seq)
+	atomic.StoreUint32(&t.seq, s+1)
+	t.buckets = v.buckets
+	t.mask = v.mask
+	t.size = v.size
+	t.sizeMask = v.sizeMask
+	atomic.StoreUint32(&t.seq, s+2)
+}
+
+//go:nosplit
+func (t *flatTable[K, V]) SeqInitDone() bool {
+	return atomic.LoadUint32(&t.seq) == 2
+}
+
+//go:nosplit
+func (t *flatTable[K, V]) AddSize(idx, delta int) {
+	atomic.AddUintptr(&t.size.At(int(t.sizeMask)&idx).c, uintptr(delta))
+}
+
+//go:nosplit
+func (t *flatTable[K, V]) SumSize() int {
+	var sum uintptr
+	for i := 0; i <= int(t.sizeMask); i++ {
+		sum += atomic.LoadUintptr(&t.size.At(i).c)
+	}
+	return int(sum)
+}
+
+//go:nosplit
+func (t *flatTable[K, V]) SumSizeExceeds(limit int) bool {
+	var sum uintptr
+	for i := 0; i <= int(t.sizeMask); i++ {
+		sum += atomic.LoadUintptr(&t.size.At(i).c)
+		if int(sum) > limit {
+			return true
+		}
+	}
+	return false
+}
+
+//go:nosplit
+func (b *flatBucket[K, V]) At(i int) *flatEntry[K, V] {
+	return (*flatEntry[K, V])(unsafe.Add(
+		unsafe.Pointer(&b.entries),
+		uintptr(i)*unsafe.Sizeof(flatEntry[K, V]{}),
+	))
+}
+
+//go:nosplit
+func (b *flatBucket[K, V]) Lock() {
+	cur := b.meta.Load()
+	if b.meta.CompareAndSwap(cur&(^opLockMask), cur|opLockMask) {
+		return
+	}
+	b.slowLock()
+}
+
+//go:nosplit
+func (b *flatBucket[K, V]) slowLock() {
+	var spins int
+	for !b.tryLock() {
+		delay(&spins)
+	}
+}
+
+//go:nosplit
+func (b *flatBucket[K, V]) tryLock() bool {
+	for {
+		cur := b.meta.Load()
+		if cur&opLockMask != 0 {
+			return false
+		}
+		if b.meta.CompareAndSwap(cur, cur|opLockMask) {
+			return true
+		}
+	}
+}
+
+//go:nosplit
+func (b *flatBucket[K, V]) Unlock() {
+	b.meta.Store(*b.meta.Raw() &^ opLockMask)
 }
 
 // atomicUint64 wraps atomic.Uint64 to leverage its built-in
