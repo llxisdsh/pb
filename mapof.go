@@ -1406,9 +1406,8 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 	if len(policyOpt) != 0 {
 		policy = policyOpt[0]
 	}
-	hint := policy.hint()
 
-	m.rebuild(hint, func() {
+	m.rebuild(policy.hint(), func() {
 		table := (*mapOfTable)(loadPointerNoMB(&m.table))
 		for i := 0; i <= table.mask; i++ {
 			root := table.buckets.At(i)
