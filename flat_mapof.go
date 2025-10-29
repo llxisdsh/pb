@@ -147,16 +147,28 @@ func (m *FlatMapOf[K, V]) init(
 
 //go:noinline
 func (m *FlatMapOf[K, V]) initSlow() {
-	m.rebuild(mapRebuildBlockWritersHint, func() {
-		// The table may have been altered prior to our changes.
-		table := m.table.SeqLoad()
-		if table.buckets.ptr != nil {
-			return
+	rs := (*flatRebuildState[K, V])(atomic.LoadPointer(&m.rs))
+	if rs != nil {
+		rs.wg.Wait()
+		return
+	}
+	rs, ok := m.beginRebuild(mapRebuildBlockWritersHint)
+	if !ok {
+		rs = (*flatRebuildState[K, V])(atomic.LoadPointer(&m.rs))
+		if rs != nil {
+			rs.wg.Wait()
 		}
-
-		c := &MapConfig{}
-		m.init(c)
-	})
+		return
+	}
+	// The table may have been altered prior to our changes.
+	table := m.table.SeqLoad()
+	if table.buckets.ptr != nil {
+		m.endRebuild(rs)
+		return
+	}
+	cfg := &MapConfig{}
+	m.init(cfg)
+	m.endRebuild(rs)
 }
 
 // Load retrieves the value for a key.
@@ -435,18 +447,16 @@ func (m *FlatMapOf[K, V]) Process(
 	key K,
 	fn func(old V, loaded bool) (newV V, op ComputeOp, ret V, status bool),
 ) (V, bool) {
-	table := m.table.SeqLoad()
-	if table.buckets.ptr == nil {
-		m.initSlow()
-		table = m.table.SeqLoad()
-	}
-
-	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-	h1v := h1(hash, m.intKey)
-	h2v := h2(hash)
-	h2w := broadcast(h2v)
-
 	for {
+		table := m.table.SeqLoad()
+		if table.buckets.ptr == nil {
+			m.initSlow()
+			continue
+		}
+		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
+		h1v := h1(hash, m.intKey)
+		h2v := h2(hash)
+		h2w := broadcast(h2v)
 		idx := table.mask & h1v
 		root := table.buckets.At(idx)
 		root.Lock()
@@ -458,13 +468,11 @@ func (m *FlatMapOf[K, V]) Process(
 				if rs.newTable.SeqInitDone() {
 					root.Unlock()
 					m.helpCopyAndWait(rs)
-					table = m.table.SeqLoad()
 					continue
 				}
 			case mapRebuildBlockWritersHint:
 				root.Unlock()
 				rs.wg.Wait()
-				table = m.table.SeqLoad()
 				continue
 			default:
 				// mapRebuildWithWritersHint: allow concurrent writers
@@ -472,7 +480,6 @@ func (m *FlatMapOf[K, V]) Process(
 		}
 		if atomic.LoadUint32(&m.table.seq) != table.seq {
 			root.Unlock()
-			table = m.table.SeqLoad()
 			continue
 		}
 
@@ -611,7 +618,7 @@ func (m *FlatMapOf[K, V]) Process(
 // Store sets the value for a key.
 func (m *FlatMapOf[K, V]) Store(key K, value V) {
 	m.Process(key, func(old V, loaded bool) (V, ComputeOp, V, bool) {
-		return value, UpdateOp, value, loaded
+		return value, UpdateOp, old, loaded
 	})
 }
 
@@ -1032,6 +1039,7 @@ func (t *flatTable[K, V]) SeqLoad() flatTable[K, V] {
 	}
 }
 
+//go:nosplit
 func (t *flatTable[K, V]) SeqStore(v *flatTable[K, V]) {
 	s := atomic.LoadUint32(&t.seq)
 	atomic.StoreUint32(&t.seq, s+1)
