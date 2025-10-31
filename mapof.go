@@ -70,6 +70,12 @@ const (
 	enableHashSpread = false
 )
 
+const (
+	ErrUnexpectedOp           = "unexpected op"
+	ErrUnexpectedResizeHint   = "unexpected resize hint"
+	ErrUnexpectedCompareValue = "called CompareAndSwap/CompareAndDelete when value is not of comparable type"
+)
+
 // MapOf is a high-performance concurrent map implementation that is fully
 // compatible with sync.Map API and significantly outperforms sync.Map in
 // most scenarios.
@@ -640,62 +646,37 @@ type IEqual[T any] interface {
 func (m *MapOf[K, V]) InitWithOptions(
 	options ...func(*MapConfig),
 ) {
-	c := &MapConfig{}
+	cfg := &MapConfig{}
 
 	// parse options
 	for _, o := range options {
-		o(c)
+		o(cfg)
 	}
-	m.init(c)
+	m.init(cfg)
 }
 
 func (m *MapOf[K, V]) init(
-	c *MapConfig,
+	cfg *MapConfig,
 ) *mapOfTable {
 	// parse interface
-	if c.KeyHash == nil {
-		var zeroK K
-		ak := any(&zeroK)
-		if _, ok := ak.(IHashCode); ok {
-			c.KeyHash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
-				return any((*K)(ptr)).(IHashCode).HashCode(seed)
-			}
-			if i, ok := ak.(IHashOpts); ok {
-				c.HashOpts = i.HashOpts()
-			}
-		}
+	if cfg.KeyHash == nil {
+		cfg.KeyHash, cfg.HashOpts = parseKeyInterface[K]()
 	}
-	if c.ValEqual == nil {
-		var zeroV V
-		vk := any(&zeroV)
-		if _, ok := vk.(IEqual[V]); ok {
-			c.ValEqual = func(ptr unsafe.Pointer, other unsafe.Pointer) bool {
-				return any((*V)(ptr)).(IEqual[V]).Equal(*(*V)(other))
-			}
-		}
+	if cfg.ValEqual == nil {
+		cfg.ValEqual = parseValueInterface[V]()
 	}
-
 	// perform initialization
 	m.seed = uintptr(rand.Uint64())
 	m.keyHash, m.valEqual, m.intKey = defaultHasher[K, V]()
-	if c.KeyHash != nil {
-		m.keyHash = c.KeyHash
-		for _, o := range c.HashOpts {
-			switch o {
-			case LinearDistribution:
-				m.intKey = true
-			case ShiftDistribution:
-				m.intKey = false
-			case AutoDistribution:
-				// default distribution
-			}
-		}
+	if cfg.KeyHash != nil {
+		m.keyHash = cfg.KeyHash
+		m.intKey = cfg.hashOpts()
 	}
-	if c.ValEqual != nil {
-		m.valEqual = c.ValEqual
+	if cfg.ValEqual != nil {
+		m.valEqual = cfg.ValEqual
 	}
-	m.minLen = calcTableLen(c.SizeHint)
-	m.shrinkOn = c.ShrinkEnabled
+	m.minLen = calcTableLen(cfg.SizeHint)
+	m.shrinkOn = cfg.ShrinkEnabled
 
 	table := newMapOfTable(m.minLen, runtime.GOMAXPROCS(0))
 	atomic.StorePointer(&m.table, unsafe.Pointer(table))
@@ -734,8 +715,8 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	}
 
 	// Perform initialization
-	c := &MapConfig{}
-	table = m.init(c)
+	cfg := &MapConfig{}
+	table = m.init(cfg)
 	m.endRebuild(rs)
 	return table
 }
@@ -1045,7 +1026,7 @@ func (m *MapOf[K, V]) doResize(
 				return
 			}
 		default:
-			panic("unexpected hint")
+			panic(ErrUnexpectedResizeHint)
 		}
 
 		// Help finishing rebuild if needed
@@ -1154,7 +1135,7 @@ func (m *MapOf[K, V]) tryResize(
 		}
 		atomic.AddUint32(&m.shrinks, 1)
 	default:
-		panic("unexpected hint")
+		panic(ErrUnexpectedResizeHint)
 	}
 
 	cpus := runtime.GOMAXPROCS(0)
@@ -1760,7 +1741,7 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 	}
 
 	if m.valEqual == nil {
-		panic("called CompareAndSwap when value is not of comparable type")
+		panic(ErrUnexpectedCompareValue)
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
@@ -1811,7 +1792,7 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 	}
 
 	if m.valEqual == nil {
-		panic("called CompareAndDelete when value is not of comparable type")
+		panic(ErrUnexpectedCompareValue)
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
@@ -3350,6 +3331,43 @@ func runtime_canSpin(i int) bool
 //goland:noinspection ALL
 func runtime_doSpin()
 
+func parseKeyInterface[K comparable]() (keyHash HashFunc, hashOpts []HashOptimization) {
+	var k *K
+	if _, ok := any(k).(IHashCode); ok {
+		keyHash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
+			return any((*K)(ptr)).(IHashCode).HashCode(seed)
+		}
+		if _, ok := any(k).(IHashOpts); ok {
+			hashOpts = any(*new(K)).(IHashOpts).HashOpts()
+		}
+	}
+	return
+}
+
+func parseValueInterface[V any]() (valEqual EqualFunc) {
+	var v *V
+	if _, ok := any(v).(IEqual[V]); ok {
+		valEqual = func(ptr unsafe.Pointer, other unsafe.Pointer) bool {
+			return any((*V)(ptr)).(IEqual[V]).Equal(*(*V)(other))
+		}
+	}
+	return
+}
+
+func (cfg *MapConfig) hashOpts() (intKey bool) {
+	for _, o := range cfg.HashOpts {
+		switch o {
+		case LinearDistribution:
+			intKey = true
+		case ShiftDistribution:
+			intKey = false
+		case AutoDistribution:
+			// default distribution
+		}
+	}
+	return
+}
+
 // GetBuiltInHasher returns Go's built-in hash function for the specified type.
 // This function provides direct access to the same hash function that Go's
 // built-in map uses internally, ensuring optimal performance and compatibility.
@@ -3400,8 +3418,7 @@ func defaultHasher[K comparable, V any]() (
 		return hashString, valEqual, false
 	default:
 		// for types like integers
-		var zeroK K
-		kType := reflect.TypeOf(zeroK)
+		kType := reflect.TypeOf(*new(K))
 		if kType == nil {
 			// Handle nil interface types
 			return keyHash, valEqual, false

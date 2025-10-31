@@ -114,31 +114,14 @@ func (m *FlatMapOf[K, V]) init(
 ) {
 	// parse interface
 	if cfg.KeyHash == nil {
-		var zeroK K
-		ak := any(&zeroK)
-		if _, ok := ak.(IHashCode); ok {
-			cfg.KeyHash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
-				return any((*K)(ptr)).(IHashCode).HashCode(seed)
-			}
-			if i, ok := ak.(IHashOpts); ok {
-				cfg.HashOpts = i.HashOpts()
-			}
-		}
+		cfg.KeyHash, cfg.HashOpts = parseKeyInterface[K]()
 	}
-
+	// perform initialization
 	m.seed = uintptr(rand.Uint64())
 	m.keyHash, _, m.intKey = defaultHasher[K, V]()
 	if cfg.KeyHash != nil {
 		m.keyHash = cfg.KeyHash
-		for _, o := range cfg.HashOpts {
-			switch o {
-			case LinearDistribution:
-				m.intKey = true
-			case ShiftDistribution:
-				m.intKey = false
-			case AutoDistribution:
-			}
-		}
+		m.intKey = cfg.hashOpts()
 	}
 	m.shrinkOn = cfg.ShrinkEnabled
 	tableLen := calcTableLen(cfg.SizeHint)
@@ -400,7 +383,7 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 						table.AddSize(i, -1)
 					default:
 						root.Unlock()
-						panic("unexpected op")
+						panic(ErrUnexpectedOp)
 					}
 				}
 			}
@@ -610,7 +593,7 @@ func (m *FlatMapOf[K, V]) Process(
 			return value, status
 		default:
 			root.Unlock()
-			panic("unexpected op")
+			panic(ErrUnexpectedOp)
 		}
 	}
 }
@@ -821,7 +804,7 @@ func (m *FlatMapOf[K, V]) tryResize(hint mapRebuildHint, size, sizeAdd int) {
 			return
 		}
 	default:
-		panic("unexpected resize hint")
+		panic(ErrUnexpectedResizeHint)
 	}
 
 	cpus := runtime.GOMAXPROCS(0)
@@ -1013,9 +996,8 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 func (t *flatTable[K, V]) makeTable(
 	tableLen, cpus int,
 ) {
-	b := make([]flatBucket[K, V], tableLen)
 	sizeLen := calcSizeLen(tableLen, cpus)
-	t.buckets = makeUnsafeSlice(b)
+	t.buckets = makeUnsafeSlice(make([]flatBucket[K, V], tableLen))
 	t.mask = tableLen - 1
 	//if sizeLen <= 1 {
 	//	t.size.ptr = unsafe.Pointer(&t.smallSz)
