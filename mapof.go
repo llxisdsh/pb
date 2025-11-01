@@ -666,8 +666,6 @@ func (m *MapOf[K, V]) init(
 		cfg.ValEqual = parseValueInterface[V]()
 	}
 	// perform initialization
-	m.seed = uintptr(rand.Uint64())
-	m.keyHash, m.valEqual, m.intKey = defaultHasher[K, V]()
 	if cfg.KeyHash != nil {
 		m.keyHash = cfg.KeyHash
 		m.intKey = cfg.hashOpts()
@@ -675,6 +673,17 @@ func (m *MapOf[K, V]) init(
 	if cfg.ValEqual != nil {
 		m.valEqual = cfg.ValEqual
 	}
+	if m.keyHash == nil || m.valEqual == nil {
+		keyHash, valEqual, intKey := defaultHasher[K, V]()
+		if m.keyHash == nil {
+			m.keyHash = keyHash
+			m.intKey = intKey
+		}
+		if m.valEqual == nil {
+			m.valEqual = valEqual
+		}
+	}
+	m.seed = uintptr(rand.Uint64())
 	m.minLen = calcTableLen(cfg.SizeHint)
 	m.shrinkOn = cfg.ShrinkEnabled
 
@@ -1039,7 +1048,6 @@ func (m *MapOf[K, V]) doResize(
 				} else {
 					runtime.Gosched()
 					continue
-					// rs.wg.Wait()
 				}
 			default:
 				rs.wg.Wait()
@@ -1083,7 +1091,6 @@ func (m *MapOf[K, V]) rebuild(
 				} else {
 					runtime.Gosched()
 					continue
-					// rs.wg.Wait()
 				}
 			default:
 				rs.wg.Wait()
