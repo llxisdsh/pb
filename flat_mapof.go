@@ -117,12 +117,12 @@ func (m *FlatMapOf[K, V]) init(
 		cfg.KeyHash, cfg.HashOpts = parseKeyInterface[K]()
 	}
 	// perform initialization
+	m.keyHash, _, m.intKey = defaultHasher[K, V]()
 	if cfg.KeyHash != nil {
 		m.keyHash = cfg.KeyHash
-		m.intKey = cfg.hashOpts()
-	} else {
-		m.keyHash, _, m.intKey = defaultHasher[K, V]()
+		cfg.hashOpts(&m.intKey)
 	}
+
 	m.seed = uintptr(rand.Uint64())
 	m.shrinkOn = cfg.ShrinkEnabled
 	tableLen := calcTableLen(cfg.SizeHint)

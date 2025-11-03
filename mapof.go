@@ -666,23 +666,15 @@ func (m *MapOf[K, V]) init(
 		cfg.ValEqual = parseValueInterface[V]()
 	}
 	// perform initialization
+	m.keyHash, m.valEqual, m.intKey = defaultHasher[K, V]()
 	if cfg.KeyHash != nil {
 		m.keyHash = cfg.KeyHash
-		m.intKey = cfg.hashOpts()
+		cfg.hashOpts(&m.intKey)
 	}
 	if cfg.ValEqual != nil {
 		m.valEqual = cfg.ValEqual
 	}
-	if m.keyHash == nil || m.valEqual == nil {
-		keyHash, valEqual, intKey := defaultHasher[K, V]()
-		if m.keyHash == nil {
-			m.keyHash = keyHash
-			m.intKey = intKey
-		}
-		if m.valEqual == nil {
-			m.valEqual = valEqual
-		}
-	}
+
 	m.seed = uintptr(rand.Uint64())
 	m.minLen = calcTableLen(cfg.SizeHint)
 	m.shrinkOn = cfg.ShrinkEnabled
@@ -3095,7 +3087,22 @@ func nextPowOf2(n int) int {
 //
 //go:nosplit
 func spread(h uintptr) uintptr {
-	return h ^ (h >> 16)
+	// Multi-stage hash spreading for better low-byte information density
+	// Stage 1: Mix high bits into low bits with 16-bit shift
+	h ^= h >> 16
+	// Stage 2: Further mix with 8-bit shift to enhance byte-level distribution
+	h ^= h >> 8
+	// Stage 3: Final mix with 4-bit shift for maximum low-byte entropy
+	h ^= h >> 4
+	// Multiply by odd constant to ensure all bits contribute to low byte
+	// 0x9e3779b1 is the golden ratio hash constant (32-bit)
+	// For 64-bit systems, we use 0x9e3779b97f4a7c15
+	if unsafe.Sizeof(h) == 8 {
+		h *= 0x9e3779b97f4a7c15
+	} else {
+		h *= 0x9e3779b1
+	}
+	return h
 }
 
 // h1 extracts the bucket index from a hash value.
@@ -3108,8 +3115,9 @@ func h1(h uintptr, intKey bool) int {
 	}
 	if enableHashSpread {
 		return int(spread(h)) >> 7
+	} else {
+		return int(h) >> 7
 	}
-	return int(h) >> 7
 }
 
 // h2 extracts the byte-level hash for in-bucket lookups.
@@ -3118,8 +3126,9 @@ func h1(h uintptr, intKey bool) int {
 func h2(h uintptr) uint8 {
 	if enableHashSpread {
 		return uint8(spread(h)) | slotMask
+	} else {
+		return uint8(h) | slotMask
 	}
-	return uint8(h) | slotMask
 }
 
 // broadcast replicates a byte value across all bytes of an uint64.
@@ -3361,18 +3370,17 @@ func parseValueInterface[V any]() (valEqual EqualFunc) {
 	return
 }
 
-func (cfg *MapConfig) hashOpts() (intKey bool) {
+func (cfg *MapConfig) hashOpts(intKey *bool) {
 	for _, o := range cfg.HashOpts {
 		switch o {
 		case LinearDistribution:
-			intKey = true
+			*intKey = true
 		case ShiftDistribution:
-			intKey = false
-		case AutoDistribution:
-			// default distribution
+			*intKey = false
+		default:
+			// AutoDistribution: default distribution
 		}
 	}
-	return
 }
 
 // GetBuiltInHasher returns Go's built-in hash function for the specified type.
