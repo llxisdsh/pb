@@ -8,7 +8,7 @@ import (
 	"math/rand/v2"
 	"reflect"
 	"runtime"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -90,7 +90,7 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 		t.Fatalf("MapOf doesn't meet CacheLineSize: %d", size)
 	}
 
-	structType := reflect.TypeOf(bucketOf{})
+	structType := reflect.TypeFor[bucketOf]()
 	t.Logf("Struct bucketOf: %s", structType.Name())
 	for i := range structType.NumField() {
 		field := structType.Field(i)
@@ -103,7 +103,7 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 			fieldName, fieldType, fieldOffset, fieldSize)
 	}
 
-	structType = reflect.TypeOf(mapOfTable{})
+	structType = reflect.TypeFor[mapOfTable]()
 	t.Logf("Struct mapOfTable: %s", structType.Name())
 	for i := range structType.NumField() {
 		field := structType.Field(i)
@@ -116,7 +116,7 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 			fieldName, fieldType, fieldOffset, fieldSize)
 	}
 
-	structType = reflect.TypeOf(MapOf[string, int]{})
+	structType = reflect.TypeFor[MapOf[string, int]]()
 	t.Logf("Struct MapOf: %s", structType.Name())
 	for i := range structType.NumField() {
 		field := structType.Field(i)
@@ -241,9 +241,7 @@ func TestMapOfStoreLoadLatency(t *testing.T) {
 	}
 
 	// Sort latency data for percentile calculation
-	sort.Slice(latencies, func(i, j int) bool {
-		return latencies[i] < latencies[j]
-	})
+	slices.Sort(latencies)
 
 	// Calculate statistics
 	var sum time.Duration
@@ -456,9 +454,7 @@ func TestMapOfStoreLoadMultiThreadLatency(t *testing.T) {
 	}
 
 	// Sort latency data for percentile calculation
-	sort.Slice(latencies, func(i, j int) bool {
-		return latencies[i] < latencies[j]
-	})
+	slices.Sort(latencies)
 
 	// Calculate statistics
 	var sum time.Duration
@@ -2089,7 +2085,7 @@ func TestMapOfWithValueEqualUnsafe(t *testing.T) {
 		type ComplexValue struct {
 			Primary   int
 			Secondary string
-			Metadata  map[string]interface{}
+			Metadata  map[string]any
 		}
 
 		// Custom unsafe equality that only compares Primary field
@@ -2104,19 +2100,19 @@ func TestMapOfWithValueEqualUnsafe(t *testing.T) {
 		val1 := ComplexValue{
 			Primary:   100,
 			Secondary: "original",
-			Metadata:  map[string]interface{}{"key": "value1"},
+			Metadata:  map[string]any{"key": "value1"},
 		}
 
 		val2 := ComplexValue{
 			Primary:   100, // Same primary
 			Secondary: "different",
-			Metadata:  map[string]interface{}{"key": "value2"},
+			Metadata:  map[string]any{"key": "value2"},
 		}
 
 		val3 := ComplexValue{
 			Primary:   200,
 			Secondary: "new",
-			Metadata:  map[string]interface{}{"key": "value3"},
+			Metadata:  map[string]any{"key": "value3"},
 		}
 
 		m.Store("complex", val1)
@@ -4290,10 +4286,10 @@ func murmur3Finalizer(i int, _ uintptr) uintptr {
 		return h ^ (h >> 16)
 	}
 
-	//h := uintptr(i)
-	//h = (h ^ (h >> 33)) * 0xff51afd7ed558ccd
-	//h = (h ^ (h >> 33)) * 0xc4ceb9fe1a85ec53
-	//return h ^ (h >> 33)
+	// h := uintptr(i)
+	// h = (h ^ (h >> 33)) * 0xff51afd7ed558ccd
+	// h = (h ^ (h >> 33)) * 0xc4ceb9fe1a85ec53
+	// return h ^ (h >> 33)
 }
 
 func TestMapOfWithHasher_HashCodeCollisions(t *testing.T) {
@@ -8876,8 +8872,8 @@ func TestMapOf_SetDefaultJSONMarshal(t *testing.T) {
 		// Custom unmarshal function that handles the prefix
 		customUnmarshal := func(data []byte, v any) error {
 			var wrapper struct {
-				Custom bool        `json:"custom"`
-				Data   interface{} `json:"data"`
+				Custom bool `json:"custom"`
+				Data   any  `json:"data"`
 			}
 			if err := json.Unmarshal(data, &wrapper); err != nil {
 				return err
@@ -9799,7 +9795,7 @@ func TestMapOf_RangeProcess_TornReadDetection_Stress(t *testing.T) {
 					switch readerID % 3 {
 					case 0:
 						// Sequential access
-						for i := 0; i < N; i++ {
+						for i := range N {
 							select {
 							case <-stop:
 								return

@@ -1403,22 +1403,23 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 							return
 						}
 
-						if newEntry == e {
+						switch newEntry {
+						case e:
 							// No-op
-						} else if newEntry != nil {
-							// Update
-							if embeddedHash {
-								newEntry.setHash(e.getHash())
-							}
-							newEntry.Key = e.Key
-							storePointerNoMB(b.At(j), unsafe.Pointer(newEntry))
-						} else {
+						case nil:
 							// Delete
 							storePointerNoMB(b.At(j), nil)
 							// Keep snapshot fresh to prevent stale meta
 							meta = setByte(meta, emptySlot, j)
 							storeUint64NoMB(&b.meta, meta)
 							table.AddSize(i, -1)
+						default:
+							// Update
+							if embeddedHash {
+								newEntry.setHash(e.getHash())
+							}
+							newEntry.Key = e.Key
+							storePointerNoMB(b.At(j), unsafe.Pointer(newEntry))
 						}
 					}
 				}
@@ -3433,7 +3434,7 @@ func defaultHasher[K comparable, V any]() (
 		return hashString, valEqual, false
 	default:
 		// for types like integers
-		kType := reflect.TypeOf(*new(K))
+		kType := reflect.TypeFor[K]()
 		if kType == nil {
 			// Handle nil interface types
 			return keyHash, valEqual, false

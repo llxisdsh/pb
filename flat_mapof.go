@@ -125,8 +125,10 @@ func (m *FlatMapOf[K, V]) init(
 
 	m.seed = uintptr(rand.Uint64())
 	m.shrinkOn = cfg.ShrinkEnabled
+	var newTable flatTable[K, V]
 	tableLen := calcTableLen(cfg.SizeHint)
-	m.table.makeTable(tableLen, runtime.GOMAXPROCS(0))
+	newTable.makeTable(tableLen, runtime.GOMAXPROCS(0))
+	m.table.SeqStore(&newTable)
 }
 
 //go:noinline
@@ -825,10 +827,10 @@ func (m *FlatMapOf[K, V]) finalizeResize(
 	overCpus := cpus * resizeOverPartition
 	_, chunks := calcParallelism(table.mask+1, minBucketsPerCPU, overCpus)
 	rs.chunks = int32(chunks)
-	newTable := new(flatTable[K, V])
+	var newTable flatTable[K, V]
 	newTable.makeTable(newLen, cpus)
 	// Release rs
-	rs.newTable.SeqStore(newTable)
+	rs.newTable.SeqStore(&newTable)
 	m.helpCopyAndWait(rs)
 }
 
@@ -999,11 +1001,11 @@ func (t *flatTable[K, V]) makeTable(
 	sizeLen := calcSizeLen(tableLen, cpus)
 	t.buckets = makeUnsafeSlice(make([]flatBucket[K, V], tableLen))
 	t.mask = tableLen - 1
-	//if sizeLen <= 1 {
-	//	t.size.ptr = unsafe.Pointer(&t.smallSz)
-	//} else {
+	// if sizeLen <= 1 {
+	// 	t.size.ptr = unsafe.Pointer(&t.smallSz)
+	// } else {
 	t.size = makeUnsafeSlice(make([]counterStripe, sizeLen))
-	//}
+	// }
 	t.sizeMask = uint32(sizeLen - 1)
 }
 

@@ -2070,7 +2070,7 @@ func TestFlatMapOf_ClearConcurrent(t *testing.T) {
 		wg.Add(1)
 		go func(readerID int) {
 			defer wg.Done()
-			for i := 0; i < 200; i++ {
+			for i := range 200 {
 				key := (readerID*50 + i) % N
 				m.Load(key) // May or may not find the key
 				if clearDone.Load() {
@@ -2133,7 +2133,7 @@ func TestFlatMapOf_ClearConcurrentOperations(t *testing.T) {
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		for i := 0; i < N; i++ {
+		for i := range N {
 			select {
 			case <-stop:
 				return
@@ -2613,7 +2613,7 @@ func TestFlatMapOf_RangeProcess_TornReadDetection_Stress(t *testing.T) {
 					switch readerID % 3 {
 					case 0:
 						// Sequential access
-						for i := 0; i < N; i++ {
+						for i := range N {
 							select {
 							case <-stop:
 								return
