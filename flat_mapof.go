@@ -368,8 +368,6 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 					e := b.At(j)
 					newV, op := fn(e.key, e.value)
 					switch op {
-					case CancelOp:
-						// No-op
 					case UpdateOp:
 						s := *b.seq.Raw()
 						b.seq.Store(s + 1)
@@ -385,8 +383,8 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 						*e = flatEntry[K, V]{}
 						table.AddSize(i, -1)
 					default:
+						// CancelOp: No-op
 						root.Unlock()
-						panic(ErrUnexpectedOp)
 					}
 				}
 			}
@@ -509,9 +507,6 @@ func (m *FlatMapOf[K, V]) Process(
 
 		newV, op, value, status := fn(oldVal, loaded)
 		switch op {
-		case CancelOp:
-			root.Unlock()
-			return value, status
 		case UpdateOp:
 			if loaded {
 				s := *oldB.seq.Raw()
@@ -595,8 +590,9 @@ func (m *FlatMapOf[K, V]) Process(
 			}
 			return value, status
 		default:
+			// CancelOp: No-op
 			root.Unlock()
-			panic(ErrUnexpectedOp)
+			return value, status
 		}
 	}
 }
@@ -784,8 +780,7 @@ func (m *FlatMapOf[K, V]) tryResize(hint mapRebuildHint, size, sizeAdd int) {
 	table := &m.table
 	tableLen := table.mask + 1
 	var newLen int
-	switch hint {
-	case mapGrowHint:
+	if hint == mapGrowHint {
 		if sizeAdd == 0 {
 			newLen = max(calcTableLen(size), tableLen<<1)
 		} else {
@@ -795,7 +790,8 @@ func (m *FlatMapOf[K, V]) tryResize(hint mapRebuildHint, size, sizeAdd int) {
 				return
 			}
 		}
-	case mapShrinkHint:
+	} else {
+		// mapShrinkHint
 		if sizeAdd == 0 {
 			newLen = tableLen >> 1
 		} else {
@@ -805,8 +801,6 @@ func (m *FlatMapOf[K, V]) tryResize(hint mapRebuildHint, size, sizeAdd int) {
 			m.endRebuild(rs)
 			return
 		}
-	default:
-		panic(ErrUnexpectedResizeHint)
 	}
 
 	cpus := runtime.GOMAXPROCS(0)

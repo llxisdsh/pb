@@ -71,9 +71,7 @@ const (
 )
 
 const (
-	ErrUnexpectedOp           = "unexpected op"
-	ErrUnexpectedResizeHint   = "unexpected resize hint"
-	ErrUnexpectedCompareValue = "called CompareAndSwap/CompareAndDelete when value is not of comparable type"
+	errUnexpectedCompareValue = "called CompareAndSwap/CompareAndDelete when value is not of comparable type"
 )
 
 // MapOf is a high-performance concurrent map implementation that is fully
@@ -1006,8 +1004,7 @@ func (m *MapOf[K, V]) doResize(
 		// Resize check
 		table := (*mapOfTable)(loadPointerNoMB(&m.table))
 		tableLen := table.mask + 1
-		switch hint {
-		case mapGrowHint:
+		if hint == mapGrowHint {
 			if sizeAdd <= 0 {
 				return
 			}
@@ -1016,7 +1013,8 @@ func (m *MapOf[K, V]) doResize(
 			if tableLen >= newTableLen {
 				return
 			}
-		case mapShrinkHint:
+		} else {
+			// mapShrinkHint
 			if tableLen <= m.minLen {
 				return
 			}
@@ -1026,8 +1024,6 @@ func (m *MapOf[K, V]) doResize(
 			if tableLen <= newTableLen {
 				return
 			}
-		default:
-			panic(ErrUnexpectedResizeHint)
 		}
 
 		// Help finishing rebuild if needed
@@ -1110,8 +1106,7 @@ func (m *MapOf[K, V]) tryResize(
 	table := (*mapOfTable)(loadPointerNoMB(&m.table))
 	tableLen := table.mask + 1
 	var newLen int
-	switch hint {
-	case mapGrowHint:
+	if hint == mapGrowHint {
 		if sizeAdd == 0 {
 			newLen = max(calcTableLen(size), tableLen<<1)
 		} else {
@@ -1122,7 +1117,8 @@ func (m *MapOf[K, V]) tryResize(
 			}
 		}
 		atomic.AddUint32(&m.growths, 1)
-	case mapShrinkHint:
+	} else {
+		// mapShrinkHint
 		if sizeAdd == 0 {
 			newLen = tableLen >> 1
 		} else {
@@ -1133,8 +1129,6 @@ func (m *MapOf[K, V]) tryResize(
 			return
 		}
 		atomic.AddUint32(&m.shrinks, 1)
-	default:
-		panic(ErrUnexpectedResizeHint)
 	}
 
 	cpus := runtime.GOMAXPROCS(0)
@@ -1403,23 +1397,22 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 							return
 						}
 
-						switch newEntry {
-						case e:
-							// No-op
-						case nil:
+						if newEntry != nil {
+							if newEntry != e {
+								// Update
+								if embeddedHash {
+									newEntry.setHash(e.getHash())
+								}
+								newEntry.Key = e.Key
+								storePointerNoMB(b.At(j), unsafe.Pointer(newEntry))
+							}
+						} else {
 							// Delete
 							storePointerNoMB(b.At(j), nil)
 							// Keep snapshot fresh to prevent stale meta
 							meta = setByte(meta, emptySlot, j)
 							storeUint64NoMB(&b.meta, meta)
 							table.AddSize(i, -1)
-						default:
-							// Update
-							if embeddedHash {
-								newEntry.setHash(e.getHash())
-							}
-							newEntry.Key = e.Key
-							storePointerNoMB(b.At(j), unsafe.Pointer(newEntry))
 						}
 					}
 				}
@@ -1741,7 +1734,7 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 	}
 
 	if m.valEqual == nil {
-		panic(ErrUnexpectedCompareValue)
+		panic(errUnexpectedCompareValue)
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
@@ -1792,7 +1785,7 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 	}
 
 	if m.valEqual == nil {
-		panic(ErrUnexpectedCompareValue)
+		panic(errUnexpectedCompareValue)
 	}
 
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
@@ -1993,6 +1986,7 @@ func (m *MapOf[K, V]) LoadOrCompute(
 	)
 }
 
+// ComputeOp is the operation to perform on the map entry.
 type ComputeOp uint8
 
 const (
@@ -3067,7 +3061,7 @@ func nextPowOf2(n int) int {
 	if n <= 0 {
 		return 1
 	}
-	v := uint(n - 1)
+	v := n - 1
 	v |= v >> 1
 	v |= v >> 2
 	v |= v >> 4
@@ -3076,7 +3070,7 @@ func nextPowOf2(n int) int {
 	if bits.UintSize == 64 {
 		v |= v >> 32
 	}
-	return int(v + 1)
+	return v + 1
 }
 
 // spread improves hash distribution by XORing the original hash with its high
@@ -3402,7 +3396,9 @@ func GetBuiltInHasher[T comparable]() HashFunc {
 }
 
 type (
-	HashFunc  func(ptr unsafe.Pointer, seed uintptr) uintptr
+	// HashFunc is the function to hash a value of type K.
+	HashFunc func(ptr unsafe.Pointer, seed uintptr) uintptr
+	// EqualFunc is the function to compare two values of type V.
 	EqualFunc func(ptr unsafe.Pointer, other unsafe.Pointer) bool
 )
 
