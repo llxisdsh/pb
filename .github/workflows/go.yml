@@ -12,7 +12,12 @@ on:
 jobs:
   test:
     name: Build and run tests and collect coverage
-    runs-on: ubuntu-latest
+    strategy:
+        fail-fast: false
+        matrix:
+            os: [ macos-latest, ubuntu-latest, windows-latest ]
+            go: [ '1.22.x' ]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
