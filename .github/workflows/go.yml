@@ -16,7 +16,6 @@ jobs:
         fail-fast: false
         matrix:
             os: [ macos-latest, ubuntu-latest, windows-latest ]
-            go: [ '1.22.x' ]
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout
@@ -27,7 +26,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-            go-version: ${{ matrix.go }}
+            go-version-file: 'go.mod'
             check-latest: true
 
       - name: Install dependencies
