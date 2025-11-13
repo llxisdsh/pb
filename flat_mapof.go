@@ -378,9 +378,9 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 						meta = setByte(meta, emptySlot, j)
 						s := *b.seq.Raw()
 						b.seq.Store(s + 1)
+						*e = flatEntry[K, V]{}
 						b.meta.Store(meta)
 						b.seq.Store(s + 2)
-						*e = flatEntry[K, V]{}
 						table.AddSize(i, -1)
 					default:
 						// CancelOp: No-op
@@ -566,15 +566,12 @@ func (m *FlatMapOf[K, V]) Process(
 				root.Unlock()
 				return value, status
 			}
-			// Precompute new meta and minimize odd window
 			newMeta := setByte(oldMeta, emptySlot, oldIdx)
 			s := *oldB.seq.Raw()
 			oldB.seq.Store(s + 1)
+			*oldB.At(oldIdx) = flatEntry[K, V]{}
 			oldB.meta.Store(newMeta)
 			oldB.seq.Store(s + 2)
-			// After publishing even, clear entry fields before
-			// releasing root lock
-			*oldB.At(oldIdx) = flatEntry[K, V]{}
 			root.Unlock()
 			table.AddSize(idx, -1)
 			// Check if table shrinking is needed
