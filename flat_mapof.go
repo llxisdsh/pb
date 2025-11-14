@@ -189,9 +189,16 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 		meta := b.meta.Load()
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
-			e := *b.At(j) // copy entry after seq check
 			s2 := b.seq.Load()
 			if s1 != s2 {
+				if trySpin(&spins) {
+					goto retry
+				}
+				goto fallback
+			}
+			e := *b.At(j)
+			s3 := b.seq.Load()
+			if s1 != s3 {
 				if trySpin(&spins) {
 					goto retry
 				}
@@ -269,24 +276,26 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					}
 					goto fallback
 				}
-				// copy entries after seq check
 				meta = b.meta.Load()
-				cacheCount = 0
-				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
-					j := firstMarkedByteIndex(marked)
-					e := b.At(j)
-					cache[cacheCount] = kvEntry{k: e.key, v: e.value}
-					cacheCount++
-				}
 				s2 = b.seq.Load()
 				if s1 == s2 {
-					for j := range cacheCount {
-						kv := &cache[j]
-						if !yield(kv.k, kv.v) {
-							return
-						}
+					cacheCount = 0
+					for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
+						j := firstMarkedByteIndex(marked)
+						e := b.At(j)
+						cache[cacheCount] = kvEntry{k: e.key, v: e.value}
+						cacheCount++
 					}
-					break
+					s2 = b.seq.Load()
+					if s1 == s2 {
+						for j := range cacheCount {
+							kv := &cache[j]
+							if !yield(kv.k, kv.v) {
+								return
+							}
+						}
+						break
+					}
 				}
 				if trySpin(&spins) {
 					continue
@@ -296,7 +305,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 				// fallback: collect entries under lock, yield outside lock
 				cacheCount = 0
 				root.Lock()
-				meta = *b.meta.Raw()
+				meta = b.meta.Load()
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 					j := firstMarkedByteIndex(marked)
 					e := b.At(j)
@@ -524,7 +533,7 @@ func (m *FlatMapOf[K, V]) Process(
 				}
 				entry.key = key
 				entry.value = newV
-				newMeta := setByte(*emptyB.meta.Raw(), h2v, emptyIdx)
+				newMeta := setByte(emptyB.meta.Load(), h2v, emptyIdx)
 				s := *emptyB.seq.Raw()
 				emptyB.seq.Store(s + 1)
 				// Publish meta while still holding the root lock to ensure
@@ -882,11 +891,11 @@ func (m *FlatMapOf[K, V]) copyBucket(
 				b := destBucket
 			appendTo:
 				for {
-					meta := *b.meta.Raw()
+					meta := b.meta.Load()
 					empty := (^meta) & metaMask
 					if empty != 0 {
 						emptyIdx := firstMarkedByteIndex(empty)
-						*b.meta.Raw() = setByte(meta, h2v, emptyIdx)
+						b.meta.Store(setByte(meta, h2v, emptyIdx))
 						entry := b.At(emptyIdx)
 						entry.value = e.value
 						if embeddedHash {
@@ -930,7 +939,7 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 		srcBucket := table.buckets.At(i)
 		srcBucket.Lock()
 		for b := srcBucket; b != nil; b = (*flatBucket[K, V])(b.next) {
-			meta := *b.meta.Raw()
+			meta := b.meta.Load()
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j)
@@ -951,7 +960,7 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 					empty := (^meta) & metaMask
 					if empty != 0 {
 						emptyIdx := firstMarkedByteIndex(empty)
-						*b.meta.Raw() = setByte(meta, h2v, emptyIdx)
+						b.meta.Store(setByte(meta, h2v, emptyIdx))
 						entry := b.At(emptyIdx)
 						entry.value = e.value
 						if embeddedHash {
@@ -1095,7 +1104,8 @@ func (b *flatBucket[K, V]) tryLock() bool {
 
 //go:nosplit
 func (b *flatBucket[K, V]) Unlock() {
-	b.meta.Store(*b.meta.Raw() &^ opLockMask)
+	cur := b.meta.Load()
+	b.meta.Store(cur &^ opLockMask)
 }
 
 // atomicUint64 wraps atomic.Uint64 to leverage its built-in
