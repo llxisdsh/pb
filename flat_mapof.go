@@ -1010,10 +1010,12 @@ func (t *flatTable[K, V]) SeqLoad() flatTable[K, V] {
 	for {
 		s1 := atomic.LoadUint32(&t.seq)
 		if s1&1 == 0 {
-			v := *t
-			s2 := atomic.LoadUint32(&t.seq)
-			if s1 == s2 && (s2&1) == 0 {
-				return v
+			if atomic.CompareAndSwapUint32(&t.seq, s1, s1) {
+				v := *t
+				s2 := atomic.LoadUint32(&t.seq)
+				if s1 == s2 && (s2&1) == 0 {
+					return v
+				}
 			}
 		}
 	}
