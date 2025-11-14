@@ -538,11 +538,12 @@ func (m *FlatMapOf[K, V]) Process(
 			}
 			// append new bucket
 			bucket := &flatBucket[K, V]{
-				meta: makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
+				// meta: makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
 				entries: [entriesPerBucket]flatEntry[K, V]{
 					{key: key, value: newV},
 				},
 			}
+			bucket.meta.Store(setByte(emptyMeta, h2v, 0))
 			if embeddedHash {
 				bucket.At(0).setHash(hash)
 			}
@@ -897,9 +898,10 @@ func (m *FlatMapOf[K, V]) copyBucket(
 					next := (*flatBucket[K, V])(b.next)
 					if next == nil {
 						bucket := &flatBucket[K, V]{
-							meta:    makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
+							// meta:    makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
 							entries: [entriesPerBucket]flatEntry[K, V]{{value: e.value, key: e.key}},
 						}
+						bucket.meta.Store(setByte(emptyMeta, h2v, 0))
 						if embeddedHash {
 							bucket.At(0).setHash(hash)
 						}
@@ -962,9 +964,10 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 					next := (*flatBucket[K, V])(b.next)
 					if next == nil {
 						bucket := &flatBucket[K, V]{
-							meta:    makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
+							// meta:    makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
 							entries: [entriesPerBucket]flatEntry[K, V]{{value: e.value, key: e.key}},
 						}
+						bucket.meta.Store(setByte(emptyMeta, h2v, 0))
 						if embeddedHash {
 							bucket.At(0).setHash(hash)
 						}
