@@ -214,7 +214,7 @@ fallback:
 	// fallback: find entry under lock
 	root.Lock()
 	for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
-		meta := *b.meta.Raw()
+		meta := b.meta.Load()
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
 			e := b.At(j)
@@ -362,7 +362,7 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 			root := table.buckets.At(i)
 			root.Lock()
 			for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
-				meta := *b.meta.Raw()
+				meta := b.meta.Load()
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 					j := firstMarkedByteIndex(marked)
 					e := b.At(j)
@@ -384,7 +384,6 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 						table.AddSize(i, -1)
 					default:
 						// CancelOp: No-op
-						root.Unlock()
 					}
 				}
 			}
@@ -480,7 +479,7 @@ func (m *FlatMapOf[K, V]) Process(
 
 	findLoop:
 		for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
-			meta := *b.meta.Raw()
+			meta := b.meta.Load()
 			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j)
@@ -867,7 +866,7 @@ func (m *FlatMapOf[K, V]) copyBucket(
 		srcBucket := table.buckets.At(i)
 		srcBucket.Lock()
 		for b := srcBucket; b != nil; b = (*flatBucket[K, V])(b.next) {
-			meta := *b.meta.Raw()
+			meta := b.meta.Load()
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j)
