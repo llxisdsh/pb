@@ -186,6 +186,12 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 			}
 			goto fallback
 		}
+		if !b.seq.CompareAndSwap(s1, s1) {
+			if trySpin(&spins) {
+				goto retry
+			}
+			goto fallback
+		}
 		meta := b.meta.Load()
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
@@ -264,6 +270,12 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 			for {
 				s1 = b.seq.Load()
 				if (s1 & 1) != 0 {
+					if trySpin(&spins) {
+						continue
+					}
+					goto fallback
+				}
+				if !b.seq.CompareAndSwap(s1, s1) {
 					if trySpin(&spins) {
 						continue
 					}
