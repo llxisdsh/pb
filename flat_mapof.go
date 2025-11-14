@@ -513,20 +513,16 @@ func (m *FlatMapOf[K, V]) Process(
 			}
 			// insert new
 			if emptyB != nil {
-				// Prefill entry data before odd to shorten odd window
+				// Seqlock write: enter odd, write entry, publish meta, exit even
+				newMeta := setByte(emptyB.meta.Load(), h2v, emptyIdx)
+				emptyB.seq.Add(1)
 				entry := emptyB.At(emptyIdx)
 				if embeddedHash {
 					entry.setHash(hash)
 				}
 				entry.key = key
 				entry.value = newV
-				newMeta := setByte(emptyB.meta.Load(), h2v, emptyIdx)
-				emptyB.seq.Add(1)
-				// Publish meta while still holding the root lock to ensure
-				// no other writer starts while this bucket is in odd state
 				emptyB.meta.Store(newMeta)
-				// Complete seqlock write (make it even) before
-				// releasing root lock
 				emptyB.seq.Add(1)
 				root.Unlock()
 				table.AddSize(idx, 1)
