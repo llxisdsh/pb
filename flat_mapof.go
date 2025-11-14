@@ -191,7 +191,7 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 			j := firstMarkedByteIndex(marked)
 			e := *b.At(j)
 			s2 := b.seq.Load()
-			if s1 != s2 {
+			if s1 != s2 || s2&1 != 0 {
 				if trySpin(&spins) {
 					goto retry
 				}
@@ -278,7 +278,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					cacheCount++
 				}
 				s2 = b.seq.Load()
-				if s1 == s2 {
+				if s1 == s2 && (s2&1) == 0 {
 					for j := range cacheCount {
 						kv := &cache[j]
 						if !yield(kv.k, kv.v) {
@@ -458,7 +458,8 @@ func (m *FlatMapOf[K, V]) Process(
 				// mapRebuildWithWritersHint: allow concurrent writers
 			}
 		}
-		if atomic.LoadUint32(&m.table.seq) != table.seq {
+
+		if s := atomic.LoadUint32(&m.table.seq); s != table.seq || (s&1) != 0 {
 			root.Unlock()
 			continue
 		}
@@ -999,7 +1000,7 @@ func (t *flatTable[K, V]) SeqLoad() flatTable[K, V] {
 		if s1&1 == 0 {
 			v := *t
 			s2 := atomic.LoadUint32(&t.seq)
-			if s1 == s2 {
+			if s1 == s2 && (s2&1) == 0 {
 				return v
 			}
 		}
