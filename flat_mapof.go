@@ -368,14 +368,14 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 					newV, op := fn(e.key, e.value)
 					switch op {
 					case UpdateOp:
-						s := *b.seq.Raw()
+						s := b.seq.Load()
 						b.seq.Store(s + 1)
 						e.value = newV
 						b.seq.Store(s + 2)
 					case DeleteOp:
 						// Keep snapshot fresh to prevent stale meta
 						meta = setByte(meta, emptySlot, j)
-						s := *b.seq.Raw()
+						s := b.seq.Load()
 						b.seq.Store(s + 1)
 						*e = flatEntry[K, V]{}
 						b.meta.Store(meta)
@@ -507,7 +507,7 @@ func (m *FlatMapOf[K, V]) Process(
 		switch op {
 		case UpdateOp:
 			if loaded {
-				s := *oldB.seq.Raw()
+				s := oldB.seq.Load()
 				oldB.seq.Store(s + 1)
 				oldB.At(oldIdx).value = newV
 				oldB.seq.Store(s + 2)
@@ -524,7 +524,7 @@ func (m *FlatMapOf[K, V]) Process(
 				entry.key = key
 				entry.value = newV
 				newMeta := setByte(emptyB.meta.Load(), h2v, emptyIdx)
-				s := *emptyB.seq.Raw()
+				s := emptyB.seq.Load()
 				emptyB.seq.Store(s + 1)
 				// Publish meta while still holding the root lock to ensure
 				// no other writer starts while this bucket is in odd state
@@ -565,7 +565,7 @@ func (m *FlatMapOf[K, V]) Process(
 				return value, status
 			}
 			newMeta := setByte(oldMeta, emptySlot, oldIdx)
-			s := *oldB.seq.Raw()
+			s := oldB.seq.Load()
 			oldB.seq.Store(s + 1)
 			*oldB.At(oldIdx) = flatEntry[K, V]{}
 			oldB.meta.Store(newMeta)
@@ -946,7 +946,7 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 				b := destBucket
 			appendTo:
 				for {
-					meta := *b.meta.Raw()
+					meta := b.meta.Load()
 					empty := (^meta) & metaMask
 					if empty != 0 {
 						emptyIdx := firstMarkedByteIndex(empty)
@@ -1056,10 +1056,7 @@ func (t *flatTable[K, V]) SumSizeExceeds(limit int) bool {
 
 //go:nosplit
 func (b *flatBucket[K, V]) At(i int) *flatEntry[K, V] {
-	return (*flatEntry[K, V])(unsafe.Add(
-		unsafe.Pointer(&b.entries),
-		uintptr(i)*unsafe.Sizeof(flatEntry[K, V]{}),
-	))
+	return &b.entries[i]
 }
 
 //go:nosplit
