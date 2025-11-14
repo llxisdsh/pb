@@ -189,16 +189,9 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 		meta := b.meta.Load()
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
+			e := *b.At(j)
 			s2 := b.seq.Load()
 			if s1 != s2 {
-				if trySpin(&spins) {
-					goto retry
-				}
-				goto fallback
-			}
-			e := *b.At(j)
-			s3 := b.seq.Load()
-			if s1 != s3 {
 				if trySpin(&spins) {
 					goto retry
 				}
@@ -277,25 +270,22 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					goto fallback
 				}
 				meta = b.meta.Load()
+				cacheCount = 0
+				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
+					j := firstMarkedByteIndex(marked)
+					e := b.At(j)
+					cache[cacheCount] = kvEntry{k: e.key, v: e.value}
+					cacheCount++
+				}
 				s2 = b.seq.Load()
 				if s1 == s2 {
-					cacheCount = 0
-					for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
-						j := firstMarkedByteIndex(marked)
-						e := b.At(j)
-						cache[cacheCount] = kvEntry{k: e.key, v: e.value}
-						cacheCount++
-					}
-					s2 = b.seq.Load()
-					if s1 == s2 {
-						for j := range cacheCount {
-							kv := &cache[j]
-							if !yield(kv.k, kv.v) {
-								return
-							}
+					for j := range cacheCount {
+						kv := &cache[j]
+						if !yield(kv.k, kv.v) {
+							return
 						}
-						break
 					}
+					break
 				}
 				if trySpin(&spins) {
 					continue
