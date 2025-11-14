@@ -825,7 +825,7 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 
 # FlatMapOf
 
-FlatMapOf is a seqlock-based, flat-layout concurrent hash table. The table and key/value entries are stored inline to minimize pointer chasing and cache misses, providing more stable latency and throughput even for cold working sets. Prefer creating instances via `NewFlatMapOf` and configure via options.
+FlatMapOf is a seqlock-based, flat-layout concurrent hash table. The table and key/value entries are stored inline to minimize pointer chasing and cache misses, providing more stable latency and throughput even for cold working sets.
 
 > Important — Memory Model Requirements (TSO only)
 >
