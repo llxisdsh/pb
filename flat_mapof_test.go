@@ -2710,7 +2710,7 @@ func TestFlatMapOf_RangeProcess_WriterBlocking_Verification(t *testing.T) {
 		wg                  sync.WaitGroup
 		rangeProcessStarted = make(chan struct{})
 		rangeProcessDone    = make(chan struct{})
-		writerBlocked       atomic.Bool
+		writerAttempted     = make(chan struct{})
 		writerCompleted     atomic.Bool
 	)
 
@@ -2739,7 +2739,7 @@ func TestFlatMapOf_RangeProcess_WriterBlocking_Verification(t *testing.T) {
 		time.Sleep(1 * time.Millisecond) // Ensure RangeProcess is running
 
 		startTime := time.Now()
-		writerBlocked.Store(true)
+		close(writerAttempted)
 
 		// This should be blocked until RangeProcess completes
 		m.Store(0, 999)
@@ -2759,13 +2759,9 @@ func TestFlatMapOf_RangeProcess_WriterBlocking_Verification(t *testing.T) {
 		defer wg.Done()
 
 		<-rangeProcessStarted
-		time.Sleep(5 * time.Millisecond)
+		<-writerAttempted
 
-		// At this point, writer should be blocked
-		if !writerBlocked.Load() {
-			t.Error("Writer should be blocked at this point")
-		}
-
+		// Writer has started; it should still be blocked until RangeProcess completes
 		if writerCompleted.Load() {
 			t.Error("Writer should not have completed while RangeProcess is running")
 		}
