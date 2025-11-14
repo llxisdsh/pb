@@ -1,4 +1,4 @@
-//go:build go1.23
+//go:build go1.23 && (amd64 || 386 || s390x)
 
 package pb
 

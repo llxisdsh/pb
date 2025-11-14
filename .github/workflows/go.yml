@@ -56,13 +56,6 @@ jobs:
           Write-Host "Processor Architecture env: $env:PROCESSOR_ARCHITECTURE"
           Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-Table -AutoSize
           Get-CimInstance Win32_OperatingSystem | Select-Object Version, BuildNumber | Format-Table -AutoSize
-
-      # - name: Race smoke (macOS)
-      #   if: runner.os == 'macOS'
-      #   env:
-      #     CGO_ENABLED: 1
-      #   run: go test -race -v -run "^(TestFlatMapOf_SeqlockConsistency_StressABA|TestFlatMapOf_LoadDeleteRace_Semantics)$" ./...
-
       - name: Run tests
         run: go test -coverprofile coverage.txt ./...
 

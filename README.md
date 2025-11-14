@@ -827,6 +827,16 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 
 FlatMapOf is a seqlock-based, flat-layout concurrent hash table. The table and key/value entries are stored inline to minimize pointer chasing and cache misses, providing more stable latency and throughput even for cold working sets. Prefer creating instances via `NewFlatMapOf` and configure via options.
 
+> Important — Memory Model Requirements (TSO only)
+>
+> FlatMapOf targets strongly ordered memory models (TSO). It is supported
+> and built only on `GOARCH=amd64`, `386` and `s390x`. On weakly ordered
+> architectures (e.g., `arm`, `arm64`, `riscv64`, `ppc64`), the seqlock-based
+> read path does not provide the required visibility guarantees, so
+> `flat_mapof*` is deliberately excluded from builds. Use `MapOf` on those
+> platforms.
+
+
 Design and concurrency semantics (overview)
 - Read path (seqlock validation): Each bucket maintains a sequence. Readers load s1; if s1 is even, they read metadata/entries and then load s2. If s1==s2 (and even), the read is consistent; otherwise, readers spin and retry, and, if needed, fall back to a short locked slow path.
 - Write path (ordered publication): While holding the root-bucket lock (opLock), flip the bucket sequence to odd (enter write state) → apply modifications → flip back to even (publish a consistent view), and finally release the root lock.
@@ -868,6 +878,8 @@ Limitations and caveats (FlatMapOf)
 - Large V or sparse occupancy amplifies the “hole cost,” increasing memory consumption.
 - Under sustained write contention with longer critical sections, reads may retry or fall back to the slow path, reducing throughput.
 - Dedicated CompareAnd* convenience APIs are currently unavailable; use Process to compose equivalent atomic semantics.
+- Memory model requirement: TSO-only. On weakly ordered architectures
+  (ARM/ARM64/RISC-V/PPC), prefer `MapOf`.
 
 Usage guidance and boundaries
 - Prefer FlatMapOf for:

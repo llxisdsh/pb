@@ -3178,8 +3178,7 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 
 const isTSO = runtime.GOARCH == "amd64" ||
 	runtime.GOARCH == "386" ||
-	runtime.GOARCH == "s390x" ||
-	runtime.GOARCH == "s390"
+	runtime.GOARCH == "s390x"
 
 //go:nosplit
 func loadPointerNoMB(addr *unsafe.Pointer) unsafe.Pointer {

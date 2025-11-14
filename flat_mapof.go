@@ -1,3 +1,5 @@
+//go:build amd64 || 386 || s390x
+
 package pb
 
 import (
@@ -186,21 +188,12 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 			}
 			goto fallback
 		}
-		if !b.seq.CompareAndSwap(s1, s1) {
-			if trySpin(&spins) {
-				goto retry
-			}
-			goto fallback
-		}
-		// if !isTSO && unsafe.Sizeof(*new(V)) > unsafe.Sizeof(uintptr(0)) {
-		// 	goto fallback
-		// }
 		meta := b.meta.Load()
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
-			e := *b.At(j)
+			e := *b.At(j) // copy entry after seq check
 			s2 := b.seq.Load()
-			if s1 != s2 || s2&1 != 0 {
+			if s1 != s2 {
 				if trySpin(&spins) {
 					goto retry
 				}
@@ -223,7 +216,7 @@ fallback:
 	// fallback: find entry under lock
 	root.Lock()
 	for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
-		meta := b.meta.Load()
+		meta := *b.meta.Raw()
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
 			e := b.At(j)
@@ -278,15 +271,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					}
 					goto fallback
 				}
-				if !b.seq.CompareAndSwap(s1, s1) {
-					if trySpin(&spins) {
-						continue
-					}
-					goto fallback
-				}
-				// if !isTSO && unsafe.Sizeof(*new(V)) > unsafe.Sizeof(uintptr(0)) {
-				// 	goto fallback
-				// }
+				// copy entries after seq check
 				meta = b.meta.Load()
 				cacheCount = 0
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
@@ -296,7 +281,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					cacheCount++
 				}
 				s2 = b.seq.Load()
-				if s1 == s2 && (s2&1) == 0 {
+				if s1 == s2 {
 					for j := range cacheCount {
 						kv := &cache[j]
 						if !yield(kv.k, kv.v) {
@@ -313,7 +298,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 				// fallback: collect entries under lock, yield outside lock
 				cacheCount = 0
 				root.Lock()
-				meta = b.meta.Load()
+				meta = *b.meta.Raw()
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 					j := firstMarkedByteIndex(marked)
 					e := b.At(j)
@@ -379,23 +364,25 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 			root := table.buckets.At(i)
 			root.Lock()
 			for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
-				meta := b.meta.Load()
+				meta := *b.meta.Raw()
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 					j := firstMarkedByteIndex(marked)
 					e := b.At(j)
 					newV, op := fn(e.key, e.value)
 					switch op {
 					case UpdateOp:
-						b.seq.Add(1)
+						s := *b.seq.Raw()
+						b.seq.Store(s + 1)
 						e.value = newV
-						b.seq.Add(1)
+						b.seq.Store(s + 2)
 					case DeleteOp:
 						// Keep snapshot fresh to prevent stale meta
 						meta = setByte(meta, emptySlot, j)
-						b.seq.Add(1)
-						*e = flatEntry[K, V]{}
+						s := *b.seq.Raw()
+						b.seq.Store(s + 1)
 						b.meta.Store(meta)
-						b.seq.Add(1)
+						b.seq.Store(s + 2)
+						*e = flatEntry[K, V]{}
 						table.AddSize(i, -1)
 					default:
 						// CancelOp: No-op
@@ -476,8 +463,7 @@ func (m *FlatMapOf[K, V]) Process(
 				// mapRebuildWithWritersHint: allow concurrent writers
 			}
 		}
-
-		if s := atomic.LoadUint32(&m.table.seq); s != table.seq || (s&1) != 0 {
+		if atomic.LoadUint32(&m.table.seq) != table.seq {
 			root.Unlock()
 			continue
 		}
@@ -495,7 +481,7 @@ func (m *FlatMapOf[K, V]) Process(
 
 	findLoop:
 		for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
-			meta := b.meta.Load()
+			meta := *b.meta.Raw()
 			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j)
@@ -524,37 +510,42 @@ func (m *FlatMapOf[K, V]) Process(
 		switch op {
 		case UpdateOp:
 			if loaded {
-				oldB.seq.Add(1)
+				s := *oldB.seq.Raw()
+				oldB.seq.Store(s + 1)
 				oldB.At(oldIdx).value = newV
-				oldB.seq.Add(1)
+				oldB.seq.Store(s + 2)
 				root.Unlock()
 				return value, status
 			}
 			// insert new
 			if emptyB != nil {
-				// Seqlock write: enter odd, write entry, publish meta, exit even
-				newMeta := setByte(emptyB.meta.Load(), h2v, emptyIdx)
-				emptyB.seq.Add(1)
+				// Prefill entry data before odd to shorten odd window
 				entry := emptyB.At(emptyIdx)
 				if embeddedHash {
 					entry.setHash(hash)
 				}
 				entry.key = key
 				entry.value = newV
+				newMeta := setByte(*emptyB.meta.Raw(), h2v, emptyIdx)
+				s := *emptyB.seq.Raw()
+				emptyB.seq.Store(s + 1)
+				// Publish meta while still holding the root lock to ensure
+				// no other writer starts while this bucket is in odd state
 				emptyB.meta.Store(newMeta)
-				emptyB.seq.Add(1)
+				// Complete seqlock write (make it even) before
+				// releasing root lock
+				emptyB.seq.Store(s + 2)
 				root.Unlock()
 				table.AddSize(idx, 1)
 				return value, status
 			}
 			// append new bucket
 			bucket := &flatBucket[K, V]{
-				// meta: makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
+				meta: makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
 				entries: [entriesPerBucket]flatEntry[K, V]{
 					{key: key, value: newV},
 				},
 			}
-			bucket.meta.Store(setByte(emptyMeta, h2v, 0))
 			if embeddedHash {
 				bucket.At(0).setHash(hash)
 			}
@@ -576,11 +567,15 @@ func (m *FlatMapOf[K, V]) Process(
 				root.Unlock()
 				return value, status
 			}
+			// Precompute new meta and minimize odd window
 			newMeta := setByte(oldMeta, emptySlot, oldIdx)
-			oldB.seq.Add(1)
-			*oldB.At(oldIdx) = flatEntry[K, V]{}
+			s := *oldB.seq.Raw()
+			oldB.seq.Store(s + 1)
 			oldB.meta.Store(newMeta)
-			oldB.seq.Add(1)
+			oldB.seq.Store(s + 2)
+			// After publishing even, clear entry fields before
+			// releasing root lock
+			*oldB.At(oldIdx) = flatEntry[K, V]{}
 			root.Unlock()
 			table.AddSize(idx, -1)
 			// Check if table shrinking is needed
@@ -876,7 +871,7 @@ func (m *FlatMapOf[K, V]) copyBucket(
 		srcBucket := table.buckets.At(i)
 		srcBucket.Lock()
 		for b := srcBucket; b != nil; b = (*flatBucket[K, V])(b.next) {
-			meta := b.meta.Load()
+			meta := *b.meta.Raw()
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j)
@@ -892,11 +887,11 @@ func (m *FlatMapOf[K, V]) copyBucket(
 				b := destBucket
 			appendTo:
 				for {
-					meta := b.meta.Load()
+					meta := *b.meta.Raw()
 					empty := (^meta) & metaMask
 					if empty != 0 {
 						emptyIdx := firstMarkedByteIndex(empty)
-						b.meta.Store(setByte(meta, h2v, emptyIdx))
+						*b.meta.Raw() = setByte(meta, h2v, emptyIdx)
 						entry := b.At(emptyIdx)
 						entry.value = e.value
 						if embeddedHash {
@@ -908,10 +903,9 @@ func (m *FlatMapOf[K, V]) copyBucket(
 					next := (*flatBucket[K, V])(b.next)
 					if next == nil {
 						bucket := &flatBucket[K, V]{
-							// meta:    makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
+							meta:    makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
 							entries: [entriesPerBucket]flatEntry[K, V]{{value: e.value, key: e.key}},
 						}
-						bucket.meta.Store(setByte(emptyMeta, h2v, 0))
 						if embeddedHash {
 							bucket.At(0).setHash(hash)
 						}
@@ -941,7 +935,7 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 		srcBucket := table.buckets.At(i)
 		srcBucket.Lock()
 		for b := srcBucket; b != nil; b = (*flatBucket[K, V])(b.next) {
-			meta := b.meta.Load()
+			meta := *b.meta.Raw()
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j)
@@ -958,11 +952,11 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 				b := destBucket
 			appendTo:
 				for {
-					meta := b.meta.Load()
+					meta := *b.meta.Raw()
 					empty := (^meta) & metaMask
 					if empty != 0 {
 						emptyIdx := firstMarkedByteIndex(empty)
-						b.meta.Store(setByte(meta, h2v, emptyIdx))
+						*b.meta.Raw() = setByte(meta, h2v, emptyIdx)
 						entry := b.At(emptyIdx)
 						entry.value = e.value
 						if embeddedHash {
@@ -974,10 +968,9 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 					next := (*flatBucket[K, V])(b.next)
 					if next == nil {
 						bucket := &flatBucket[K, V]{
-							// meta:    makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
+							meta:    makeAtomicUint64(setByte(emptyMeta, h2v, 0)),
 							entries: [entriesPerBucket]flatEntry[K, V]{{value: e.value, key: e.key}},
 						}
-						bucket.meta.Store(setByte(emptyMeta, h2v, 0))
 						if embeddedHash {
 							bucket.At(0).setHash(hash)
 						}
@@ -1016,12 +1009,10 @@ func (t *flatTable[K, V]) SeqLoad() flatTable[K, V] {
 	for {
 		s1 := atomic.LoadUint32(&t.seq)
 		if s1&1 == 0 {
-			if atomic.CompareAndSwapUint32(&t.seq, s1, s1) {
-				v := *t
-				s2 := atomic.LoadUint32(&t.seq)
-				if s1 == s2 && (s2&1) == 0 {
-					return v
-				}
+			v := *t
+			s2 := atomic.LoadUint32(&t.seq)
+			if s1 == s2 {
+				return v
 			}
 		}
 	}
@@ -1029,15 +1020,13 @@ func (t *flatTable[K, V]) SeqLoad() flatTable[K, V] {
 
 //go:nosplit
 func (t *flatTable[K, V]) SeqStore(v *flatTable[K, V]) {
-	// s := atomic.LoadUint32(&t.seq)
-	// atomic.StoreUint32(&t.seq, s+1)
-	atomic.AddUint32(&t.seq, 1)
+	s := atomic.LoadUint32(&t.seq)
+	atomic.StoreUint32(&t.seq, s+1)
 	t.buckets = v.buckets
 	t.mask = v.mask
 	t.size = v.size
 	t.sizeMask = v.sizeMask
-	// atomic.StoreUint32(&t.seq, s+2)
-	atomic.AddUint32(&t.seq, 1)
+	atomic.StoreUint32(&t.seq, s+2)
 }
 
 //go:nosplit
@@ -1073,7 +1062,10 @@ func (t *flatTable[K, V]) SumSizeExceeds(limit int) bool {
 
 //go:nosplit
 func (b *flatBucket[K, V]) At(i int) *flatEntry[K, V] {
-	return &b.entries[i]
+	return (*flatEntry[K, V])(unsafe.Add(
+		unsafe.Pointer(&b.entries),
+		uintptr(i)*unsafe.Sizeof(flatEntry[K, V]{}),
+	))
 }
 
 //go:nosplit
@@ -1108,8 +1100,7 @@ func (b *flatBucket[K, V]) tryLock() bool {
 
 //go:nosplit
 func (b *flatBucket[K, V]) Unlock() {
-	cur := b.meta.Load()
-	b.meta.Store(cur &^ opLockMask)
+	b.meta.Store(*b.meta.Raw() &^ opLockMask)
 }
 
 // atomicUint64 wraps atomic.Uint64 to leverage its built-in
