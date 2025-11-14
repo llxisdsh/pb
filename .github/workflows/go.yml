@@ -35,6 +35,28 @@ jobs:
       - name: Build
         run: go build -v ./...
 
+      - name: Print runner info (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: |
+          echo "OS: $(uname -a)"
+          echo "Arch: $(uname -m)"
+          if command -v lscpu >/dev/null 2>&1; then
+            lscpu
+          fi
+          if command -v sysctl >/dev/null 2>&1; then
+            sysctl -n machdep.cpu.brand_string || true
+          fi
+
+      - name: Print runner info (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          Write-Host "OS Architecture: $([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)"
+          Write-Host "Process Architecture: $([System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture)"
+          Write-Host "Processor Architecture env: $env:PROCESSOR_ARCHITECTURE"
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors | Format-Table -AutoSize
+          Get-CimInstance Win32_OperatingSystem | Select-Object Version, BuildNumber | Format-Table -AutoSize
+
       # - name: Race smoke (macOS)
       #   if: runner.os == 'macOS'
       #   env:

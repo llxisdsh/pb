@@ -192,6 +192,9 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 			}
 			goto fallback
 		}
+		// if !isTSO && unsafe.Sizeof(*new(V)) > unsafe.Sizeof(uintptr(0)) {
+		// 	goto fallback
+		// }
 		meta := b.meta.Load()
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
@@ -281,6 +284,9 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					}
 					goto fallback
 				}
+				// if !isTSO && unsafe.Sizeof(*new(V)) > unsafe.Sizeof(uintptr(0)) {
+				// 	goto fallback
+				// }
 				meta = b.meta.Load()
 				cacheCount = 0
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
