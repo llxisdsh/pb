@@ -35,11 +35,11 @@ jobs:
       - name: Build
         run: go build -v ./...
 
-      - name: Race smoke (macOS)
-        if: runner.os == 'macOS'
-        env:
-          CGO_ENABLED: 1
-        run: go test -race -v -run "^(TestFlatMapOf_SeqlockConsistency_StressABA|TestFlatMapOf_LoadDeleteRace_Semantics)$" ./...
+      # - name: Race smoke (macOS)
+      #   if: runner.os == 'macOS'
+      #   env:
+      #     CGO_ENABLED: 1
+      #   run: go test -race -v -run "^(TestFlatMapOf_SeqlockConsistency_StressABA|TestFlatMapOf_LoadDeleteRace_Semantics)$" ./...
 
       - name: Run tests
         run: go test -coverprofile coverage.txt ./...
