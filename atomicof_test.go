@@ -195,6 +195,11 @@ func TestAtomicOfSeq_OddHoldSpin(t *testing.T) {
 				return
 			default:
 				for {
+					select {
+					case <-stop:
+						return
+					default:
+					}
 					s := atomic.LoadUint32(&seq)
 					if s&1 != 0 {
 						runtime.Gosched()
@@ -588,6 +593,10 @@ func TestAtomicOf_DirtyLoad_Uint64_ArchDependent(t *testing.T) {
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	var errors atomic.Int64
+	// Pre-initialize to a consistent value to avoid early zero reads
+	x0 := uint32(0x13579BDF)
+	v0 := (uint64(^x0) << 32) | uint64(x0)
+	a.store(v0)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
