@@ -5,13 +5,14 @@ import (
 	"unsafe"
 )
 
-const directLoadStore = true
+const directLoadStore = false
 
 type atomicOf[T any] struct {
 	_   [0]atomic.Uint32
 	buf T
 }
 
+//go:nosplit
 func (a *atomicOf[T]) load() (v T) {
 	for i := range unsafe.Sizeof(a.buf) / 4 {
 		src := (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&a.buf)) + i*4))
@@ -21,6 +22,7 @@ func (a *atomicOf[T]) load() (v T) {
 	return v
 }
 
+//go:nosplit
 func (a *atomicOf[T]) store(v T) {
 	for i := range unsafe.Sizeof(a.buf) / 4 {
 		src := (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&v)) + i*4))
@@ -29,10 +31,12 @@ func (a *atomicOf[T]) store(v T) {
 	}
 }
 
+//go:nosplit
 func (a *atomicOf[T]) Raw() *T {
 	return &a.buf
 }
 
+//go:nosplit
 func (a *atomicOf[T]) LoadWithSeq(seq *uint32) (v T) {
 	for {
 		s1 := atomic.LoadUint32(seq)
@@ -51,6 +55,7 @@ func (a *atomicOf[T]) LoadWithSeq(seq *uint32) (v T) {
 	}
 }
 
+//go:nosplit
 func (a *atomicOf[T]) StoreWithSeq(seq *uint32, v T) {
 	for {
 		s := atomic.LoadUint32(seq)
