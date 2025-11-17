@@ -5,6 +5,8 @@ import (
 	"unsafe"
 )
 
+const directLoadStore = true
+
 type atomicOf[T any] struct {
 	_   [0]atomic.Uint32
 	buf T
@@ -37,7 +39,7 @@ func (a *atomicOf[T]) LoadWithSeq(seq *uint32) (v T) {
 		if s1&1 != 0 {
 			continue
 		}
-		if isTSO {
+		if directLoadStore || isTSO {
 			v = a.buf
 		} else {
 			v = a.load()
@@ -56,7 +58,7 @@ func (a *atomicOf[T]) StoreWithSeq(seq *uint32, v T) {
 			continue
 		}
 		if atomic.CompareAndSwapUint32(seq, s, s|1) {
-			if isTSO {
+			if directLoadStore || isTSO {
 				a.buf = v
 			} else {
 				a.store(v)
