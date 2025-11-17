@@ -5,65 +5,153 @@ import (
 	"unsafe"
 )
 
-const directLoadStore = false
-
+// atomicOf[T] is a flat, single-slot publisher for typed T.
+//
+// Purpose:
+//   - Inline storage: no pointer chasing; cache-friendly locality.
+//   - External sequence (uint32) acts like a seqlock (odd=write, even=stable)
+//     to provide tear-free snapshots without pointer indirection.
+//
+// Differences:
+//   - vs atomic.Pointer[T]: avoids heap allocation and indirection; reduces
+//     GC write barriers and improves locality.
+//   - vs atomic.Value: typed, no interface boxing; avoids extra allocation;
+//     uses external sequence for multi-word publication on weak memory models.
+//
+// Concurrency:
+//   - Writers: StoreWithSeq(seq, v) → CAS seq to odd → copy v → store even.
+//   - Readers: LoadWithSeq(seq) → read s1 → copy → read s2 → if equal/even,
+//     snapshot is stable.
+//
+// Platform notes:
+//   - On TSO (amd64/386/s390x), plain copies are sufficient.
+//   - On weak memory models, per-uint32 atomics are used inside the stable
+//     window to ensure visibility for multi-word values.
 type atomicOf[T any] struct {
-	_   [0]atomic.Uint32
+	_   [0]atomic.Uintptr
 	buf T
 }
 
+// Copies buf into v using uintptr-sized atomic loads when alignment
+// and size permit; otherwise falls back to a typed copy. This must be
+// called within a stable window (LoadWithSeq) on weak memory models.
+//
 //go:nosplit
 func (a *atomicOf[T]) load() (v T) {
-	for i := range unsafe.Sizeof(a.buf) / 4 {
-		src := (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&a.buf)) + i*4))
-		dst := (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&v)) + i*4))
-		*dst = atomic.LoadUint32(src)
+	ws := unsafe.Sizeof(uintptr(0))
+	sz := unsafe.Sizeof(a.buf)
+	al := unsafe.Alignof(a.buf)
+	if al >= ws && sz%ws == 0 {
+		n := sz / ws
+		for i := range n {
+			off := i * ws
+			src := (*uintptr)(unsafe.Pointer(
+				uintptr(unsafe.Pointer(&a.buf)) + off,
+			))
+			dst := (*uintptr)(unsafe.Pointer(
+				uintptr(unsafe.Pointer(&v)) + off,
+			))
+			*dst = atomic.LoadUintptr(src)
+		}
+		return v
 	}
+	v = a.buf
 	return v
 }
 
+// Writes v into buf using uintptr-sized atomic stores when alignment
+// and size permit; otherwise falls back to a typed copy. Publication
+// is completed by StoreWithSeq using odd/even fencing.
+//
 //go:nosplit
 func (a *atomicOf[T]) store(v T) {
-	for i := range unsafe.Sizeof(a.buf) / 4 {
-		src := (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&v)) + i*4))
-		dst := (*uint32)(unsafe.Pointer(uintptr(unsafe.Pointer(&a.buf)) + i*4))
-		atomic.StoreUint32(dst, *src)
+	ws := unsafe.Sizeof(uintptr(0))
+	sz := unsafe.Sizeof(a.buf)
+	al := unsafe.Alignof(a.buf)
+	if al >= ws && sz%ws == 0 {
+		n := sz / ws
+		for i := range n {
+			off := i * ws
+			src := (*uintptr)(unsafe.Pointer(
+				uintptr(unsafe.Pointer(&v)) + off,
+			))
+			dst := (*uintptr)(unsafe.Pointer(
+				uintptr(unsafe.Pointer(&a.buf)) + off,
+			))
+			atomic.StoreUintptr(dst, *src)
+		}
+		return
 	}
+	a.buf = v
 }
 
+// Returns the address of the inline buffer. Mutations through this
+// pointer must be guarded by an external lock or odd/even sequence;
+// otherwise readers may observe torn data.
+//
 //go:nosplit
 func (a *atomicOf[T]) Raw() *T {
 	return &a.buf
 }
 
+// LoadWithSeq atomically loads a tear-free snapshot guarded by the external sequence.
+// Spins until seq is even and unchanged across two reads; copying
+// uses plain copy on TSO, and per-word atomics on weak models.
+//
 //go:nosplit
 func (a *atomicOf[T]) LoadWithSeq(seq *uint32) (v T) {
+	switch unsafe.Sizeof(a.buf) {
+	case 0:
+		return
+	case unsafe.Sizeof(uintptr(0)):
+		if unsafe.Alignof(a.buf) >= unsafe.Sizeof(uintptr(0)) {
+			u := atomic.LoadUintptr((*uintptr)(unsafe.Pointer(&a.buf)))
+			*(*uintptr)(unsafe.Pointer(&v)) = u
+			return
+		}
+		// fall through to stable window copy
+	}
 	for {
 		s1 := atomic.LoadUint32(seq)
 		if s1&1 != 0 {
 			continue
 		}
-		if directLoadStore || isTSO {
+		if isTSO {
 			v = a.buf
 		} else {
 			v = a.load()
 		}
 		s2 := atomic.LoadUint32(seq)
 		if s1 == s2 {
-			return v
+			return
 		}
 	}
 }
 
+// StoreWithSeq publishes v guarded by the external sequence.
+// CAS seq to odd (enter write), copy v, then store seq+2 (even)
+// to publish a stable snapshot with release-acquire ordering.
+//
 //go:nosplit
 func (a *atomicOf[T]) StoreWithSeq(seq *uint32, v T) {
+	switch unsafe.Sizeof(a.buf) {
+	case 0:
+		return
+	case unsafe.Sizeof(uintptr(0)):
+		if unsafe.Alignof(a.buf) >= unsafe.Sizeof(uintptr(0)) {
+			u := *(*uintptr)(unsafe.Pointer(&v))
+			atomic.StoreUintptr((*uintptr)(unsafe.Pointer(&a.buf)), u)
+			return
+		}
+		// fall through to fenced publication
+	}
 	for {
 		s := atomic.LoadUint32(seq)
 		if s&1 != 0 {
 			continue
 		}
 		if atomic.CompareAndSwapUint32(seq, s, s|1) {
-			if directLoadStore || isTSO {
+			if isTSO {
 				a.buf = v
 			} else {
 				a.store(v)
