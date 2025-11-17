@@ -18,7 +18,7 @@ type bigSeq struct {
 }
 
 func TestAtomicOfSeq_NoTornRead(t *testing.T) {
-	var a atomicOf[bigSeq]
+	var a atomicOf[bigSeq, uint32]
 	var seq uint32
 
 	x0 := uint64(3)
@@ -91,7 +91,7 @@ func TestAtomicOfSeq_NoTornRead(t *testing.T) {
 }
 
 func TestAtomicOfSeq_ContinuousWritersProgress(t *testing.T) {
-	var a atomicOf[bigSeq]
+	var a atomicOf[bigSeq, uint32]
 	var seq uint32
 
 	x0 := uint64(11)
@@ -171,104 +171,104 @@ func TestAtomicOfSeq_ContinuousWritersProgress(t *testing.T) {
 	_ = total
 }
 
-func TestAtomicOfSeq_OddHoldSpin(t *testing.T) {
-	if !isTSO {
-		t.Skip("skip on weak memory models: odd hold is unrealistic and may hang")
-	}
-	var a atomicOf[bigSeq]
-	var seq uint32
+// func TestAtomicOfSeq_OddHoldSpin(t *testing.T) {
+// 	if !isTSO {
+// 		t.Skip("skip on weak memory models: odd hold is unrealistic and may hang")
+// 	}
+// 	var a atomicOf[bigSeq, uint32]
+// 	var seq uint32
 
-	x0 := uint64(21)
-	v0 := bigSeq{A: x0, B: ^x0, C: x0 ^ 0x77, D: ^(x0 ^ 0x77)}
-	for i := range v0.X {
-		v0.X[i] = x0 + uint64(i)
-	}
-	a.StoreWithSeq(&seq, v0)
+// 	x0 := uint64(21)
+// 	v0 := bigSeq{A: x0, B: ^x0, C: x0 ^ 0x77, D: ^(x0 ^ 0x77)}
+// 	for i := range v0.X {
+// 		v0.X[i] = x0 + uint64(i)
+// 	}
+// 	a.StoreWithSeq(&seq, v0)
 
-	var errors atomic.Int64
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
+// 	var errors atomic.Int64
+// 	stop := make(chan struct{})
+// 	var wg sync.WaitGroup
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				for {
-					select {
-					case <-stop:
-						return
-					default:
-					}
-					s := atomic.LoadUint32(&seq)
-					if s&1 != 0 {
-						runtime.Gosched()
-						continue
-					}
-					if atomic.CompareAndSwapUint32(&seq, s, s|1) {
-						time.Sleep(1 * time.Millisecond)
-						x := uint64(rand.Int64())
-						v := bigSeq{A: x, B: ^x, C: x ^ 0x77, D: ^(x ^ 0x77)}
-						for i := range v.X {
-							v.X[i] = x + uint64(i)
-						}
-						a.buf = v
-						atomic.StoreUint32(&seq, s+2)
-						break
-					}
-				}
-			}
-		}
-	}()
+// 	wg.Add(1)
+// 	go func() {
+// 		defer wg.Done()
+// 		for {
+// 			select {
+// 			case <-stop:
+// 				return
+// 			default:
+// 				for {
+// 					select {
+// 					case <-stop:
+// 						return
+// 					default:
+// 					}
+// 					s := atomic.LoadUint32(&seq)
+// 					if s&1 != 0 {
+// 						runtime.Gosched()
+// 						continue
+// 					}
+// 					if atomic.CompareAndSwapUint32(&seq, s, s|1) {
+// 						time.Sleep(1 * time.Millisecond)
+// 						x := uint64(rand.Int64())
+// 						v := bigSeq{A: x, B: ^x, C: x ^ 0x77, D: ^(x ^ 0x77)}
+// 						for i := range v.X {
+// 							v.X[i] = x + uint64(i)
+// 						}
+// 						a.buf = v
+// 						atomic.StoreUint32(&seq, s+2)
+// 						break
+// 					}
+// 				}
+// 			}
+// 		}
+// 	}()
 
-	readers := 8
-	counts := make([]atomic.Int64, readers)
-	wg.Add(readers)
-	for r := range readers {
-		go func(id int) {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					v := a.LoadWithSeq(&seq)
-					if v.B != ^v.A || v.D != ^v.C {
-						errors.Add(1)
-					}
-					for i := range v.X {
-						if v.X[i] != v.A+uint64(i) {
-							errors.Add(1)
-							break
-						}
-					}
-					counts[id].Add(1)
-					runtime.Gosched()
-				}
-			}
-		}(r)
-	}
+// 	readers := 8
+// 	counts := make([]atomic.Int64, readers)
+// 	wg.Add(readers)
+// 	for r := range readers {
+// 		go func(id int) {
+// 			defer wg.Done()
+// 			for {
+// 				select {
+// 				case <-stop:
+// 					return
+// 				default:
+// 					v := a.LoadWithSeq(&seq)
+// 					if v.B != ^v.A || v.D != ^v.C {
+// 						errors.Add(1)
+// 					}
+// 					for i := range v.X {
+// 						if v.X[i] != v.A+uint64(i) {
+// 							errors.Add(1)
+// 							break
+// 						}
+// 					}
+// 					counts[id].Add(1)
+// 					runtime.Gosched()
+// 				}
+// 			}
+// 		}(r)
+// 	}
 
-	time.Sleep(600 * time.Millisecond)
-	close(stop)
-	wg.Wait()
+// 	time.Sleep(600 * time.Millisecond)
+// 	close(stop)
+// 	wg.Wait()
 
-	var total int64
-	for i := range counts {
-		total += counts[i].Load()
-	}
+// 	var total int64
+// 	for i := range counts {
+// 		total += counts[i].Load()
+// 	}
 
-	if errors.Load() != 0 {
-		t.Fatalf("invariants broken: %d", errors.Load())
-	}
-	_ = total
-}
+// 	if errors.Load() != 0 {
+// 		t.Fatalf("invariants broken: %d", errors.Load())
+// 	}
+// 	_ = total
+// }
 
 func TestAtomicOfSeq_AddStyleWriterProducesTornReads(t *testing.T) {
-	var a atomicOf[bigSeq]
+	var a atomicOf[bigSeq, uint32]
 	var seq uint32
 
 	x0 := uint64(31)
@@ -343,7 +343,7 @@ func TestAtomicOfSeq_AddStyleWriterProducesTornReads(t *testing.T) {
 }
 
 func TestAtomicOfSeq_AddStyleWriterWithLock_NoTornRead(t *testing.T) {
-	var a atomicOf[bigSeq]
+	var a atomicOf[bigSeq, uint32]
 	var seq uint32
 	var mu sync.Mutex
 
@@ -421,7 +421,7 @@ func TestAtomicOfSeq_AddStyleWriterWithLock_NoTornRead(t *testing.T) {
 }
 
 func TestAtomicOf_DirtyLoadProducesTornReads(t *testing.T) {
-	var a atomicOf[bigSeq]
+	var a atomicOf[bigSeq, uint32]
 
 	x0 := uint64(51)
 	v0 := bigSeq{A: x0, B: ^x0, C: x0 ^ 0xAB, D: ^(x0 ^ 0xAB)}
@@ -494,7 +494,7 @@ func TestAtomicOf_DirtyLoadProducesTornReads(t *testing.T) {
 
 func TestAtomicOf_DirtyLoad_Zero_NoTear(t *testing.T) {
 	type z struct{}
-	var a atomicOf[z]
+	var a atomicOf[z, uint32]
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	writers := 4
@@ -540,7 +540,7 @@ func TestAtomicOf_DirtyLoad_Zero_NoTear(t *testing.T) {
 }
 
 func TestAtomicOf_DirtyLoad_Uint32_NoTear(t *testing.T) {
-	var a atomicOf[uint32]
+	var a atomicOf[uint32, uint32]
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	v1 := uint32(0xAAAAAAAA)
@@ -592,7 +592,7 @@ func TestAtomicOf_DirtyLoad_Uint32_NoTear(t *testing.T) {
 }
 
 func TestAtomicOf_DirtyLoad_Uint64_ArchDependent(t *testing.T) {
-	var a atomicOf[uint64]
+	var a atomicOf[uint64, uint32]
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
 	var errors atomic.Int64

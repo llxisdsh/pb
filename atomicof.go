@@ -27,7 +27,7 @@ import (
 //   - On TSO (amd64/386/s390x), plain copies are sufficient.
 //   - On weak memory models, per-uint32 atomics are used inside the stable
 //     window to ensure visibility for multi-word values.
-type atomicOf[T any] struct {
+type atomicOf[T any, SEQ ~uint32 | ~uint64] struct {
 	_   [0]atomic.Uintptr
 	buf T
 }
@@ -37,7 +37,7 @@ type atomicOf[T any] struct {
 // called within a stable window (LoadWithSeq) on weak memory models.
 //
 //go:nosplit
-func (a *atomicOf[T]) load() (v T) {
+func (a *atomicOf[T, SEQ]) load() (v T) {
 	ws := unsafe.Sizeof(uintptr(0))
 	sz := unsafe.Sizeof(a.buf)
 	al := unsafe.Alignof(a.buf)
@@ -64,7 +64,7 @@ func (a *atomicOf[T]) load() (v T) {
 // is completed by StoreWithSeq using odd/even fencing.
 //
 //go:nosplit
-func (a *atomicOf[T]) store(v T) {
+func (a *atomicOf[T, SEQ]) store(v T) {
 	ws := unsafe.Sizeof(uintptr(0))
 	sz := unsafe.Sizeof(a.buf)
 	al := unsafe.Alignof(a.buf)
@@ -90,7 +90,7 @@ func (a *atomicOf[T]) store(v T) {
 // otherwise readers may observe torn data.
 //
 //go:nosplit
-func (a *atomicOf[T]) Raw() *T {
+func (a *atomicOf[T, SEQ]) Raw() *T {
 	return &a.buf
 }
 
@@ -99,7 +99,7 @@ func (a *atomicOf[T]) Raw() *T {
 // uses plain copy on TSO, and per-word atomics on weak models.
 //
 //go:nosplit
-func (a *atomicOf[T]) LoadWithSeq(seq *uint32) (v T) {
+func (a *atomicOf[T, SEQ]) LoadWithSeq(seq *SEQ) (v T) {
 	for {
 		if v, ok := a.TryLoadWithSeq(seq); ok {
 			return v
@@ -108,7 +108,7 @@ func (a *atomicOf[T]) LoadWithSeq(seq *uint32) (v T) {
 }
 
 //go:nosplit
-func (a *atomicOf[T]) TryLoadWithSeq(seq *uint32) (v T, ok bool) {
+func (a *atomicOf[T, SEQ]) TryLoadWithSeq(seq *SEQ) (v T, ok bool) {
 	switch unsafe.Sizeof(a.buf) {
 	case 0:
 		return v, true
@@ -120,18 +120,34 @@ func (a *atomicOf[T]) TryLoadWithSeq(seq *uint32) (v T, ok bool) {
 		}
 		// fall through to stable window copy
 	}
-	s1 := atomic.LoadUint32(seq)
-	if s1&1 != 0 {
-		return v, false
-	}
-	if isTSO {
-		v = a.buf
+	if unsafe.Sizeof(SEQ(0)) == unsafe.Sizeof(uint32(0)) {
+		s1 := atomic.LoadUint32((*uint32)(unsafe.Pointer(seq)))
+		if s1&1 != 0 {
+			return v, false
+		}
+		if isTSO {
+			v = a.buf
+		} else {
+			v = a.load()
+		}
+		s2 := atomic.LoadUint32((*uint32)(unsafe.Pointer(seq)))
+		if s1 == s2 {
+			return v, true
+		}
 	} else {
-		v = a.load()
-	}
-	s2 := atomic.LoadUint32(seq)
-	if s1 == s2 {
-		return v, true
+		s1 := atomic.LoadUint64((*uint64)(unsafe.Pointer(seq)))
+		if s1&1 != 0 {
+			return v, false
+		}
+		if isTSO {
+			v = a.buf
+		} else {
+			v = a.load()
+		}
+		s2 := atomic.LoadUint64((*uint64)(unsafe.Pointer(seq)))
+		if s1 == s2 {
+			return v, true
+		}
 	}
 
 	return v, false
@@ -142,7 +158,7 @@ func (a *atomicOf[T]) TryLoadWithSeq(seq *uint32) (v T, ok bool) {
 // to publish a stable snapshot with release-acquire ordering.
 //
 //go:nosplit
-func (a *atomicOf[T]) StoreWithSeq(seq *uint32, v T) {
+func (a *atomicOf[T, SEQ]) StoreWithSeq(seq *SEQ, v T) {
 	for {
 		if ok := a.TryStoreWithSeq(seq, v); ok {
 			return
@@ -151,7 +167,7 @@ func (a *atomicOf[T]) StoreWithSeq(seq *uint32, v T) {
 }
 
 //go:nosplit
-func (a *atomicOf[T]) TryStoreWithSeq(seq *uint32, v T) (ok bool) {
+func (a *atomicOf[T, SEQ]) TryStoreWithSeq(seq *SEQ, v T) (ok bool) {
 	switch unsafe.Sizeof(a.buf) {
 	case 0:
 		return true
@@ -163,18 +179,35 @@ func (a *atomicOf[T]) TryStoreWithSeq(seq *uint32, v T) (ok bool) {
 		}
 		// fall through to fenced publication
 	}
-	s := atomic.LoadUint32(seq)
-	if s&1 != 0 {
+	if unsafe.Sizeof(SEQ(0)) == unsafe.Sizeof(uint32(0)) {
+		s := atomic.LoadUint32((*uint32)(unsafe.Pointer(seq)))
+		if s&1 != 0 {
+			return false
+		}
+		if atomic.CompareAndSwapUint32((*uint32)(unsafe.Pointer(seq)), s, s|1) {
+			if isTSO {
+				a.buf = v
+			} else {
+				a.store(v)
+			}
+			atomic.StoreUint32((*uint32)(unsafe.Pointer(seq)), s+2)
+			return true
+		}
+		return false
+	} else {
+		s := atomic.LoadUint64((*uint64)(unsafe.Pointer(seq)))
+		if s&1 != 0 {
+			return false
+		}
+		if atomic.CompareAndSwapUint64((*uint64)(unsafe.Pointer(seq)), s, s|1) {
+			if isTSO {
+				a.buf = v
+			} else {
+				a.store(v)
+			}
+			atomic.StoreUint64((*uint64)(unsafe.Pointer(seq)), s+2)
+			return true
+		}
 		return false
 	}
-	if atomic.CompareAndSwapUint32(seq, s, s|1) {
-		if isTSO {
-			a.buf = v
-		} else {
-			a.store(v)
-		}
-		atomic.StoreUint32(seq, s+2)
-		return true
-	}
-	return false
 }
