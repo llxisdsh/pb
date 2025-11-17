@@ -172,6 +172,9 @@ func TestAtomicOfSeq_ContinuousWritersProgress(t *testing.T) {
 }
 
 func TestAtomicOfSeq_OddHoldSpin(t *testing.T) {
+	if !isTSO {
+		t.Skip("skip on weak memory models: odd hold is unrealistic and may hang")
+	}
 	var a atomicOf[bigSeq]
 	var seq uint32
 
