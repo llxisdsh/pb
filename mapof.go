@@ -425,7 +425,6 @@ func (b *bucketOf) Lock() {
 	b.slowLock()
 }
 
-//go:nosplit
 func (b *bucketOf) slowLock() {
 	var spins int
 	for !b.tryLock() {
