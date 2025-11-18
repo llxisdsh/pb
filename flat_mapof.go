@@ -191,11 +191,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	}
 
 	var meta uint64
-	type kvEntry struct {
-		k K
-		v V
-	}
-	var cache [entriesPerBucket]kvEntry
+	var cache [entriesPerBucket]flatEntry[K, V]
 	var cacheCount int
 	for i := 0; i <= table.mask; i++ {
 		root := table.buckets.At(i)
@@ -206,14 +202,13 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 					cacheCount = 0
 					for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 						j := firstMarkedByteIndex(marked)
-						e := b.At(j).Ptr()
-						cache[cacheCount] = kvEntry{k: e.key, v: e.value}
+						cache[cacheCount] = b.At(j).ReadUnfenced()
 						cacheCount++
 					}
 					if b.seq.EndRead(s1) {
 						for j := range cacheCount {
 							kv := &cache[j]
-							if !yield(kv.k, kv.v) {
+							if !yield(kv.key, kv.value) {
 								return
 							}
 						}
