@@ -64,4 +64,42 @@ jobs:
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           slug: llxisdsh/pb
+
+  test-arm32:
+    name: Run tests on linux/arm32
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+          check-latest: true
+
+      - name: Install QEMU user emulators
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user
+
+      - name: Run tests (ARM 32-bit via QEMU)
+        env:
+          GOOS: linux
+          GOARCH: arm
+          GOARM: '7'
+          CGO_ENABLED: '0'
+        run: |
+          go version
+          go mod download
+          go test -v -exec "qemu-arm" ./...
+
+      # - name: Upload results to Codecov (ARM32)
+      #   uses: codecov/codecov-action@v5
+      #   with:
+      #     token: ${{ secrets.CODECOV_TOKEN }}
+      #     slug: llxisdsh/pb
+      #     files: coverage_arm32.txt
           
