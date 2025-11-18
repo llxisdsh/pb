@@ -973,21 +973,3 @@ func (b *flatBucket[K, V]) tryLock() bool {
 func (b *flatBucket[K, V]) Unlock() {
 	atomic.StoreUint64(&b.meta, b.meta&^opLockMask)
 }
-
-// // atomicUint64 wraps atomic.Uint64 to leverage its built-in
-// // alignment capabilities. The primary purpose is to ensure
-// // 8-byte alignment on 32-bit architectures, where atomic.Uint64
-// // guarantees proper alignment for atomic operations.
-// type atomicUint64 struct {
-// 	atomic.Uint64
-// }
-
-// //go:nosplit
-// func makeAtomicUint64(v uint64) atomicUint64 {
-// 	return *(*atomicUint64)(unsafe.Pointer(&v))
-// }
-
-// //go:nosplit
-// func (a *atomicUint64) Ptr() *uint64 {
-// 	return (*uint64)(unsafe.Pointer(a))
-// }
