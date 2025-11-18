@@ -9717,7 +9717,7 @@ func TestMapOf_RangeProcess_TornReadDetection_Stress(t *testing.T) {
 
 	// Initialize with complex values maintaining multiple invariants
 	for i := range N {
-		id := uint64(i * 0x123456789ABCDEF)
+		id := uint64(i) * 0x123456789ABCDEF
 		val := complexValue{
 			ID:       id,
 			Checksum: ^id,

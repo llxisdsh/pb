@@ -161,7 +161,7 @@ func (sl *seqlock[SEQ, T]) EndWriteLocked() {
 //   - ReadUnfenced/WriteUnfenced must run under a seqlock-stable window or
 //     an external lock; otherwise torn reads/writes are possible.
 type seqlockSlot[T any] struct {
-	_   [0]atomic.Uintptr
+	_   [0]atomic.Uint64
 	buf T
 }
 
@@ -171,13 +171,19 @@ type seqlockSlot[T any] struct {
 //
 //go:nosplit
 func (slot *seqlockSlot[T]) ReadUnfenced() (v T) {
-	if isTSO {
+	if isTSO && unsafe.Sizeof(slot.buf) <= unsafe.Sizeof(uintptr(0)) {
 		return slot.buf
 	}
 
 	switch unsafe.Sizeof(slot.buf) {
 	case 0:
 		return v
+	case unsafe.Sizeof(uint64(0)):
+		if uintptr(unsafe.Pointer(&slot.buf))%unsafe.Sizeof(uint64(0)) == 0 {
+			u := atomic.LoadUint64((*uint64)(unsafe.Pointer(&slot.buf)))
+			*(*uint64)(unsafe.Pointer(&v)) = u
+			return v
+		}
 	case unsafe.Sizeof(uintptr(0)):
 		if unsafe.Alignof(slot.buf) >= unsafe.Sizeof(uintptr(0)) {
 			u := atomic.LoadUintptr((*uintptr)(unsafe.Pointer(&slot.buf)))
@@ -214,7 +220,7 @@ func (slot *seqlockSlot[T]) ReadUnfenced() (v T) {
 //
 //go:nosplit
 func (slot *seqlockSlot[T]) WriteUnfenced(v T) {
-	if isTSO {
+	if isTSO && unsafe.Sizeof(slot.buf) <= unsafe.Sizeof(uintptr(0)) {
 		slot.buf = v
 		return
 	}
@@ -222,6 +228,12 @@ func (slot *seqlockSlot[T]) WriteUnfenced(v T) {
 	switch unsafe.Sizeof(slot.buf) {
 	case 0:
 		return
+	case unsafe.Sizeof(uint64(0)):
+		if uintptr(unsafe.Pointer(&slot.buf))%unsafe.Sizeof(uint64(0)) == 0 {
+			u := *(*uint64)(unsafe.Pointer(&v))
+			atomic.StoreUint64((*uint64)(unsafe.Pointer(&slot.buf)), u)
+			return
+		}
 	case unsafe.Sizeof(uintptr(0)):
 		if unsafe.Alignof(slot.buf) >= unsafe.Sizeof(uintptr(0)) {
 			u := *(*uintptr)(unsafe.Pointer(&v))

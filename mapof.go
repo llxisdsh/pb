@@ -3093,9 +3093,11 @@ func spread(h uintptr) uintptr {
 	// 0x9e3779b1 is the golden ratio hash constant (32-bit)
 	// For 64-bit systems, we use 0x9e3779b97f4a7c15
 	if unsafe.Sizeof(h) == 8 {
-		h *= 0x9e3779b97f4a7c15
+		var c64 uint64 = 0x9e3779b97f4a7c15
+		h *= uintptr(c64)
 	} else {
-		h *= 0x9e3779b1
+		var c32 uint32 = 0x9e3779b1
+		h *= uintptr(c32)
 	}
 	return h
 }
