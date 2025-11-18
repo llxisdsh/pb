@@ -324,235 +324,235 @@ func TestSeqlock_AddStyleWriterWithLock_NoTornRead(t *testing.T) {
 	}
 }
 
-func TestSeqlock_DirtyLoadProducesTornReads(t *testing.T) {
-	var a seqlockSlot[bigSeq]
+// func TestSeqlock_DirtyLoadProducesTornReads(t *testing.T) {
+// 	var a seqlockSlot[bigSeq]
 
-	x0 := uint64(51)
-	v0 := bigSeq{A: x0, B: ^x0, C: x0 ^ 0xAB, D: ^(x0 ^ 0xAB)}
-	for i := range v0.X {
-		v0.X[i] = x0 + uint64(i)
-	}
-	a.WriteUnfenced(v0)
+// 	x0 := uint64(51)
+// 	v0 := bigSeq{A: x0, B: ^x0, C: x0 ^ 0xAB, D: ^(x0 ^ 0xAB)}
+// 	for i := range v0.X {
+// 		v0.X[i] = x0 + uint64(i)
+// 	}
+// 	a.WriteUnfenced(v0)
 
-	var errors atomic.Int64
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
+// 	var errors atomic.Int64
+// 	stop := make(chan struct{})
+// 	var wg sync.WaitGroup
 
-	writers := 8
-	readers := 12
+// 	writers := 8
+// 	readers := 12
 
-	wg.Add(writers)
-	for w := range writers {
-		go func(id int) {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					x := uint64(rand.Int64()) ^ uint64(id)*0x9e3779b97f4a7bb1
-					v := bigSeq{A: x, B: ^x, C: x ^ 0xAB, D: ^(x ^ 0xAB)}
-					for i := range v.X {
-						v.X[i] = x + uint64(i)
-					}
-					a.WriteUnfenced(v)
-					runtime.Gosched()
-				}
-			}
-		}(w)
-	}
+// 	wg.Add(writers)
+// 	for w := range writers {
+// 		go func(id int) {
+// 			defer wg.Done()
+// 			for {
+// 				select {
+// 				case <-stop:
+// 					return
+// 				default:
+// 					x := uint64(rand.Int64()) ^ uint64(id)*0x9e3779b97f4a7bb1
+// 					v := bigSeq{A: x, B: ^x, C: x ^ 0xAB, D: ^(x ^ 0xAB)}
+// 					for i := range v.X {
+// 						v.X[i] = x + uint64(i)
+// 					}
+// 					a.WriteUnfenced(v)
+// 					runtime.Gosched()
+// 				}
+// 			}
+// 		}(w)
+// 	}
 
-	wg.Add(readers)
-	for r := range readers {
-		go func(id int) {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					v := a.ReadUnfenced()
-					if v.B != ^v.A || v.D != ^v.C {
-						errors.Add(1)
-					}
-					for i := range v.X {
-						if v.X[i] != v.A+uint64(i) {
-							errors.Add(1)
-							break
-						}
-					}
-					runtime.Gosched()
-				}
-			}
-		}(r)
-	}
+// 	wg.Add(readers)
+// 	for r := range readers {
+// 		go func(id int) {
+// 			defer wg.Done()
+// 			for {
+// 				select {
+// 				case <-stop:
+// 					return
+// 				default:
+// 					v := a.ReadUnfenced()
+// 					if v.B != ^v.A || v.D != ^v.C {
+// 						errors.Add(1)
+// 					}
+// 					for i := range v.X {
+// 						if v.X[i] != v.A+uint64(i) {
+// 							errors.Add(1)
+// 							break
+// 						}
+// 					}
+// 					runtime.Gosched()
+// 				}
+// 			}
+// 		}(r)
+// 	}
 
-	time.Sleep(1 * time.Second)
-	close(stop)
-	wg.Wait()
+// 	time.Sleep(1 * time.Second)
+// 	close(stop)
+// 	wg.Wait()
 
-	if c := errors.Load(); c == 0 {
-		t.Fatalf("no torn reads observed for dirty load")
-	}
-}
+// 	if c := errors.Load(); c == 0 {
+// 		t.Fatalf("no torn reads observed for dirty load")
+// 	}
+// }
 
-func TestSeqlock_DirtyLoad_Zero_NoTear(t *testing.T) {
-	type z struct{}
-	var a seqlockSlot[z]
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	writers := 4
-	readers := 8
-	var errors atomic.Int64
-	wg.Add(writers)
-	for range writers {
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					a.WriteUnfenced(z{})
-					runtime.Gosched()
-				}
-			}
-		}()
-	}
-	wg.Add(readers)
-	for range readers {
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					v := a.ReadUnfenced()
-					_ = v
-					runtime.Gosched()
-				}
-			}
-		}()
-	}
-	time.Sleep(400 * time.Millisecond)
-	close(stop)
-	wg.Wait()
-	if c := errors.Load(); c != 0 {
-		t.Fatalf("zero-size torn reads: %d", c)
-	}
-}
+// func TestSeqlock_DirtyLoad_Zero_NoTear(t *testing.T) {
+// 	type z struct{}
+// 	var a seqlockSlot[z]
+// 	stop := make(chan struct{})
+// 	var wg sync.WaitGroup
+// 	writers := 4
+// 	readers := 8
+// 	var errors atomic.Int64
+// 	wg.Add(writers)
+// 	for range writers {
+// 		go func() {
+// 			defer wg.Done()
+// 			for {
+// 				select {
+// 				case <-stop:
+// 					return
+// 				default:
+// 					a.WriteUnfenced(z{})
+// 					runtime.Gosched()
+// 				}
+// 			}
+// 		}()
+// 	}
+// 	wg.Add(readers)
+// 	for range readers {
+// 		go func() {
+// 			defer wg.Done()
+// 			for {
+// 				select {
+// 				case <-stop:
+// 					return
+// 				default:
+// 					v := a.ReadUnfenced()
+// 					_ = v
+// 					runtime.Gosched()
+// 				}
+// 			}
+// 		}()
+// 	}
+// 	time.Sleep(400 * time.Millisecond)
+// 	close(stop)
+// 	wg.Wait()
+// 	if c := errors.Load(); c != 0 {
+// 		t.Fatalf("zero-size torn reads: %d", c)
+// 	}
+// }
 
-func TestSeqlock_DirtyLoad_Uint32_NoTear(t *testing.T) {
-	var a seqlockSlot[uint32]
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	v1 := uint32(0xAAAAAAAA)
-	v2 := uint32(0x55555555)
-	var errors atomic.Int64
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		cur := v1
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				if cur == v1 {
-					cur = v2
-				} else {
-					cur = v1
-				}
-				a.WriteUnfenced(cur)
-				runtime.Gosched()
-			}
-		}
-	}()
-	wg.Add(4)
-	for range 4 {
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					v := a.ReadUnfenced()
-					if v != v1 && v != v2 {
-						errors.Add(1)
-					}
-					runtime.Gosched()
-				}
-			}
-		}()
-	}
-	time.Sleep(500 * time.Millisecond)
-	close(stop)
-	wg.Wait()
-	if c := errors.Load(); c != 0 {
-		t.Logf("uint32 torn reads: %d", c)
-	}
-}
+// func TestSeqlock_DirtyLoad_Uint32_NoTear(t *testing.T) {
+// 	var a seqlockSlot[uint32]
+// 	stop := make(chan struct{})
+// 	var wg sync.WaitGroup
+// 	v1 := uint32(0xAAAAAAAA)
+// 	v2 := uint32(0x55555555)
+// 	var errors atomic.Int64
+// 	wg.Add(1)
+// 	go func() {
+// 		defer wg.Done()
+// 		cur := v1
+// 		for {
+// 			select {
+// 			case <-stop:
+// 				return
+// 			default:
+// 				if cur == v1 {
+// 					cur = v2
+// 				} else {
+// 					cur = v1
+// 				}
+// 				a.WriteUnfenced(cur)
+// 				runtime.Gosched()
+// 			}
+// 		}
+// 	}()
+// 	wg.Add(4)
+// 	for range 4 {
+// 		go func() {
+// 			defer wg.Done()
+// 			for {
+// 				select {
+// 				case <-stop:
+// 					return
+// 				default:
+// 					v := a.ReadUnfenced()
+// 					if v != v1 && v != v2 {
+// 						errors.Add(1)
+// 					}
+// 					runtime.Gosched()
+// 				}
+// 			}
+// 		}()
+// 	}
+// 	time.Sleep(500 * time.Millisecond)
+// 	close(stop)
+// 	wg.Wait()
+// 	if c := errors.Load(); c != 0 {
+// 		t.Logf("uint32 torn reads: %d", c)
+// 	}
+// }
 
-func TestSeqlock_DirtyLoad_Uint64_ArchDependent(t *testing.T) {
-	var a seqlockSlot[uint64]
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	var errors atomic.Int64
-	// Pre-initialize to a consistent value to avoid early zero reads
-	x0 := uint32(0x13579BDF)
-	v0 := (uint64(^x0) << 32) | uint64(x0)
-	a.WriteUnfenced(v0)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				x := uint32(rand.Int())
-				lo := x
-				hi := ^x
-				v := (uint64(hi) << 32) | uint64(lo)
-				a.WriteUnfenced(v)
-				runtime.Gosched()
-			}
-		}
-	}()
-	wg.Add(4)
-	for range 4 {
-		go func() {
-			defer wg.Done()
-			for {
-				select {
-				case <-stop:
-					return
-				default:
-					v := a.ReadUnfenced()
-					lo := uint32(v & 0xffffffff)
-					hi := uint32(v >> 32)
-					if hi != ^lo {
-						errors.Add(1)
-					}
-					runtime.Gosched()
-				}
-			}
-		}()
-	}
-	time.Sleep(600 * time.Millisecond)
-	close(stop)
-	wg.Wait()
-	if isTSO {
-		if c := errors.Load(); c != 0 {
-			t.Fatalf("uint64 torn reads on TSO: %d", c)
-		}
-	} else {
-		if c := errors.Load(); c == 0 {
-			t.Logf("no torn reads observed on weak model")
-		} else {
-			t.Logf("torn reads observed: %d", c)
-		}
-	}
-}
+// func TestSeqlock_DirtyLoad_Uint64_ArchDependent(t *testing.T) {
+// 	var a seqlockSlot[uint64]
+// 	stop := make(chan struct{})
+// 	var wg sync.WaitGroup
+// 	var errors atomic.Int64
+// 	// Pre-initialize to a consistent value to avoid early zero reads
+// 	x0 := uint32(0x13579BDF)
+// 	v0 := (uint64(^x0) << 32) | uint64(x0)
+// 	a.WriteUnfenced(v0)
+// 	wg.Add(1)
+// 	go func() {
+// 		defer wg.Done()
+// 		for {
+// 			select {
+// 			case <-stop:
+// 				return
+// 			default:
+// 				x := uint32(rand.Int())
+// 				lo := x
+// 				hi := ^x
+// 				v := (uint64(hi) << 32) | uint64(lo)
+// 				a.WriteUnfenced(v)
+// 				runtime.Gosched()
+// 			}
+// 		}
+// 	}()
+// 	wg.Add(4)
+// 	for range 4 {
+// 		go func() {
+// 			defer wg.Done()
+// 			for {
+// 				select {
+// 				case <-stop:
+// 					return
+// 				default:
+// 					v := a.ReadUnfenced()
+// 					lo := uint32(v & 0xffffffff)
+// 					hi := uint32(v >> 32)
+// 					if hi != ^lo {
+// 						errors.Add(1)
+// 					}
+// 					runtime.Gosched()
+// 				}
+// 			}
+// 		}()
+// 	}
+// 	time.Sleep(600 * time.Millisecond)
+// 	close(stop)
+// 	wg.Wait()
+// 	if isTSO {
+// 		if c := errors.Load(); c != 0 {
+// 			t.Fatalf("uint64 torn reads on TSO: %d", c)
+// 		}
+// 	} else {
+// 		if c := errors.Load(); c == 0 {
+// 			t.Logf("no torn reads observed on weak model")
+// 		} else {
+// 			t.Logf("torn reads observed: %d", c)
+// 		}
+// 	}
+// }

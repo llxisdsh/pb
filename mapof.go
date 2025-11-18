@@ -397,7 +397,7 @@ func WithBuiltInHasher[T comparable]() func(*MapConfig) {
 type bucketOf struct {
 	// meta: SWAR-optimized metadata for fast entry lookups
 	// (must be 64-bit aligned)
-	_    [0]int64
+	_    [0]atomic.Uint64
 	meta uint64
 
 	// Cache line padding to prevent false sharing
