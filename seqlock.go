@@ -78,8 +78,6 @@ func (sl *seqlock[SEQ, T]) slowWrite(slot *seqlockSlot[T], v T) {
 
 // WriteLocked publishes v using in-lock odd/even increments.
 // Only safe when an external lock is held; avoids CAS by using add.
-//
-//go:nosplit
 func (sl *seqlock[SEQ, T]) WriteLocked(slot *seqlockSlot[T], v T) {
 	sl.BeginWriteLocked()
 	slot.WriteUnfenced(v)
@@ -187,8 +185,6 @@ type seqlockSlot[T any] struct {
 // ReadUnfenced copies buf into v using uintptr-sized atomic loads when
 // alignment and size permit; otherwise falls back to a typed copy.
 // Must be called under a lock or within a seqlock-stable window.
-//
-//go:nosplit
 func (slot *seqlockSlot[T]) ReadUnfenced() (v T) {
 	if isTSO {
 		return slot.buf
@@ -230,8 +226,6 @@ func (slot *seqlockSlot[T]) ReadUnfenced() (v T) {
 // WriteUnfenced writes v into buf using uintptr-sized atomic stores when
 // alignment and size permit; otherwise falls back to a typed copy.
 // Must be called under a lock or within a seqlock-stable window.
-//
-//go:nosplit
 func (slot *seqlockSlot[T]) WriteUnfenced(v T) {
 	if isTSO {
 		slot.buf = v

@@ -3314,7 +3314,6 @@ func trySpin(spins *int) bool {
 	return false
 }
 
-//go:nosplit
 func delay(spins *int) {
 	if trySpin(spins) {
 		return
