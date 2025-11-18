@@ -827,18 +827,8 @@ and C++'s absl::flat_hash_map (meta memory and SWAR-based lookups).
 
 FlatMapOf is a seqlock-based, flat-layout concurrent hash table. The table and key/value entries are stored inline to minimize pointer chasing and cache misses, providing more stable latency and throughput even for cold working sets.
 
-> Important — Memory Model Requirements (TSO only)
->
-> FlatMapOf targets strongly ordered memory models (TSO). It is supported
-> and built only on `GOARCH=amd64`, `386` and `s390x`. On weakly ordered
-> architectures (e.g., `arm`, `arm64`, `riscv64`, `ppc64`), the seqlock-based
-> read path does not provide the required visibility guarantees, so
-> `flat_mapof*` is deliberately excluded from builds. Use `MapOf` on those
-> platforms.
-
-
 Design and concurrency semantics (overview)
-- Read path (seqlock validation): Each bucket maintains a sequence. Readers load s1; if s1 is even, they read metadata/entries and then load s2. If s1==s2 (and even), the read is consistent; otherwise, readers spin and retry, and, if needed, fall back to a short locked slow path.
+- Read path (seqlock validation): Each bucket maintains a sequence. Readers load s1; if s1 is even, they read metadata/entries and then load s2. If s1==s2 (and even), the read is consistent; otherwise, readers spin and retry.
 - Write path (ordered publication): While holding the root-bucket lock (opLock), flip the bucket sequence to odd (enter write state) → apply modifications → flip back to even (publish a consistent view), and finally release the root lock.
 - Resizing (parallel copy): A help–copy–publish protocol partitions the table and migrates buckets in parallel. When migration completes, the new table is atomically published. Ongoing reads/writes are minimally affected.
 
@@ -847,8 +837,9 @@ Memory layout and cache behavior
 - Value size: V is not limited by machine word size; any value type is supported. Note that large V increases the per-bucket footprint (see “Limitations”).
 
 Time and space characteristics (intuition)
-- Expected complexity: Load/Store are amortized O(1) under uniform hashing and a reasonable load factor.
-- Progress guarantees: Reads are lock-free in the absence of write contention; under contention, they use spin + backoff and fall back to a short locked slow path to avoid livelock. Writes are protected by fine-grained, bucket-level mutual exclusion.
+- Load/Store: amortized O(1) under uniform hashing and reasonable load.
+- Progress: reads lock-free without contention; under contention, spin + backoff; writes use bucket-level mutual exclusion.
+- Latency: inline layout reduces pointer chasing and improves p99/p999 stability on cold sets.
 
 Systematic comparison with MapOf
 - Concurrency control model:
@@ -858,7 +849,7 @@ Systematic comparison with MapOf
   - FlatMapOf: the inline layout avoids multi-hop pointer chasing under cold states, yielding more predictable hit latency and smoother tail latency.
   - MapOf: extremely fast for hot data; with colder data and more cross-object pointer traversals, latency stability can be slightly worse than FlatMapOf.
 - Writes and contention:
-  - FlatMapOf: writes toggle bucket sequences and hold the root lock; under sustained high write contention, reads may experience bounded retries or slow-path fallbacks, and throughput may degrade earlier than in a read-optimized MapOf.
+  - FlatMapOf: writes toggle bucket sequences and hold the root lock; under sustained high write contention, reads may experience bounded retries, and throughput may degrade earlier than in a read-optimized MapOf.
   - MapOf: pointer-level updates with a mature write path; often easier to sustain throughput in write-heavy scenarios.
 - Memory footprint and density:
   - FlatMapOf: inline entries avoid “one allocation per entry,” but incur “hole cost” (reserved space in partially filled buckets); when V is large or occupancy is sparse, bucket size inflation increases baseline memory usage.
@@ -876,10 +867,8 @@ Advantages (FlatMapOf)
 
 Limitations and caveats (FlatMapOf)
 - Large V or sparse occupancy amplifies the “hole cost,” increasing memory consumption.
-- Under sustained write contention with longer critical sections, reads may retry or fall back to the slow path, reducing throughput.
+- Under sustained write contention with longer critical sections, reads may retry, reducing throughput.
 - Dedicated CompareAnd* convenience APIs are currently unavailable; use Process to compose equivalent atomic semantics.
-- Memory model requirement: TSO-only. On weakly ordered architectures
-  (ARM/ARM64/RISC-V/PPC), prefer `MapOf`.
 
 Usage guidance and boundaries
 - Prefer FlatMapOf for:
