@@ -33,6 +33,7 @@ type seqlock[SEQ ~uint32 | ~uint64 | ~uintptr, T any] struct {
 //
 //go:nosplit
 func (sl *seqlock[SEQ, T]) Read(slot *seqlockSlot[T]) (v T) {
+	var spins int
 	for {
 		if s1, ok := sl.BeginRead(); ok {
 			v = slot.ReadUnfenced()
@@ -40,6 +41,7 @@ func (sl *seqlock[SEQ, T]) Read(slot *seqlockSlot[T]) (v T) {
 				return v
 			}
 		}
+		delay(&spins)
 	}
 }
 

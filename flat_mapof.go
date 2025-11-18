@@ -196,6 +196,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	for i := 0; i <= table.mask; i++ {
 		root := table.buckets.At(i)
 		for b := root; b != nil; b = (*flatBucket[K, V])(atomic.LoadPointer(&b.next)) {
+			var spins int
 			for {
 				if s1, ok := b.seq.BeginRead(); ok {
 					meta = atomic.LoadUint64(&b.meta)
@@ -215,6 +216,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 						break
 					}
 				}
+				delay(&spins)
 			}
 		}
 	}
