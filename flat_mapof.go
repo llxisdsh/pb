@@ -717,7 +717,7 @@ func (m *FlatMapOf[K, V]) finalizeResize(
 	var newTable flatTable[K, V]
 	newTable.makeTable(newLen, cpus)
 	// Release rs
-	m.tableSeq.WriteLocked(&rs.newTable, newTable)
+	rs.newTableSeq.WriteLocked(&rs.newTable, newTable)
 	m.helpCopyAndWait(rs)
 }
 
@@ -726,7 +726,7 @@ func (m *FlatMapOf[K, V]) helpCopyAndWait(rs *flatRebuildState[K, V]) {
 	table := m.table.Ptr()
 	tableLen := table.mask + 1
 	// Acquire rs
-	newTable := m.tableSeq.Read(&rs.newTable)
+	newTable := rs.newTableSeq.Read(&rs.newTable)
 	chunks := rs.chunks
 	chunkSz := (tableLen + int(chunks) - 1) / int(chunks)
 	isGrowth := (newTable.mask + 1) > tableLen
