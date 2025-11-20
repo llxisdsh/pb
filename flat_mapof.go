@@ -352,7 +352,7 @@ func (m *FlatMapOf[K, V]) Process(
 		if rs := (*flatRebuildState[K, V])(atomic.LoadPointer(&m.rs)); rs != nil {
 			switch rs.hint {
 			case mapGrowHint, mapShrinkHint:
-				if rs.newTableSeq.Read(&rs.newTable).buckets.ptr != nil {
+				if rs.newTableSeq.WriteCompleted() {
 					root.Unlock()
 					m.helpCopyAndWait(rs)
 					continue
@@ -645,7 +645,7 @@ func (m *FlatMapOf[K, V]) rebuild(
 		if rs := (*flatRebuildState[K, V])(atomic.LoadPointer(&m.rs)); rs != nil {
 			switch rs.hint {
 			case mapGrowHint, mapShrinkHint:
-				if rs.newTableSeq.Read(&rs.newTable).buckets.ptr != nil {
+				if rs.newTableSeq.WriteCompleted() {
 					m.helpCopyAndWait(rs)
 				} else {
 					runtime.Gosched()
@@ -716,17 +716,19 @@ func (m *FlatMapOf[K, V]) finalizeResize(
 	rs.chunks = int32(chunks)
 	var newTable flatTable[K, V]
 	newTable.makeTable(newLen, cpus)
-	// Release rs
-	rs.newTableSeq.WriteLocked(&rs.newTable, newTable)
+	rs.newTableSeq.WriteLocked(&rs.newTable, newTable) // Release rs
 	m.helpCopyAndWait(rs)
 }
 
 //go:noinline
 func (m *FlatMapOf[K, V]) helpCopyAndWait(rs *flatRebuildState[K, V]) {
-	table := m.table.Ptr()
+	table := m.tableSeq.Read(&m.table)
+	newTable := rs.newTableSeq.Read(&rs.newTable) // Acquire rs
+	if newTable.buckets.ptr == table.buckets.ptr {
+		rs.wg.Wait()
+		return
+	}
 	tableLen := table.mask + 1
-	// Acquire rs
-	newTable := rs.newTableSeq.Read(&rs.newTable)
 	chunks := rs.chunks
 	chunkSz := (tableLen + int(chunks) - 1) / int(chunks)
 	isGrowth := (newTable.mask + 1) > tableLen
@@ -740,9 +742,9 @@ func (m *FlatMapOf[K, V]) helpCopyAndWait(rs *flatRebuildState[K, V]) {
 		start := int(process) * chunkSz
 		end := min(start+chunkSz, tableLen)
 		if isGrowth {
-			m.copyBucket(table, start, end, &newTable)
+			m.copyBucket(&table, start, end, &newTable)
 		} else {
-			m.copyBucketLock(table, start, end, &newTable)
+			m.copyBucketLock(&table, start, end, &newTable)
 		}
 		if atomic.AddInt32(&rs.completed, 1) == chunks {
 			m.tableSeq.WriteLocked(&m.table, newTable)

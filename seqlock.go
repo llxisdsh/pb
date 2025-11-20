@@ -166,6 +166,19 @@ func (sl *seqlock[SEQ, T]) EndWriteLocked() {
 	}
 }
 
+// WriteCompleted returns true if seq is non-zero and even.
+//
+//go:nosplit
+func (sl *seqlock[SEQ, T]) WriteCompleted() (ok bool) {
+	if unsafe.Sizeof(SEQ(0)) == unsafe.Sizeof(uint32(0)) {
+		s1 := SEQ(atomic.LoadUint32((*uint32)(unsafe.Pointer(&sl.seq))))
+		return s1 != 0 && s1&1 == 0
+	} else {
+		s1 := SEQ(atomic.LoadUint64((*uint64)(unsafe.Pointer(&sl.seq))))
+		return s1 != 0 && s1&1 == 0
+	}
+}
+
 // seqlockSlot[T] holds an inline buffer of T. Used with seqlock to
 // publish tear-free snapshots.
 //
