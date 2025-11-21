@@ -21,17 +21,33 @@ const (
 	opLockMask   = uint64(1) << (opByteIdx*8 + 7)
 	metaDataMask = uint64(0x00ffffffffffffff)
 
-	// entriesPerBucket defines the number of entries per bucket.
-	// Calculated to fit within a cache line, with a maximum of 8 entries
-	// (upper limit supported by the meta-field).
-	entriesPerBucket = min(
-		opByteIdx,
-		(int(CacheLineSize)-int(unsafe.Sizeof(struct {
-			meta uint64
-			// entries [entriesPerBucket]unsafe.Pointer
-			next unsafe.Pointer
-		}{})))/int(unsafe.Sizeof(unsafe.Pointer(nil))),
-	)
+	// entriesPerBucket defines the number of per-bucket entry pointers.
+	// Computed at compile time to avoid padding while packing buckets
+	// tightly within cache lines.
+	//
+	// Calculation:
+	//   ptrSize  = sizeof(unsafe.Pointer)
+	//   overhead = 8(meta) + ptrSize(next)
+	//   target   = min(CacheLineSize, base)
+	//   base     = 32 on 32-bit, 64 on 64-bit
+	//   entries  = min(7, (target - overhead) / ptrSize)
+	//
+	// Rationale:
+	//   - 64-bit: bucket size becomes 64B → 1/2/4 buckets per
+	//     64/128/256B cache line, with no per-bucket padding.
+	//   - 32-bit: bucket size becomes 32B → 2/4/8 buckets per
+	//     64/128/256B cache line, also without padding.
+	//
+	// Example outcomes (ptrSize, CacheLineSize → entries):
+	//   (8,  32) → 2  ; (8,  64) → 6 ; (8, 128) → 6 ; (8, 256) → 6
+	//   (4,  32) → 5  ; (4,  64) → 5 ; (4, 128) → 5 ; (4, 256) → 5
+	pointerSize    = int(unsafe.Sizeof(unsafe.Pointer(nil)))
+	bucketOverhead = int(unsafe.Sizeof(struct {
+		meta uint64
+		next unsafe.Pointer
+	}{}))
+	maxBucketBytes   = min(int(CacheLineSize), 32+32*(pointerSize/8))
+	entriesPerBucket = min(opByteIdx, (maxBucketBytes-bucketOverhead)/pointerSize)
 
 	// Metadata constants for bucket entry management
 	emptyMeta uint64 = 0
@@ -91,19 +107,21 @@ const (
 // Notes:
 //   - MapOf must not be copied after first use.
 type MapOf[K comparable, V any] struct {
-	_ [(CacheLineSize - unsafe.Sizeof(struct {
-		_        noCopy
-		table    unsafe.Pointer
-		rs       unsafe.Pointer
-		growths  uint32
-		shrinks  uint32
-		seed     uintptr
-		keyHash  HashFunc
-		valEqual EqualFunc
-		minLen   int
-		shrinkOn bool
-		intKey   bool
-	}{})%CacheLineSize) % CacheLineSize]byte
+	// 64B cache line layout is optimal;
+	// omit padding fields to reduce memory footprint.
+	// _ [(CacheLineSize - unsafe.Sizeof(struct {
+	// 	_        noCopy
+	// 	table    unsafe.Pointer
+	// 	rs       unsafe.Pointer
+	// 	growths  uint32
+	// 	shrinks  uint32
+	// 	seed     uintptr
+	// 	keyHash  HashFunc
+	// 	valEqual EqualFunc
+	// 	minLen   int
+	// 	shrinkOn bool
+	// 	intKey   bool
+	// }{})%CacheLineSize) % CacheLineSize]byte
 
 	_        noCopy
 	table    unsafe.Pointer // *mapOfTable
@@ -400,13 +418,14 @@ type bucketOf struct {
 	_    [0]atomic.Uint64
 	meta uint64
 
-	// Cache line padding to prevent false sharing
-	_ [(CacheLineSize - unsafe.Sizeof(struct {
-		_       [0]int64
-		meta    uint64
-		entries [entriesPerBucket]unsafe.Pointer
-		next    unsafe.Pointer
-	}{})%CacheLineSize) % CacheLineSize]byte
+	// 64B cache line layout is optimal;
+	// omit padding fields to reduce memory footprint.
+	// _ [(CacheLineSize - unsafe.Sizeof(struct {
+	// 	_       [0]int64
+	// 	meta    uint64
+	// 	entries [entriesPerBucket]unsafe.Pointer
+	// 	next    unsafe.Pointer
+	// }{})%CacheLineSize) % CacheLineSize]byte
 
 	entries [entriesPerBucket]unsafe.Pointer // *EntryOf
 	next    unsafe.Pointer                   // *bucketOf
@@ -465,14 +484,16 @@ func (b *bucketOf) At(i int) *unsafe.Pointer {
 
 // rebuildState represents the current state of a resizing operation
 type rebuildState struct {
-	_ [(CacheLineSize - unsafe.Sizeof(struct {
-		hint      mapRebuildHint
-		wg        sync.WaitGroup
-		table     unsafe.Pointer
-		newTable  unsafe.Pointer
-		process   int32
-		completed int32
-	}{})%CacheLineSize) % CacheLineSize]byte
+	// 64B cache line layout is optimal;
+	// omit padding fields to reduce memory footprint.
+	// _ [(CacheLineSize - unsafe.Sizeof(struct {
+	// 	hint      mapRebuildHint
+	// 	wg        sync.WaitGroup
+	// 	table     unsafe.Pointer
+	// 	newTable  unsafe.Pointer
+	// 	process   int32
+	// 	completed int32
+	// }{})%CacheLineSize) % CacheLineSize]byte
 
 	hint      mapRebuildHint
 	wg        sync.WaitGroup
@@ -484,14 +505,16 @@ type rebuildState struct {
 
 // mapOfTable represents the internal hash table structure.
 type mapOfTable struct {
-	_ [(CacheLineSize - unsafe.Sizeof(struct {
-		buckets  unsafeSlice[bucketOf]
-		mask     uintptr
-		size     unsafeSlice[counterStripe]
-		sizeMask uintptr
-		chunks   int
-		chunkSz  int
-	}{})%CacheLineSize) % CacheLineSize]byte
+	// 64B cache line layout is optimal;
+	// omit padding fields to reduce memory footprint.
+	// _ [(CacheLineSize - unsafe.Sizeof(struct {
+	// 	buckets  unsafeSlice[bucketOf]
+	// 	mask     uintptr
+	// 	size     unsafeSlice[counterStripe]
+	// 	sizeMask uintptr
+	// 	chunks   int
+	// 	chunkSz  int
+	// }{})%CacheLineSize) % CacheLineSize]byte
 
 	buckets unsafeSlice[bucketOf]
 	mask    int

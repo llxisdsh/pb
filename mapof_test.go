@@ -61,28 +61,24 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 
 	size := unsafe.Sizeof(counterStripe{})
 	t.Log("counterStripe size:", size)
-	if //goland:noinspection GoBoolExpressions
-	enablePadding && size != CacheLineSize {
-		t.Logf("counterStripe doesn't meet CacheLineSize: %d", size)
-	}
 
 	size = unsafe.Sizeof(bucketOf{})
 	t.Log("bucketOf size:", size)
-	if size != CacheLineSize {
-		t.Logf("bucketOf doesn't meet CacheLineSize: %d", size)
-	}
+	// if size != CacheLineSize {
+	// 	t.Logf("bucketOf doesn't meet CacheLineSize: %d", size)
+	// }
 
 	size = unsafe.Sizeof(mapOfTable{})
 	t.Log("mapOfTable size:", size)
-	if size != CacheLineSize {
-		t.Logf("mapOfTable doesn't meet CacheLineSize: %d", size)
-	}
+	// if size != CacheLineSize {
+	// 	t.Logf("mapOfTable doesn't meet CacheLineSize: %d", size)
+	// }
 
 	size = unsafe.Sizeof(rebuildState{})
 	t.Log("rebuildState size:", size)
-	if size != CacheLineSize {
-		t.Logf("rebuildState doesn't meet CacheLineSize: %d", size)
-	}
+	// if size != CacheLineSize {
+	// 	t.Logf("rebuildState doesn't meet CacheLineSize: %d", size)
+	// }
 
 	size = unsafe.Sizeof(MapOf[string, int]{})
 	t.Log("MapOf size:", size)
@@ -3900,98 +3896,6 @@ func testDataMapMapOf(data []string) map[string]int {
 	return m
 }
 
-//
-//var (
-//	testDataSmall [8]string
-//	testData      [128]string
-//	testDataLarge [128 << 10]string
-//
-//	testDataIntSmall [8]int
-//	testDataInt      [128]int
-//	testDataIntLarge [128 << 10]int
-//)
-//
-//func init() {
-//	for i := range testDataSmall {
-//		testDataSmall[i] = fmt.Sprintf("%b", i)
-//	}
-//	for i := range testData {
-//		testData[i] = fmt.Sprintf("%b", i)
-//	}
-//	for i := range testDataLarge {
-//		testDataLarge[i] = fmt.Sprintf("%b", i)
-//	}
-//
-//	for i := range testDataIntSmall {
-//		testDataIntSmall[i] = i
-//	}
-//	for i := range testData {
-//		testDataInt[i] = i
-//	}
-//	for i := range testDataIntLarge {
-//		testDataIntLarge[i] = i
-//	}
-//}
-//
-//// TestConcurrentCacheMapOf tests MapOf in a scenario where it is used as
-//// the basis of a memory-efficient concurrent cache. We're specifically
-//// looking to make sure that CompareAndSwap and CompareAndDelete are
-//// atomic with respect to one another. When competing for the same
-//// key-value pair, they must not both succeed.
-////
-//// This test is a regression test for issue #70970.
-//func TestConcurrentCacheMapOf(t *testing.T) {
-//	type dummy [32]byte
-//
-//	var m MapOf[int, weak.Pointer[dummy]]
-//
-//	type cleanupArg struct {
-//		key   int
-//		value weak.Pointer[dummy]
-//	}
-//	cleanup := func(arg cleanupArg) {
-//		m.CompareAndDelete(arg.key, arg.value)
-//	}
-//	get := func(m *MapOf[int, weak.Pointer[dummy]], key int) *dummy {
-//		nv := new(dummy)
-//		nw := weak.Make(nv)
-//		for {
-//			w, loaded := m.LoadOrStore(key, nw)
-//			if !loaded {
-//				runtime.AddCleanup(nv, cleanup, cleanupArg{key, nw})
-//				return nv
-//			}
-//			if v := w.Value(); v != nil {
-//				return v
-//			}
-//
-//			// Weak pointer was reclaimed, try to replace it with nw.
-//			if m.CompareAndSwap(key, w, nw) {
-//				runtime.AddCleanup(nv, cleanup, cleanupArg{key, nw})
-//				return nv
-//			}
-//		}
-//	}
-//
-//	const N = 100_000
-//	const P = 5_000
-//
-//	var wg sync.WaitGroup
-//	wg.Add(N)
-//	for i := range N {
-//		go func() {
-//			defer wg.Done()
-//			a := get(&m, i%P)
-//			b := get(&m, i%P)
-//			if a != b {
-// 				t.Errorf("consecutive cache reads returned different values: a != b (%p
-// vs %p)\n", a, b)
-//			}
-//		}()
-//	}
-//	wg.Wait()
-//}
-
 // ------------------------------------------------------
 
 type point struct {
@@ -4650,36 +4554,7 @@ func TestMapOfStoreThenParallelDelete_DoesNotShrinkBelowMinLen(
 		}
 		cdone <- true
 	}()
-	//go func() {
-	//	for i := range numEntries {
-	//		m.Delete(i)
-	//	}
-	//	cdone <- true
-	//}()
-	//go func() {
-	//	for i := range numEntries {
-	//		m.Delete(i)
-	//	}
-	//	cdone <- true
-	//}()
-	//go func() {
-	//	for i := range numEntries {
-	//		m.Delete(i)
-	//	}
-	//	cdone <- true
-	//}()
-	//go func() {
-	//	for i := range numEntries {
-	//		m.Delete(i)
-	//	}
-	//	cdone <- true
-	//}()
-	// Wait for the goroutines to finish.
 	<-cdone
-	//<-cdone
-	//<-cdone
-	//<-cdone
-	//<-cdone
 	m.Shrink()
 	stats := m.Stats()
 	if stats.RootBuckets != minTableLen {
@@ -4762,37 +4637,7 @@ func TestMapOfClear(t *testing.T) {
 	}
 }
 
-//func assertMapOfCapacity[K comparable, V any](
-//	t *testing.T,
-//	m *MapOf[K, V],
-//	expectedCap int,
-//) {
-//	stats := m.Stats()
-//	if stats.Capacity != expectedCap {
-//		t.Fatalf(
-//			"capacity was different from %d: %d",
-//			expectedCap,
-//			stats.Capacity,
-//		)
-//	}
-//}
-
 func TestNewMapOfPresized(t *testing.T) {
-	// assertMapOfCapacity(t, NewMapOf[string, string](),
-	// DefaultMinMapOfTableCap) assertMapOfCapacity(t, NewMapOf[string,
-	// string](WithPresize(0)), DefaultMinMapOfTableCap) assertMapOfCapacity(t,
-	// NewMapOf[string, string](WithPresize(0)), DefaultMinMapOfTableCap)
-	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(-100)),
-	// DefaultMinMapOfTableCap) assertMapOfCapacity(t, NewMapOf[string,
-	// string](WithPresize(-100)), DefaultMinMapOfTableCap)
-	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(500)), 1280)
-	// assertMapOfCapacity(t, NewMapOf[string, string](WithPresize(500)), 1280)
-	// assertMapOfCapacity(t, NewMapOf[int, int](WithPresize(1_000_000)),
-	// 2621440) assertMapOfCapacity(t, NewMapOf[int,
-	// int](WithPresize(1_000_000)), 2621440)
-	// assertMapOfCapacity(t, NewMapOf[point, point](WithPresize(100)), 160)
-	// assertMapOfCapacity(t, NewMapOf[point, point](WithPresize(100)), 160)
-
 	var capacity, expectedCap int
 	capacity, expectedCap = NewMapOf[string, string]().Stats().
 		Capacity, defaultMinMapOfTableCap
@@ -5529,14 +5374,6 @@ func TestMapOfStats(t *testing.T) {
 	}
 }
 
-//
-//func TestToPlainMapOf_NilPointer(t *testing.T) {
-//	pm := ToPlainMapOf[int, int](nil)
-//	if len(pm) != 0 {
-//		t.Fatalf("got unexpected size of nil map copy: %d", len(pm))
-//	}
-//}
-
 func TestToPlainMapOf(t *testing.T) {
 	const numEntries = 1000
 	m := NewMapOf[int, int]()
@@ -5806,7 +5643,7 @@ var benchmarkCases = []struct {
 	{"reads=75%", 75},   //  75% loads, 12.5% stores, 12.5% deletes
 }
 
-//----------------------------------------------------------------
+// ----------------------------------------------------------------
 
 // TestMapOfClone tests the Clone function of MapOf
 func TestMapOfClone(t *testing.T) {
