@@ -17,27 +17,27 @@ func TestFlatMapOf_BucketOfStructSize(t *testing.T) {
 
 	size := unsafe.Sizeof(FlatMapOf[string, int]{})
 	t.Log("FlatMapOf size:", size)
-	// if size != CacheLineSize {
-	// 	t.Fatalf("FlatMapOf doesn't meet CacheLineSize: %d", size)
-	// }
+	if size != CacheLineSize {
+		t.Logf("FlatMapOf doesn't meet CacheLineSize: %d", size)
+	}
 
 	size = unsafe.Sizeof(flatRebuildState[string, int]{})
 	t.Log("flatRebuildState size:", size)
-	// if size != CacheLineSize {
-	// 	t.Fatalf("flatRebuildState doesn't meet CacheLineSize: %d", size)
-	// }
+	if size != CacheLineSize {
+		t.Logf("flatRebuildState doesn't meet CacheLineSize: %d", size)
+	}
 
 	size = unsafe.Sizeof(flatTable[string, int]{})
 	t.Log("flatTable size:", size)
-	// if size != CacheLineSize {
-	//	t.Fatalf("flatTable doesn't meet CacheLineSize: %d", size)
-	// }
+	if size != CacheLineSize {
+		t.Logf("flatTable doesn't meet CacheLineSize: %d", size)
+	}
 
 	size = unsafe.Sizeof(flatBucket[string, int]{})
 	t.Log("flatBucket size:", size)
-	// if size != CacheLineSize {
-	//	t.Fatalf("flatBucket doesn't meet CacheLineSize: %d", size)
-	// }
+	if size != CacheLineSize {
+		t.Logf("flatBucket doesn't meet CacheLineSize: %d", size)
+	}
 }
 
 // TestFlatMapOf_BasicOperations tests basic Load and Process operations

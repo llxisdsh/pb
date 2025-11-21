@@ -64,21 +64,21 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 
 	size = unsafe.Sizeof(bucketOf{})
 	t.Log("bucketOf size:", size)
-	// if size != CacheLineSize {
-	// 	t.Logf("bucketOf doesn't meet CacheLineSize: %d", size)
-	// }
+	if size != CacheLineSize {
+		t.Logf("bucketOf doesn't meet CacheLineSize: %d", size)
+	}
 
 	size = unsafe.Sizeof(mapOfTable{})
 	t.Log("mapOfTable size:", size)
-	// if size != CacheLineSize {
-	// 	t.Logf("mapOfTable doesn't meet CacheLineSize: %d", size)
-	// }
+	if size != CacheLineSize {
+		t.Logf("mapOfTable doesn't meet CacheLineSize: %d", size)
+	}
 
 	size = unsafe.Sizeof(rebuildState{})
 	t.Log("rebuildState size:", size)
-	// if size != CacheLineSize {
-	// 	t.Logf("rebuildState doesn't meet CacheLineSize: %d", size)
-	// }
+	if size != CacheLineSize {
+		t.Logf("rebuildState doesn't meet CacheLineSize: %d", size)
+	}
 
 	size = unsafe.Sizeof(MapOf[string, int]{})
 	t.Log("MapOf size:", size)
