@@ -107,22 +107,6 @@ const (
 // Notes:
 //   - MapOf must not be copied after first use.
 type MapOf[K comparable, V any] struct {
-	// 64B cache line layout is optimal;
-	// omit padding fields to reduce memory footprint.
-	// _ [(CacheLineSize - unsafe.Sizeof(struct {
-	// 	_        noCopy
-	// 	table    unsafe.Pointer
-	// 	rs       unsafe.Pointer
-	// 	growths  uint32
-	// 	shrinks  uint32
-	// 	seed     uintptr
-	// 	keyHash  HashFunc
-	// 	valEqual EqualFunc
-	// 	minLen   int
-	// 	shrinkOn bool
-	// 	intKey   bool
-	// }{})%CacheLineSize) % CacheLineSize]byte
-
 	_        noCopy
 	table    unsafe.Pointer // *mapOfTable
 	rs       unsafe.Pointer // *rebuildState
@@ -134,6 +118,51 @@ type MapOf[K comparable, V any] struct {
 	minLen   int       // WithPresize
 	shrinkOn bool      // WithShrinkEnabled
 	intKey   bool
+}
+
+// rebuildState represents the current state of a resizing operation
+type rebuildState struct {
+	hint      mapRebuildHint
+	wg        sync.WaitGroup
+	table     unsafe.Pointer // *mapOfTable
+	newTable  unsafe.Pointer // *mapOfTable
+	process   int32
+	completed int32
+}
+
+// mapOfTable represents the internal hash table structure.
+type mapOfTable struct {
+	buckets unsafeSlice[bucketOf]
+	mask    int
+	// striped counter for number of table entries;
+	// used to determine if a table resize is needed
+	// occupies min(buckets_memory/1024, 64KB) of memory when
+	// the compile option `mapof_opt_enablepadding` is enabled
+	size     unsafeSlice[counterStripe]
+	sizeMask int
+	// number of chunks and chunks size for resizing
+	chunks  int
+	chunkSz int
+}
+
+// bucketOf represents a hash table bucket with cache-line alignment.
+type bucketOf struct {
+	// meta: SWAR-optimized metadata for fast entry lookups
+	// (must be 64-bit aligned)
+	_    [0]atomic.Uint64
+	meta uint64
+
+	// Cache line layout is optimal;
+	// omit padding fields to reduce memory footprint.
+	// _ [(CacheLineSize - unsafe.Sizeof(struct {
+	// 	_       [0]int64
+	// 	meta    uint64
+	// 	entries [entriesPerBucket]unsafe.Pointer
+	// 	next    unsafe.Pointer
+	// }{})%CacheLineSize) % CacheLineSize]byte
+
+	entries [entriesPerBucket]unsafe.Pointer // *EntryOf
+	next    unsafe.Pointer                   // *bucketOf
 }
 
 // NewMapOf creates a new MapOf instance. Direct initialization is also
@@ -409,169 +438,6 @@ func WithBuiltInHasher[T comparable]() func(*MapConfig) {
 	return func(c *MapConfig) {
 		c.KeyHash = GetBuiltInHasher[T]()
 	}
-}
-
-// bucketOf represents a hash table bucket with cache-line alignment.
-type bucketOf struct {
-	// meta: SWAR-optimized metadata for fast entry lookups
-	// (must be 64-bit aligned)
-	_    [0]atomic.Uint64
-	meta uint64
-
-	// 64B cache line layout is optimal;
-	// omit padding fields to reduce memory footprint.
-	// _ [(CacheLineSize - unsafe.Sizeof(struct {
-	// 	_       [0]int64
-	// 	meta    uint64
-	// 	entries [entriesPerBucket]unsafe.Pointer
-	// 	next    unsafe.Pointer
-	// }{})%CacheLineSize) % CacheLineSize]byte
-
-	entries [entriesPerBucket]unsafe.Pointer // *EntryOf
-	next    unsafe.Pointer                   // *bucketOf
-}
-
-// Lock acquires a spinlock for the bucket using embedded metadata.
-// Uses atomic operations on the meta field to avoid false sharing overhead.
-// Implements optimistic locking with fallback to spinning.
-//
-//go:nosplit
-func (b *bucketOf) Lock() {
-	cur := loadUint64NoMB(&b.meta)
-	if atomic.CompareAndSwapUint64(&b.meta, cur&(^opLockMask), cur|opLockMask) {
-		return
-	}
-	b.slowLock()
-}
-
-func (b *bucketOf) slowLock() {
-	var spins int
-	for !b.tryLock() {
-		delay(&spins)
-	}
-}
-
-//go:nosplit
-func (b *bucketOf) tryLock() bool {
-	for {
-		cur := loadUint64NoMB(&b.meta)
-		if cur&opLockMask != 0 {
-			return false
-		}
-		if atomic.CompareAndSwapUint64(&b.meta, cur, cur|opLockMask) {
-			return true
-		}
-	}
-}
-
-//go:nosplit
-func (b *bucketOf) Unlock() {
-	atomic.StoreUint64(&b.meta, b.meta&^opLockMask)
-}
-
-//go:nosplit
-func (b *bucketOf) UnlockWithMeta(meta uint64) {
-	atomic.StoreUint64(&b.meta, meta&^opLockMask)
-}
-
-//go:nosplit
-func (b *bucketOf) At(i int) *unsafe.Pointer {
-	return (*unsafe.Pointer)(unsafe.Add(
-		unsafe.Pointer(&b.entries),
-		uintptr(i)*unsafe.Sizeof(unsafe.Pointer(nil))),
-	)
-}
-
-// rebuildState represents the current state of a resizing operation
-type rebuildState struct {
-	// 64B cache line layout is optimal;
-	// omit padding fields to reduce memory footprint.
-	// _ [(CacheLineSize - unsafe.Sizeof(struct {
-	// 	hint      mapRebuildHint
-	// 	wg        sync.WaitGroup
-	// 	table     unsafe.Pointer
-	// 	newTable  unsafe.Pointer
-	// 	process   int32
-	// 	completed int32
-	// }{})%CacheLineSize) % CacheLineSize]byte
-
-	hint      mapRebuildHint
-	wg        sync.WaitGroup
-	table     unsafe.Pointer // *mapOfTable
-	newTable  unsafe.Pointer // *mapOfTable
-	process   int32
-	completed int32
-}
-
-// mapOfTable represents the internal hash table structure.
-type mapOfTable struct {
-	// 64B cache line layout is optimal;
-	// omit padding fields to reduce memory footprint.
-	// _ [(CacheLineSize - unsafe.Sizeof(struct {
-	// 	buckets  unsafeSlice[bucketOf]
-	// 	mask     uintptr
-	// 	size     unsafeSlice[counterStripe]
-	// 	sizeMask uintptr
-	// 	chunks   int
-	// 	chunkSz  int
-	// }{})%CacheLineSize) % CacheLineSize]byte
-
-	buckets unsafeSlice[bucketOf]
-	mask    int
-	// striped counter for number of table entries;
-	// used to determine if a table resize is needed
-	// occupies min(buckets_memory/1024, 64KB) of memory when
-	// the compile option `mapof_opt_enablepadding` is enabled
-	size     unsafeSlice[counterStripe]
-	sizeMask int
-	// number of chunks and chunks size for resizing
-	chunks  int
-	chunkSz int
-}
-
-func newMapOfTable(tableLen, cpus int) *mapOfTable {
-	overCpus := cpus * resizeOverPartition
-	chunkSz, chunks := calcParallelism(tableLen, minBucketsPerCPU, overCpus)
-	sizeLen := calcSizeLen(tableLen, cpus)
-	return &mapOfTable{
-		buckets:  makeUnsafeSlice(make([]bucketOf, tableLen)),
-		mask:     tableLen - 1,
-		size:     makeUnsafeSlice(make([]counterStripe, sizeLen)),
-		sizeMask: sizeLen - 1,
-		chunks:   chunks,
-		chunkSz:  chunkSz,
-	}
-}
-
-// AddSize atomically adds delta to the size counter for the given bucket index.
-//
-//go:nosplit
-func (t *mapOfTable) AddSize(idx, delta int) {
-	atomic.AddUintptr(&t.size.At(t.sizeMask&idx).c, uintptr(delta))
-}
-
-// SumSize calculates the total number of entries in the table
-// by summing all counter-stripes.
-//
-//go:nosplit
-func (t *mapOfTable) SumSize() int {
-	var sum uintptr
-	for i := 0; i <= t.sizeMask; i++ {
-		sum += loadUintptrNoMB(&t.size.At(i).c)
-	}
-	return int(sum)
-}
-
-//go:nosplit
-func (t *mapOfTable) SumSizeExceeds(limit int) bool {
-	var sum uintptr
-	for i := 0; i <= t.sizeMask; i++ {
-		sum += loadUintptrNoMB(&t.size.At(i).c)
-		if int(sum) > limit {
-			return true
-		}
-	}
-	return false
 }
 
 // IHashCode defines a custom hash function interface for key types.
@@ -2986,6 +2852,102 @@ func (s *MapStats) ToString() string {
 
 func (s *MapStats) String() string {
 	return s.ToString()
+}
+
+func newMapOfTable(tableLen, cpus int) *mapOfTable {
+	overCpus := cpus * resizeOverPartition
+	chunkSz, chunks := calcParallelism(tableLen, minBucketsPerCPU, overCpus)
+	sizeLen := calcSizeLen(tableLen, cpus)
+	return &mapOfTable{
+		buckets:  makeUnsafeSlice(make([]bucketOf, tableLen)),
+		mask:     tableLen - 1,
+		size:     makeUnsafeSlice(make([]counterStripe, sizeLen)),
+		sizeMask: sizeLen - 1,
+		chunks:   chunks,
+		chunkSz:  chunkSz,
+	}
+}
+
+// AddSize atomically adds delta to the size counter for the given bucket index.
+//
+//go:nosplit
+func (t *mapOfTable) AddSize(idx, delta int) {
+	atomic.AddUintptr(&t.size.At(t.sizeMask&idx).c, uintptr(delta))
+}
+
+// SumSize calculates the total number of entries in the table
+// by summing all counter-stripes.
+//
+//go:nosplit
+func (t *mapOfTable) SumSize() int {
+	var sum uintptr
+	for i := 0; i <= t.sizeMask; i++ {
+		sum += loadUintptrNoMB(&t.size.At(i).c)
+	}
+	return int(sum)
+}
+
+//go:nosplit
+func (t *mapOfTable) SumSizeExceeds(limit int) bool {
+	var sum uintptr
+	for i := 0; i <= t.sizeMask; i++ {
+		sum += loadUintptrNoMB(&t.size.At(i).c)
+		if int(sum) > limit {
+			return true
+		}
+	}
+	return false
+}
+
+// Lock acquires a spinlock for the bucket using embedded metadata.
+// Uses atomic operations on the meta field to avoid false sharing overhead.
+// Implements optimistic locking with fallback to spinning.
+//
+//go:nosplit
+func (b *bucketOf) Lock() {
+	cur := loadUint64NoMB(&b.meta)
+	if atomic.CompareAndSwapUint64(&b.meta, cur&(^opLockMask), cur|opLockMask) {
+		return
+	}
+	b.slowLock()
+}
+
+func (b *bucketOf) slowLock() {
+	var spins int
+	for !b.tryLock() {
+		delay(&spins)
+	}
+}
+
+//go:nosplit
+func (b *bucketOf) tryLock() bool {
+	for {
+		cur := loadUint64NoMB(&b.meta)
+		if cur&opLockMask != 0 {
+			return false
+		}
+		if atomic.CompareAndSwapUint64(&b.meta, cur, cur|opLockMask) {
+			return true
+		}
+	}
+}
+
+//go:nosplit
+func (b *bucketOf) Unlock() {
+	atomic.StoreUint64(&b.meta, b.meta&^opLockMask)
+}
+
+//go:nosplit
+func (b *bucketOf) UnlockWithMeta(meta uint64) {
+	atomic.StoreUint64(&b.meta, meta&^opLockMask)
+}
+
+//go:nosplit
+func (b *bucketOf) At(i int) *unsafe.Pointer {
+	return (*unsafe.Pointer)(unsafe.Add(
+		unsafe.Pointer(&b.entries),
+		uintptr(i)*unsafe.Sizeof(unsafe.Pointer(nil))),
+	)
 }
 
 // parallelProcess executes the given processor function in parallel batches.
