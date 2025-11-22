@@ -20,6 +20,10 @@ import (
 //   - Writers: take the root-bucket lock (opLock in meta), then on the target
 //     bucket: seq++, apply changes, seq++, finally release the root lock.
 //   - Resize: copy under the root-bucket lock using the same discipline.
+//
+// Notes:
+//   - Reuses MapOf constants and compile-time bucket sizing (entriesPerBucket).
+//   - Buckets are packed without padding for cache-friendly layout.
 type FlatMapOf[K comparable, V any] struct {
 	_        noCopy
 	table    seqlockSlot[flatTable[K, V]]

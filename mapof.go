@@ -3051,7 +3051,7 @@ func nextPowOf2(n int) int {
 	v |= v >> 4
 	v |= v >> 8
 	v |= v >> 16
-	if bits.UintSize == 64 {
+	if bits.UintSize >= 64 {
 		v |= v >> 32
 	}
 	return v + 1
