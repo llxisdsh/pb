@@ -203,16 +203,8 @@ func (slot *seqlockSlot[T]) ReadUnfenced() (v T) {
 		return slot.buf
 	}
 
-	switch unsafe.Sizeof(slot.buf) {
-	case 0:
+	if unsafe.Sizeof(slot.buf) == 0 {
 		return v
-	case unsafe.Sizeof(uintptr(0)):
-		if unsafe.Alignof(slot.buf) >= unsafe.Sizeof(uintptr(0)) {
-			u := atomic.LoadUintptr((*uintptr)(unsafe.Pointer(&slot.buf)))
-			*(*uintptr)(unsafe.Pointer(&v)) = u
-			return v
-		}
-		// fall through to stable window copy
 	}
 
 	ws := unsafe.Sizeof(uintptr(0))
@@ -220,20 +212,43 @@ func (slot *seqlockSlot[T]) ReadUnfenced() (v T) {
 	al := unsafe.Alignof(slot.buf)
 	if al >= ws && sz%ws == 0 {
 		n := sz / ws
-		for i := range n {
-			off := i * ws
-			src := (*uintptr)(unsafe.Pointer(
-				uintptr(unsafe.Pointer(&slot.buf)) + off,
-			))
-			dst := (*uintptr)(unsafe.Pointer(
-				uintptr(unsafe.Pointer(&v)) + off,
-			))
-			*dst = atomic.LoadUintptr(src)
+		switch n {
+		case 1:
+			u := atomic.LoadUintptr((*uintptr)(unsafe.Pointer(&slot.buf)))
+			*(*uintptr)(unsafe.Pointer(&v)) = u
+		case 2:
+			p := (*[2]uintptr)(unsafe.Pointer(&slot.buf))
+			q := (*[2]uintptr)(unsafe.Pointer(&v))
+			q[0] = atomic.LoadUintptr(&p[0])
+			q[1] = atomic.LoadUintptr(&p[1])
+		case 3:
+			p := (*[3]uintptr)(unsafe.Pointer(&slot.buf))
+			q := (*[3]uintptr)(unsafe.Pointer(&v))
+			q[0] = atomic.LoadUintptr(&p[0])
+			q[1] = atomic.LoadUintptr(&p[1])
+			q[2] = atomic.LoadUintptr(&p[2])
+		case 4:
+			p := (*[4]uintptr)(unsafe.Pointer(&slot.buf))
+			q := (*[4]uintptr)(unsafe.Pointer(&v))
+			q[0] = atomic.LoadUintptr(&p[0])
+			q[1] = atomic.LoadUintptr(&p[1])
+			q[2] = atomic.LoadUintptr(&p[2])
+			q[3] = atomic.LoadUintptr(&p[3])
+		default:
+			for i := range n {
+				off := i * ws
+				src := (*uintptr)(unsafe.Pointer(
+					uintptr(unsafe.Pointer(&slot.buf)) + off,
+				))
+				dst := (*uintptr)(unsafe.Pointer(
+					uintptr(unsafe.Pointer(&v)) + off,
+				))
+				*dst = atomic.LoadUintptr(src)
+			}
 		}
 		return v
 	}
-	v = slot.buf
-	return v
+	return slot.buf
 }
 
 // WriteUnfenced writes v into buf using uintptr-sized atomic stores when
@@ -244,16 +259,9 @@ func (slot *seqlockSlot[T]) WriteUnfenced(v T) {
 		slot.buf = v
 		return
 	}
-	switch unsafe.Sizeof(slot.buf) {
-	case 0:
+
+	if unsafe.Sizeof(slot.buf) == 0 {
 		return
-	case unsafe.Sizeof(uintptr(0)):
-		if unsafe.Alignof(slot.buf) >= unsafe.Sizeof(uintptr(0)) {
-			u := *(*uintptr)(unsafe.Pointer(&v))
-			atomic.StoreUintptr((*uintptr)(unsafe.Pointer(&slot.buf)), u)
-			return
-		}
-		// fall through to fenced publication
 	}
 
 	ws := unsafe.Sizeof(uintptr(0))
@@ -261,15 +269,39 @@ func (slot *seqlockSlot[T]) WriteUnfenced(v T) {
 	al := unsafe.Alignof(slot.buf)
 	if al >= ws && sz%ws == 0 {
 		n := sz / ws
-		for i := range n {
-			off := i * ws
-			src := (*uintptr)(unsafe.Pointer(
-				uintptr(unsafe.Pointer(&v)) + off,
-			))
-			dst := (*uintptr)(unsafe.Pointer(
-				uintptr(unsafe.Pointer(&slot.buf)) + off,
-			))
-			atomic.StoreUintptr(dst, *src)
+		switch n {
+		case 1:
+			u := *(*uintptr)(unsafe.Pointer(&v))
+			atomic.StoreUintptr((*uintptr)(unsafe.Pointer(&slot.buf)), u)
+		case 2:
+			p := (*[2]uintptr)(unsafe.Pointer(&slot.buf))
+			q := (*[2]uintptr)(unsafe.Pointer(&v))
+			atomic.StoreUintptr(&p[0], q[0])
+			atomic.StoreUintptr(&p[1], q[1])
+		case 3:
+			p := (*[3]uintptr)(unsafe.Pointer(&slot.buf))
+			q := (*[3]uintptr)(unsafe.Pointer(&v))
+			atomic.StoreUintptr(&p[0], q[0])
+			atomic.StoreUintptr(&p[1], q[1])
+			atomic.StoreUintptr(&p[2], q[2])
+		case 4:
+			p := (*[4]uintptr)(unsafe.Pointer(&slot.buf))
+			q := (*[4]uintptr)(unsafe.Pointer(&v))
+			atomic.StoreUintptr(&p[0], q[0])
+			atomic.StoreUintptr(&p[1], q[1])
+			atomic.StoreUintptr(&p[2], q[2])
+			atomic.StoreUintptr(&p[3], q[3])
+		default:
+			for i := range n {
+				off := i * ws
+				src := (*uintptr)(unsafe.Pointer(
+					uintptr(unsafe.Pointer(&v)) + off,
+				))
+				dst := (*uintptr)(unsafe.Pointer(
+					uintptr(unsafe.Pointer(&slot.buf)) + off,
+				))
+				atomic.StoreUintptr(dst, *src)
+			}
 		}
 		return
 	}
