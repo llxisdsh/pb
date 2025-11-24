@@ -271,7 +271,7 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 			root := table.buckets.At(i)
 			root.Lock()
 			for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
-				meta := b.meta
+				meta := loadIntFast(&b.meta)
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 					j := firstMarkedByteIndex(marked)
 					e := b.At(j)
@@ -387,7 +387,7 @@ func (m *FlatMapOf[K, V]) Process(
 
 	findLoop:
 		for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
-			meta := b.meta
+			meta := loadIntFast(&b.meta)
 			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j).Ptr()
@@ -433,7 +433,7 @@ func (m *FlatMapOf[K, V]) Process(
 			if emptyB != nil {
 				emptyB.seq.BeginWriteLocked()
 				emptyB.At(emptyIdx).WriteUnfenced(newE)
-				newMeta := setByte(emptyB.meta, h2v, emptyIdx)
+				newMeta := setByte(loadIntFast(&emptyB.meta), h2v, emptyIdx)
 				atomic.StoreUint64(&emptyB.meta, newMeta)
 				emptyB.seq.EndWriteLocked()
 
@@ -769,7 +769,7 @@ func (m *FlatMapOf[K, V]) copyBucket(
 		srcBucket := table.buckets.At(i)
 		srcBucket.Lock()
 		for b := srcBucket; b != nil; b = (*flatBucket[K, V])(b.next) {
-			meta := b.meta
+			meta := loadIntFast(&b.meta)
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j).Ptr()
@@ -785,11 +785,11 @@ func (m *FlatMapOf[K, V]) copyBucket(
 				b := destBucket
 			appendTo:
 				for {
-					meta := b.meta
+					meta := loadIntFast(&b.meta)
 					empty := (^meta) & metaMask
 					if empty != 0 {
 						emptyIdx := firstMarkedByteIndex(empty)
-						b.meta = setByte(meta, h2v, emptyIdx)
+						storeIntFast(&b.meta, setByte(meta, h2v, emptyIdx))
 						entry := b.At(emptyIdx).Ptr()
 						entry.value = e.value
 						if embeddedHash {
@@ -836,7 +836,7 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 		srcBucket := table.buckets.At(i)
 		srcBucket.Lock()
 		for b := srcBucket; b != nil; b = (*flatBucket[K, V])(b.next) {
-			meta := b.meta
+			meta := loadIntFast(&b.meta)
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j).Ptr()
@@ -853,11 +853,11 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 				b := destBucket
 			appendTo:
 				for {
-					meta := b.meta
+					meta := loadIntFast(&b.meta)
 					empty := (^meta) & metaMask
 					if empty != 0 {
 						emptyIdx := firstMarkedByteIndex(empty)
-						b.meta = setByte(meta, h2v, emptyIdx)
+						storeIntFast(&b.meta, setByte(meta, h2v, emptyIdx))
 						entry := b.At(emptyIdx).Ptr()
 						entry.value = e.value
 						if embeddedHash {
@@ -974,5 +974,5 @@ func (b *flatBucket[K, V]) tryLock() bool {
 
 //go:nosplit
 func (b *flatBucket[K, V]) Unlock() {
-	atomic.StoreUint64(&b.meta, b.meta&^opLockMask)
+	atomic.StoreUint64(&b.meta, loadIntFast(&b.meta)&^opLockMask)
 }

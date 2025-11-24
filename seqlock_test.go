@@ -204,7 +204,7 @@ func TestSeqlock_AddStyleWriterProducesTornReads(t *testing.T) {
 					for i := range v.X {
 						v.X[i] = x + uint64(i)
 					}
-					*a.Ptr() = v
+					a.WriteUnfenced(v)
 					sl.EndWriteLocked()
 					runtime.Gosched()
 				}
@@ -281,7 +281,7 @@ func TestSeqlock_AddStyleWriterWithLock_NoTornRead(t *testing.T) {
 					for i := range v.X {
 						v.X[i] = x + uint64(i)
 					}
-					*a.Ptr() = v
+					a.WriteUnfenced(v)
 					sl.EndWriteLocked()
 					mu.Unlock()
 					runtime.Gosched()
