@@ -90,10 +90,10 @@ func NewFlatMapOf[K comparable, V any](
 ) *FlatMapOf[K, V] {
 	var cfg MapConfig
 	for _, opt := range options {
-		opt(&cfg)
+		opt(noEscape(&cfg))
 	}
 	m := &FlatMapOf[K, V]{}
-	m.init(&cfg)
+	m.init(noEscape(&cfg))
 	return m
 }
 
@@ -140,8 +140,8 @@ func (m *FlatMapOf[K, V]) initSlow() {
 		m.endRebuild(rs)
 		return
 	}
-	cfg := &MapConfig{}
-	m.init(cfg)
+	var cfg MapConfig
+	m.init(noEscape(&cfg))
 	m.endRebuild(rs)
 }
 

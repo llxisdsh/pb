@@ -532,13 +532,13 @@ type IEqual[T any] interface {
 func (m *MapOf[K, V]) InitWithOptions(
 	options ...func(*MapConfig),
 ) {
-	cfg := &MapConfig{}
+	var cfg MapConfig
 
 	// parse options
 	for _, o := range options {
-		o(cfg)
+		o(noEscape(&cfg))
 	}
-	m.init(cfg)
+	m.init(noEscape(&cfg))
 }
 
 func (m *MapOf[K, V]) init(
@@ -602,8 +602,8 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 	}
 
 	// Perform initialization
-	cfg := &MapConfig{}
-	table = m.init(cfg)
+	var cfg MapConfig
+	table = m.init(noEscape(&cfg))
 	m.endRebuild(rs)
 	return table
 }
@@ -3168,11 +3168,18 @@ func setByte(w uint64, b uint8, idx int) uint64 {
 // USE CAREFULLY!
 //
 //go:nosplit
+//go:nocheckptr
 func noescape(p unsafe.Pointer) unsafe.Pointer {
 	x := uintptr(p)
 	//nolint:all
 	//goland:noinspection ALL
 	return unsafe.Pointer(x ^ 0)
+}
+
+//go:nosplit
+//go:nocheckptr
+func noEscape[T any](p *T) *T {
+	return (*T)(noescape(unsafe.Pointer(p)))
 }
 
 // noCopy may be added to structs which must not be copied
