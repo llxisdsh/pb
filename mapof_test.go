@@ -64,7 +64,7 @@ func TestMap_BucketOfStructSize(t *testing.T) {
 
 	size = unsafe.Sizeof(bucketOf{})
 	t.Log("bucketOf size:", size)
-	if size != CacheLineSize {
+	if CacheLineSize%size != 0 {
 		t.Logf("bucketOf doesn't meet CacheLineSize: %d", size)
 	}
 
@@ -8880,7 +8880,7 @@ func TestMapOf_UnlockWithMeta(t *testing.T) {
 	})
 }
 
-func TestMapOf_EmbeddedHashOff(t *testing.T) {
+func TestMapOf_EmbeddedHash(t *testing.T) {
 	// These functions are no-ops when mapof_opt_embeddedhash build tag is not set
 	// But we still need to call them to get coverage
 
@@ -8897,8 +8897,15 @@ func TestMapOf_EmbeddedHashOff(t *testing.T) {
 		entry.setHash(0x12345678)
 		// Verify it's still 0 since setHash is a no-op
 		hash = entry.getHash()
-		if hash != 0 {
-			t.Errorf("After setHash, EntryOf.getHash() = %d, want 0", hash)
+		//goland:noinspection ALL
+		if embeddedHash {
+			if hash != 0x12345678 {
+				t.Errorf("After setHash, Entry.getHash() = %d, want 0x12345678", hash)
+			}
+		} else {
+			if hash != 0 {
+				t.Errorf("After setHash, Entry.getHash() = %d, want 0", hash)
+			}
 		}
 	})
 }

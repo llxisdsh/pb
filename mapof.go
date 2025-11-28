@@ -1278,10 +1278,6 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 					j := firstMarkedByteIndex(marked)
 					if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
 						newEntry, shouldContinue := fn(e)
-						if !shouldContinue {
-							root.Unlock()
-							return
-						}
 
 						if newEntry != nil {
 							if newEntry != e {
@@ -1299,6 +1295,11 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 							meta = setByte(meta, emptySlot, j)
 							storeInt(&b.meta, meta)
 							table.AddSize(i, -1)
+						}
+
+						if !shouldContinue {
+							root.Unlock()
+							return
 						}
 					}
 				}
