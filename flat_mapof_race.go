@@ -2,10 +2,12 @@
 
 package pb
 
-type FlatMapOf[K comparable, V any] = MapOf[K, V]
+type FlatMapOf[K comparable, V any] struct {
+	MapOf[K, V]
+}
 
 func NewFlatMapOf[K comparable, V any](options ...func(*MapConfig)) *FlatMapOf[K, V] {
-	return NewMapOf[K, V](options...)
+	return &FlatMapOf[K, V]{MapOf: *NewMapOf[K, V](options...)}
 }
 
 type (
@@ -14,7 +16,7 @@ type (
 	flatBucket[K comparable, V any]       struct{ _ [CacheLineSize]byte }
 )
 
-func (m *MapOf[K, V]) Process(
+func (m *FlatMapOf[K, V]) Process(
 	key K,
 	fn func(old V, loaded bool) (newV V, op ComputeOp, ret V, status bool),
 ) (V, bool) {
@@ -40,7 +42,7 @@ func (m *MapOf[K, V]) Process(
 	)
 }
 
-func (m *MapOf[K, V]) RangeProcess(
+func (m *FlatMapOf[K, V]) RangeProcess(
 	fn func(key K, value V) (newV V, op ComputeOp),
 	policyOpt ...WriterPolicy,
 ) {
