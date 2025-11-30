@@ -20,20 +20,3 @@ func (e *EntryOf[K, V]) getHash() uintptr {
 func (e *EntryOf[K, V]) setHash(h uintptr) {
 	e.hash = h
 }
-
-// flatEntry is an entry type for [FlatMapOf]
-type flatEntry[K comparable, V any] struct {
-	hash  uintptr
-	key   K
-	value V
-}
-
-//go:nosplit
-func (e *flatEntry[K, V]) getHash() uintptr {
-	return e.hash
-}
-
-//go:nosplit
-func (e *flatEntry[K, V]) setHash(h uintptr) {
-	e.hash = h
-}
