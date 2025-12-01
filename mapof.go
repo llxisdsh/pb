@@ -2196,11 +2196,7 @@ func (m *MapOf[K, V]) Size() int {
 //
 //go:nosplit
 func (m *MapOf[K, V]) IsZero() bool {
-	table := (*mapOfTable)(loadPtr(&m.table))
-	if table == nil {
-		return true
-	}
-	return !table.SumSizeExceeds(0)
+	return m.Size() == 0
 }
 
 // ToMap collect all entries and return a map[K]V
@@ -2884,18 +2880,6 @@ func (t *mapOfTable) SumSize() int {
 		sum += loadInt(&t.size.At(i).c)
 	}
 	return int(sum)
-}
-
-//go:nosplit
-func (t *mapOfTable) SumSizeExceeds(limit int) bool {
-	var sum uintptr
-	for i := 0; i <= t.sizeMask; i++ {
-		sum += loadInt(&t.size.At(i).c)
-		if int(sum) > limit {
-			return true
-		}
-	}
-	return false
 }
 
 // Lock acquires a spinlock for the bucket using embedded metadata.
