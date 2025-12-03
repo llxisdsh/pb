@@ -286,11 +286,12 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 						}
 						b.seq.WriteLocked(e, newE)
 					case DeleteOp:
+						meta = setByte(meta, slotEmpty, j)
 						b.seq.BeginWriteLocked()
 						e.WriteUnfenced(EntryOf[K, V]{})
-						meta = setByte(meta, slotEmpty, j)
 						atomic.StoreUint64(&b.meta, meta)
 						b.seq.EndWriteLocked()
+
 						table.AddSize(i, -1)
 					default:
 						// CancelOp: No-op
@@ -434,9 +435,9 @@ func (m *FlatMapOf[K, V]) Process(
 			}
 			// insert new
 			if emptyB != nil {
+				newMeta := setByte(emptyMeta, h2v, emptyIdx)
 				emptyB.seq.BeginWriteLocked()
 				emptyB.At(emptyIdx).WriteUnfenced(newE)
-				newMeta := setByte(emptyMeta, h2v, emptyIdx)
 				atomic.StoreUint64(&emptyB.meta, newMeta)
 				emptyB.seq.EndWriteLocked()
 
@@ -470,11 +471,12 @@ func (m *FlatMapOf[K, V]) Process(
 				root.Unlock()
 				return value, status
 			}
+			newMeta := setByte(oldMeta, slotEmpty, oldIdx)
 			oldB.seq.BeginWriteLocked()
 			oldB.At(oldIdx).WriteUnfenced(EntryOf[K, V]{})
-			newMeta := setByte(oldMeta, slotEmpty, oldIdx)
 			atomic.StoreUint64(&oldB.meta, newMeta)
 			oldB.seq.EndWriteLocked()
+
 			root.Unlock()
 			table.AddSize(idx, -1)
 			// Check if table shrinking is needed
