@@ -50,10 +50,10 @@ const (
 	entriesPerBucket = min(opByteIdx, (maxBucketBytes-bucketOverhead)/pointerSize)
 
 	// Metadata constants for bucket entry management
-	emptyMeta uint64 = 0
+	metaEmpty uint64 = 0
 	metaMask  uint64 = 0x8080808080808080 >>
 		(64 - min(entriesPerBucket*8, 64))
-	emptySlot uint8 = 0
+	slotEmpty uint8 = 0
 	slotMask  uint8 = 0x80
 )
 
@@ -736,13 +736,14 @@ func (m *MapOf[K, V]) processEntry(
 		}
 
 		var (
-			oldEntry *EntryOf[K, V]
-			oldB     *bucketOf
-			oldIdx   int
-			oldMeta  uint64
-			emptyB   *bucketOf
-			emptyIdx int
-			lastB    *bucketOf
+			oldEntry  *EntryOf[K, V]
+			oldB      *bucketOf
+			oldIdx    int
+			oldMeta   uint64
+			emptyB    *bucketOf
+			emptyIdx  int
+			emptyMeta uint64
+			lastB     *bucketOf
 		)
 
 	findLoop:
@@ -768,6 +769,7 @@ func (m *MapOf[K, V]) processEntry(
 				if empty := (^meta) & metaMask; empty != 0 {
 					emptyB = b
 					emptyIdx = firstMarkedByteIndex(empty)
+					emptyMeta = meta
 				}
 			}
 			lastB = b
@@ -797,7 +799,7 @@ func (m *MapOf[K, V]) processEntry(
 			}
 			// Delete
 			storePtr(oldB.At(oldIdx), nil)
-			newMeta := setByte(oldMeta, emptySlot, oldIdx)
+			newMeta := setByte(oldMeta, slotEmpty, oldIdx)
 			if oldB == root {
 				root.UnlockWithMeta(newMeta)
 			} else {
@@ -807,7 +809,7 @@ func (m *MapOf[K, V]) processEntry(
 			table.AddSize(idx, -1)
 
 			// Check if table shrinking is needed
-			if m.shrinkOn && newMeta&metaDataMask == emptyMeta &&
+			if m.shrinkOn && newMeta&metaDataMask == metaEmpty &&
 				loadPtr(&m.rs) == nil {
 				tableLen := table.mask + 1
 				if m.minLen < tableLen {
@@ -837,7 +839,7 @@ func (m *MapOf[K, V]) processEntry(
 			// and this reduces the window where meta is visible but pointer is
 			// still nil
 			storePtr(emptyB.At(emptyIdx), unsafe.Pointer(newEntry))
-			newMeta := setByte(loadIntFast(&emptyB.meta), h2v, emptyIdx)
+			newMeta := setByte(emptyMeta, h2v, emptyIdx)
 			if emptyB == root {
 				root.UnlockWithMeta(newMeta)
 			} else {
@@ -850,7 +852,7 @@ func (m *MapOf[K, V]) processEntry(
 
 		// No empty slot, create new bucket and insert
 		storePtr(&lastB.next, unsafe.Pointer(&bucketOf{
-			meta: setByte(emptyMeta, h2v, 0),
+			meta: setByte(metaEmpty, h2v, 0),
 			entries: [entriesPerBucket]unsafe.Pointer{
 				unsafe.Pointer(newEntry),
 			},
@@ -1115,7 +1117,7 @@ func (m *MapOf[K, V]) copyBucketOfLock(
 						next := (*bucketOf)(b.next)
 						if next == nil {
 							b.next = unsafe.Pointer(&bucketOf{
-								meta:    setByte(emptyMeta, h2v, 0),
+								meta:    setByte(metaEmpty, h2v, 0),
 								entries: [entriesPerBucket]unsafe.Pointer{unsafe.Pointer(e)},
 							})
 							break appendToBucket
@@ -1176,7 +1178,7 @@ func (m *MapOf[K, V]) copyBucketOf(
 						next := (*bucketOf)(b.next)
 						if next == nil {
 							b.next = unsafe.Pointer(&bucketOf{
-								meta:    setByte(emptyMeta, h2v, 0),
+								meta:    setByte(metaEmpty, h2v, 0),
 								entries: [entriesPerBucket]unsafe.Pointer{unsafe.Pointer(e)},
 							})
 							break appendToBucket
@@ -1292,7 +1294,7 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 							// Delete
 							storePtr(b.At(j), nil)
 							// Keep snapshot fresh to prevent stale meta
-							meta = setByte(meta, emptySlot, j)
+							meta = setByte(meta, slotEmpty, j)
 							storeInt(&b.meta, meta)
 							table.AddSize(i, -1)
 						}

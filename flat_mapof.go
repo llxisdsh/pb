@@ -149,9 +149,9 @@ func (m *FlatMapOf[K, V]) initSlow() {
 
 // Load retrieves the value for a key.
 //
-//   - Fast path: per-bucket seqlock read; an even and stable sequence yields
+//   - Per-bucket seqlock read; an even and stable sequence yields
 //     a consistent snapshot.
-//   - Contention handling: short spinning on observed writes (odd seq) or
+//   - Short spinning on observed writes (odd seq) or
 //     instability; no locked fallback path.
 //   - Provides stable latency under high concurrency.
 func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
@@ -288,7 +288,7 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 					case DeleteOp:
 						b.seq.BeginWriteLocked()
 						e.WriteUnfenced(EntryOf[K, V]{})
-						meta = setByte(meta, emptySlot, j)
+						meta = setByte(meta, slotEmpty, j)
 						atomic.StoreUint64(&b.meta, meta)
 						b.seq.EndWriteLocked()
 						table.AddSize(i, -1)
@@ -377,14 +377,14 @@ func (m *FlatMapOf[K, V]) Process(
 		}
 
 		var (
-			oldB     *flatBucket[K, V]
-			oldIdx   int
-			oldMeta  uint64
-			oldVal   V
-			loaded   bool
-			emptyB   *flatBucket[K, V]
-			emptyIdx int
-			lastB    *flatBucket[K, V]
+			oldV      V
+			oldB      *flatBucket[K, V]
+			oldIdx    int
+			oldMeta   uint64
+			emptyB    *flatBucket[K, V]
+			emptyIdx  int
+			emptyMeta uint64
+			lastB     *flatBucket[K, V]
 		)
 
 	findLoop:
@@ -395,12 +395,12 @@ func (m *FlatMapOf[K, V]) Process(
 				e := b.At(j).Ptr()
 				if embeddedHash {
 					if e.getHash() == hash && e.Key == key {
-						oldB, oldIdx, oldMeta, oldVal, loaded = b, j, meta, e.Value, true
+						oldV, oldB, oldIdx, oldMeta = e.Value, b, j, meta
 						break findLoop
 					}
 				} else {
 					if e.Key == key {
-						oldB, oldIdx, oldMeta, oldVal, loaded = b, j, meta, e.Value, true
+						oldV, oldB, oldIdx, oldMeta = e.Value, b, j, meta
 						break findLoop
 					}
 				}
@@ -409,15 +409,16 @@ func (m *FlatMapOf[K, V]) Process(
 				if empty := (^meta) & metaMask; empty != 0 {
 					emptyB = b
 					emptyIdx = firstMarkedByteIndex(empty)
+					emptyMeta = meta
 				}
 			}
 			lastB = b
 		}
 
-		newV, op, value, status := fn(oldVal, loaded)
+		newV, op, value, status := fn(oldV, oldB != nil)
 		switch op {
 		case UpdateOp:
-			if loaded {
+			if oldB != nil {
 				e := oldB.At(oldIdx)
 				newE := EntryOf[K, V]{Key: e.Ptr().Key, Value: newV}
 				if embeddedHash {
@@ -435,7 +436,7 @@ func (m *FlatMapOf[K, V]) Process(
 			if emptyB != nil {
 				emptyB.seq.BeginWriteLocked()
 				emptyB.At(emptyIdx).WriteUnfenced(newE)
-				newMeta := setByte(loadIntFast(&emptyB.meta), h2v, emptyIdx)
+				newMeta := setByte(emptyMeta, h2v, emptyIdx)
 				atomic.StoreUint64(&emptyB.meta, newMeta)
 				emptyB.seq.EndWriteLocked()
 
@@ -445,7 +446,7 @@ func (m *FlatMapOf[K, V]) Process(
 			}
 			// append new bucket
 			bucket := &flatBucket[K, V]{
-				meta: setByte(emptyMeta, h2v, 0),
+				meta: setByte(metaEmpty, h2v, 0),
 				entries: [entriesPerBucket]seqlockSlot[EntryOf[K, V]]{
 					{buf: newE},
 				},
@@ -465,19 +466,19 @@ func (m *FlatMapOf[K, V]) Process(
 			}
 			return value, status
 		case DeleteOp:
-			if !loaded {
+			if oldB == nil {
 				root.Unlock()
 				return value, status
 			}
 			oldB.seq.BeginWriteLocked()
 			oldB.At(oldIdx).WriteUnfenced(EntryOf[K, V]{})
-			newMeta := setByte(oldMeta, emptySlot, oldIdx)
+			newMeta := setByte(oldMeta, slotEmpty, oldIdx)
 			atomic.StoreUint64(&oldB.meta, newMeta)
 			oldB.seq.EndWriteLocked()
 			root.Unlock()
 			table.AddSize(idx, -1)
 			// Check if table shrinking is needed
-			if m.shrinkOn && newMeta&metaDataMask == emptyMeta &&
+			if m.shrinkOn && newMeta&metaDataMask == metaEmpty &&
 				atomic.LoadPointer(&m.rs) == nil {
 				tableLen := table.mask + 1
 				if minTableLen < tableLen {
@@ -801,7 +802,7 @@ func (m *FlatMapOf[K, V]) copyBucket(
 							newE.setHash(hash)
 						}
 						bucket := &flatBucket[K, V]{
-							meta: setByte(emptyMeta, h2v, 0),
+							meta: setByte(metaEmpty, h2v, 0),
 							entries: [entriesPerBucket]seqlockSlot[EntryOf[K, V]]{
 								{buf: newE},
 							},
@@ -869,7 +870,7 @@ func (m *FlatMapOf[K, V]) copyBucketLock(
 							newE.setHash(hash)
 						}
 						bucket := &flatBucket[K, V]{
-							meta: setByte(emptyMeta, h2v, 0),
+							meta: setByte(metaEmpty, h2v, 0),
 							entries: [entriesPerBucket]seqlockSlot[EntryOf[K, V]]{
 								{buf: newE},
 							},

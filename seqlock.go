@@ -48,6 +48,7 @@ func (sl *seqlock[SEQ, T]) slowRead(slot *seqlockSlot[T]) (v T) {
 			if ok = sl.EndRead(s1); ok {
 				return v
 			}
+			continue
 		}
 		delay(&spins)
 	}
