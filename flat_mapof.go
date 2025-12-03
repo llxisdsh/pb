@@ -592,8 +592,6 @@ func (m *FlatMapOf[K, V]) Clear() {
 
 // All returns an iterator function for use with range-over-func.
 // It provides the same functionality as Range but in iterator form.
-//
-//go:nosplit
 func (m *FlatMapOf[K, V]) All() func(yield func(K, V) bool) {
 	return m.Range
 }
@@ -601,8 +599,6 @@ func (m *FlatMapOf[K, V]) All() func(yield func(K, V) bool) {
 // Size returns the number of key-value pairs in the map.
 // This operation sums counters across all size stripes for an approximate
 // count.
-//
-//go:nosplit
 func (m *FlatMapOf[K, V]) Size() int {
 	table := m.tableSeq.Read(&m.table)
 	if table.buckets.ptr == nil {
@@ -613,8 +609,6 @@ func (m *FlatMapOf[K, V]) Size() int {
 }
 
 // IsZero checks if the map is empty.
-//
-//go:nosplit
 func (m *FlatMapOf[K, V]) IsZero() bool {
 	return m.Size() == 0
 }
@@ -927,7 +921,6 @@ func (b *flatBucket[K, V]) At(i int) *seqlockSlot[EntryOf[K, V]] {
 	))
 }
 
-//go:nosplit
 func (b *flatBucket[K, V]) Lock() {
 	cur := atomic.LoadUint64(&b.meta)
 	if atomic.CompareAndSwapUint64(&b.meta, cur&(^opLockMask), cur|opLockMask) {
@@ -936,7 +929,6 @@ func (b *flatBucket[K, V]) Lock() {
 	b.slowLock()
 }
 
-//go:nosplit
 func (b *flatBucket[K, V]) slowLock() {
 	var spins int
 	for !b.tryLock() {

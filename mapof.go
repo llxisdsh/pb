@@ -647,8 +647,6 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 //
 // Notes:
 //   - Never modify the Key or Value in an Entry under any circumstances.
-//
-//go:nosplit
 func (m *MapOf[K, V]) LoadEntry(key K) *EntryOf[K, V] {
 	table := (*mapOfTable)(loadPtr(&m.table))
 	if table == nil {
@@ -1388,8 +1386,6 @@ func (e *IterEntry[K, V]) Delete() {
 //   - The iteration order is not guaranteed to be deterministic
 //   - For read-only iteration, prefer Range() or All() methods for better
 //     performance
-//
-//go:nosplit
 func (m *MapOf[K, V]) ProcessAll(policyOpt ...WriterPolicy) func(yield func(*IterEntry[K, V]) bool) {
 	return func(yield func(*IterEntry[K, V]) bool) {
 		var e IterEntry[K, V]
@@ -1440,8 +1436,6 @@ func (m *MapOf[K, V]) ProcessAll(policyOpt ...WriterPolicy) func(yield func(*Ite
 //   - Iteration order is guaranteed to match the order of provided keys
 //   - Only processes the specified keys, not all entries in the map
 //   - Holds bucket lock for each key individually during processing
-//
-//go:nosplit
 func (m *MapOf[K, V]) ProcessSpecified(keys ...K) func(yield func(*IterEntry[K, V]) bool) {
 	return func(yield func(*IterEntry[K, V]) bool) {
 		var e IterEntry[K, V]
@@ -2133,29 +2127,21 @@ func (m *MapOf[K, V]) RangeEntry(yield func(loaded *EntryOf[K, V]) bool) {
 }
 
 // All compatible with `sync.Map`.
-//
-//go:nosplit
 func (m *MapOf[K, V]) All() func(yield func(K, V) bool) {
 	return m.Range
 }
 
 // Keys is the iterator version for iterating over all keys.
-//
-//go:nosplit
 func (m *MapOf[K, V]) Keys() func(yield func(K) bool) {
 	return m.RangeKeys
 }
 
 // Values is the iterator version for iterating over all values.
-//
-//go:nosplit
 func (m *MapOf[K, V]) Values() func(yield func(V) bool) {
 	return m.RangeValues
 }
 
 // Range compatible with `sync.Map`.
-//
-//go:nosplit
 func (m *MapOf[K, V]) Range(yield func(key K, value V) bool) {
 	m.RangeEntry(func(e *EntryOf[K, V]) bool {
 		return yield(e.Key, e.Value)
@@ -2163,8 +2149,6 @@ func (m *MapOf[K, V]) Range(yield func(key K, value V) bool) {
 }
 
 // RangeKeys to iterate over all keys
-//
-//go:nosplit
 func (m *MapOf[K, V]) RangeKeys(yield func(key K) bool) {
 	m.RangeEntry(func(e *EntryOf[K, V]) bool {
 		return yield(e.Key)
@@ -2172,8 +2156,6 @@ func (m *MapOf[K, V]) RangeKeys(yield func(key K) bool) {
 }
 
 // RangeValues to iterate over all values
-//
-//go:nosplit
 func (m *MapOf[K, V]) RangeValues(yield func(value V) bool) {
 	m.RangeEntry(func(e *EntryOf[K, V]) bool {
 		return yield(e.Value)
@@ -2184,8 +2166,6 @@ func (m *MapOf[K, V]) RangeValues(yield func(value V) bool) {
 // This is an O(1) operation.
 //
 // Compatible with `xsync.MapOf`.
-//
-//go:nosplit
 func (m *MapOf[K, V]) Size() int {
 	table := (*mapOfTable)(loadPtr(&m.table))
 	if table == nil {
@@ -2195,8 +2175,6 @@ func (m *MapOf[K, V]) Size() int {
 }
 
 // IsZero checks zero values, faster than Size().
-//
-//go:nosplit
 func (m *MapOf[K, V]) IsZero() bool {
 	return m.Size() == 0
 }
@@ -2230,8 +2208,6 @@ func (m *MapOf[K, V]) ToMapWithLimit(limit int) map[K]V {
 }
 
 // HasKey to check if the key exist
-//
-//go:nosplit
 func (m *MapOf[K, V]) HasKey(key K) bool {
 	table := (*mapOfTable)(loadPtr(&m.table))
 	if table == nil {
@@ -2887,8 +2863,6 @@ func (t *mapOfTable) SumSize() int {
 // Lock acquires a spinlock for the bucket using embedded metadata.
 // Uses atomic operations on the meta field to avoid false sharing overhead.
 // Implements optimistic locking with fallback to spinning.
-//
-//go:nosplit
 func (b *bucketOf) Lock() {
 	cur := loadInt(&b.meta)
 	if atomic.CompareAndSwapUint64(&b.meta, cur&(^opLockMask), cur|opLockMask) {
@@ -3187,7 +3161,6 @@ type unsafeSlice[T any] struct {
 	ptr unsafe.Pointer
 }
 
-//go:nosplit
 func makeUnsafeSlice[T any](s []T) unsafeSlice[T] {
 	return unsafeSlice[T]{ptr: unsafe.Pointer(unsafe.SliceData(s))}
 }
@@ -3197,7 +3170,6 @@ func (s unsafeSlice[T]) At(i int) *T {
 	return (*T)(unsafe.Add(s.ptr, unsafe.Sizeof(*new(T))*uintptr(i)))
 }
 
-//go:nosplit
 func trySpin(spins *int) bool {
 	if runtime_canSpin(*spins) {
 		*spins++
@@ -3223,14 +3195,12 @@ func delay(spins *int) {
 // nolint:all
 //
 //go:linkname runtime_canSpin sync.runtime_canSpin
-//go:nosplit
 //goland:noinspection ALL
 func runtime_canSpin(i int) bool
 
 // nolint:all
 //
 //go:linkname runtime_doSpin sync.runtime_doSpin
-//go:nosplit
 //goland:noinspection ALL
 func runtime_doSpin()
 
