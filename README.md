@@ -760,9 +760,11 @@ go build -tags mapof_opt_cachelinesize_128  # For some high-end server CPUs
 go build -tags mapof_opt_cachelinesize_256  # For some specialized architectures
 
 # === Counter Performance Optimization ===
-# Add padding around counters to reduce false sharing in high-concurrency scenarios
-# Note: Increases memory usage - suitable for memory-abundant, high-concurrency environments
-go build -tags mapof_opt_enablepadding
+# Add padding around counters to reduce false sharing in high‑concurrency scenarios.
+# By default, padding is selected automatically based on CPU architecture;
+# you can override this behavior via build tags:
+go build -tags mapof_opt_disablepadding  # Force disable counters padding
+go build -tags mapof_opt_enablepadding   # Force enable counters padding
 
 # === Hash Caching Optimization ===
 # Cache hash values in entries, suitable for expensive hash computation scenarios
