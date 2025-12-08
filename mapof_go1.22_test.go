@@ -4173,7 +4173,7 @@ func TestMapOfWithHasher(t *testing.T) {
 }
 
 func murmur3Finalizer(i int, _ uintptr) uintptr {
-	if bits.UintSize >= 64 {
+	if bits.UintSize == 64 {
 		h := uint32(i >> 32)
 		h = (h ^ (h >> 16)) * 0x85ebca6b
 		h = (h ^ (h >> 13)) * 0xc2b2ae35
@@ -8898,7 +8898,7 @@ func TestMapOf_EmbeddedHash(t *testing.T) {
 		// Verify it's still 0 since setHash is a no-op
 		hash = entry.getHash()
 		//goland:noinspection ALL
-		if embeddedHash {
+		if embeddedHash_ {
 			if hash != 0x12345678 {
 				t.Errorf("After setHash, Entry.getHash() = %d, want 0x12345678", hash)
 			}

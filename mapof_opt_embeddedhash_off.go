@@ -2,19 +2,15 @@
 
 package pb
 
-const embeddedHash = false
+const embeddedHash_ = false
 
-// EntryOf is an immutable key-value entry type for [MapOf]
-type EntryOf[K comparable, V any] struct {
-	Key   K
-	Value V
-}
+type embeddedHash struct{}
 
 //go:nosplit
-func (e *EntryOf[K, V]) getHash() uintptr {
+func (e *embeddedHash) getHash() uintptr {
 	return 0
 }
 
 //go:nosplit
-func (e *EntryOf[K, V]) setHash(_ uintptr) {
+func (e *embeddedHash) setHash(_ uintptr) {
 }

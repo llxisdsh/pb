@@ -22,7 +22,7 @@ const (
 	metaDataMask = uint64(0x00ffffffffffffff)
 
 	// entriesPerBucket defines the number of per-bucket entry pointers.
-	// Computed at compile time to avoid padding while packing buckets
+	// Computed at compile time to avoid Padding while packing buckets
 	// tightly within cache lines.
 	//
 	// Calculation:
@@ -34,9 +34,9 @@ const (
 	//
 	// Rationale:
 	//   - 64-bit: bucket size becomes 64B → 1/2/4 buckets per
-	//     64/128/256B cache line, with no per-bucket padding.
+	//     64/128/256B cache line, with no per-bucket Padding.
 	//   - 32-bit: bucket size becomes 32B → 2/4/8 buckets per
-	//     64/128/256B cache line, also without padding.
+	//     64/128/256B cache line, also without Padding.
 	//
 	// Example outcomes (ptrSize, CacheLineSize → entries):
 	//   (8,  32) → 2  ; (8,  64) → 6 ; (8, 128) → 6 ; (8, 256) → 6
@@ -89,6 +89,13 @@ const (
 const (
 	errUnexpectedCompareValue = "called CompareAndSwap/CompareAndDelete when value is not of comparable type"
 )
+
+// EntryOf is an immutable key-value entry type for [MapOf]
+type EntryOf[K comparable, V any] struct {
+	embeddedHash
+	Key   K
+	Value V
+}
 
 // MapOf is a high-performance concurrent map implementation that is fully
 // compatible with sync.Map API and significantly outperforms sync.Map in
@@ -145,22 +152,34 @@ type mapOfTable struct {
 	chunkSz int
 }
 
+// counterStripe represents a striped counter to reduce contention.
+//
+// Padding strategy:
+//   - amd64: Padding is omitted by default — performance is identical
+//     with or without Padding on this architecture.
+//   - Other 64‑bit arches: Padding is automatically enabled by default
+//     to prevent false sharing.
+//   - 32‑bit arches: Padding is automatically disabled to save memory.
+//
+// Manual override via build options:
+//   - mapof_opt_enablepadding – force Padding on any architecture.
+//   - mapof_opt_disablepadding – force disable Padding on any architecture.
+//
+// When Padding is active, each stripe occupies a full cache line.
+// This consumes a small amount of extra memory, but significantly reduces
+// performance loss due to false sharing.
+type counterStripe struct {
+	_ [(CacheLineSize - unsafe.Sizeof(struct {
+		c uintptr
+	}{})%CacheLineSize) % CacheLineSize * padding_]byte
+	c uintptr // Counter value, accessed atomically
+}
+
 // bucketOf represents a hash table bucket with cache-line alignment.
 type bucketOf struct {
-	// meta: SWAR-optimized metadata for fast entry lookups
-	// (must be 64-bit aligned)
-	_    [0]atomic.Uint64
-	meta uint64
-
-	// Cache line layout is optimal;
-	// omit padding fields to reduce memory footprint.
-	// _ [(CacheLineSize - unsafe.Sizeof(struct {
-	// 	_       [0]int64
-	// 	meta    uint64
-	// 	entries [entriesPerBucket]unsafe.Pointer
-	// 	next    unsafe.Pointer
-	// }{})%CacheLineSize) % CacheLineSize]byte
-
+	// meta: metadata for fast entry lookups, must be 64-bit aligned.
+	_       [0]atomic.Uint64
+	meta    uint64
 	entries [entriesPerBucket]unsafe.Pointer // *EntryOf
 	next    unsafe.Pointer                   // *bucketOf
 }
@@ -216,6 +235,19 @@ type MapConfig struct {
 	// which provides better performance but may use more memory.
 	// When true, the map will shrink when occupancy < 1/shrinkFraction.
 	ShrinkEnabled bool
+}
+
+func (cfg *MapConfig) hashOpts(intKey *bool) {
+	for _, o := range cfg.HashOpts {
+		switch o {
+		case LinearDistribution:
+			*intKey = true
+		case ShiftDistribution:
+			*intKey = false
+		default:
+			// AutoDistribution: default distribution
+		}
+	}
 }
 
 // WithPresize configuring new MapOf instance with capacity enough
@@ -440,6 +472,23 @@ func WithBuiltInHasher[T comparable]() func(*MapConfig) {
 	}
 }
 
+// GetBuiltInHasher returns Go's built-in hash function for the specified type.
+// This function provides direct access to the same hash function that Go's
+// built-in map uses internally, ensuring optimal performance and compatibility.
+//
+// The returned hash function is type-specific and optimized for the given
+// comparable type T. It uses Go's internal type representation to access
+// the most efficient hashing implementation available.
+//
+// Usage:
+//
+//	hashFunc := GetBuiltInHasher[string]()
+//	m := NewMapOf[string, int](WithKeyHasherUnsafe(GetBuiltInHasher[string]()))
+func GetBuiltInHasher[T comparable]() HashFunc {
+	keyHash, _ := defaultHasherUsingBuiltIn[T, struct{}]()
+	return keyHash
+}
+
 // IHashCode defines a custom hash function interface for key types.
 // Key types implementing this interface can provide their own hash computation,
 // serving as an alternative to WithKeyHasher for type-specific optimization.
@@ -484,6 +533,19 @@ type IHashOpts interface {
 	HashOpts() []HashOptimization
 }
 
+func parseKeyInterface[K comparable]() (keyHash HashFunc, hashOpts []HashOptimization) {
+	var k *K
+	if _, ok := any(k).(IHashCode); ok {
+		keyHash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
+			return any((*K)(ptr)).(IHashCode).HashCode(seed)
+		}
+		if _, ok := any(k).(IHashOpts); ok {
+			hashOpts = any(*new(K)).(IHashOpts).HashOpts()
+		}
+	}
+	return
+}
+
 // IEqual defines a custom equality comparison interface for value types.
 // Value types implementing this interface can provide their own equality logic,
 // serving as an alternative to WithValueEqual for type-specific comparison.
@@ -505,6 +567,16 @@ type IHashOpts interface {
 //	}
 type IEqual[T any] interface {
 	Equal(other T) bool
+}
+
+func parseValueInterface[V any]() (valEqual EqualFunc) {
+	var v *V
+	if _, ok := any(v).(IEqual[V]); ok {
+		valEqual = func(ptr unsafe.Pointer, other unsafe.Pointer) bool {
+			return any((*V)(ptr)).(IEqual[V]).Equal(*(*V)(other))
+		}
+	}
+	return
 }
 
 // InitWithOptions initializes the MapOf instance using variadic option
@@ -627,7 +699,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
 			if e := (*EntryOf[K, V])(loadPtr(b.At(j))); e != nil {
-				if embeddedHash {
+				if embeddedHash_ {
 					if e.getHash() == hash && e.Key == key {
 						return e.Value, true
 					}
@@ -671,7 +743,7 @@ func (m *MapOf[K, V]) findEntry(
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
 			if e := (*EntryOf[K, V])(loadPtr(b.At(j))); e != nil {
-				if embeddedHash {
+				if embeddedHash_ {
 					if e.getHash() == hash && e.Key == *key {
 						return e
 					}
@@ -750,7 +822,7 @@ func (m *MapOf[K, V]) processEntry(
 			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
-					if embeddedHash {
+					if embeddedHash_ {
 						if e.getHash() == hash && e.Key == *key {
 							oldEntry, oldB, oldIdx, oldMeta = e, b, j, meta
 							break findLoop
@@ -784,7 +856,7 @@ func (m *MapOf[K, V]) processEntry(
 			}
 			if newEntry != nil {
 				// Update
-				if embeddedHash {
+				if embeddedHash_ {
 					newEntry.setHash(hash)
 				}
 				newEntry.Key = *key
@@ -827,7 +899,7 @@ func (m *MapOf[K, V]) processEntry(
 		}
 
 		// Insert
-		if embeddedHash {
+		if embeddedHash_ {
 			newEntry.setHash(hash)
 		}
 		newEntry.Key = *key
@@ -1091,7 +1163,7 @@ func (m *MapOf[K, V]) copyBucketOfLock(
 				j := firstMarkedByteIndex(marked)
 				if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
 					var hash uintptr
-					if embeddedHash {
+					if embeddedHash_ {
 						hash = e.getHash()
 					} else {
 						hash = keyHash(noescape(unsafe.Pointer(&e.Key)), seed)
@@ -1153,7 +1225,7 @@ func (m *MapOf[K, V]) copyBucketOf(
 				j := firstMarkedByteIndex(marked)
 				if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
 					var hash uintptr
-					if embeddedHash {
+					if embeddedHash_ {
 						hash = e.getHash()
 					} else {
 						hash = keyHash(noescape(unsafe.Pointer(&e.Key)), seed)
@@ -1282,7 +1354,7 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 						if newEntry != nil {
 							if newEntry != e {
 								// Update
-								if embeddedHash {
+								if embeddedHash_ {
 									newEntry.setHash(e.getHash())
 								}
 								newEntry.Key = e.Key
@@ -2909,6 +2981,10 @@ func (b *bucketOf) At(i int) *unsafe.Pointer {
 	)
 }
 
+// ============================================================================
+// Utility Functions
+// ============================================================================
+
 // parallelProcess executes the given processor function in parallel batches.
 // It automatically splits the work across available CPU cores and falls back
 // to serial processing if not beneficial.
@@ -3010,11 +3086,15 @@ func nextPowOf2(n int) int {
 	v |= v >> 4
 	v |= v >> 8
 	v |= v >> 16
-	if bits.UintSize >= 64 {
+	if bits.UintSize == 64 {
 		v |= v >> 32
 	}
 	return v + 1
 }
+
+// ============================================================================
+// SWAR Utilities
+// ============================================================================
 
 // spread improves hash distribution by XORing the original hash with its high
 // bits.
@@ -3142,18 +3222,9 @@ func noEscape[T any](p *T) *T {
 	return (*T)(noescape(unsafe.Pointer(p)))
 }
 
-// noCopy may be added to structs which must not be copied
-// after the first use.
-//
-// See https://golang.org/issues/8005#issuecomment-190753527
-// for details.
-//
-// Note that it must not be embedded, due to the Lock and Unlock methods.
-type noCopy struct{}
-
-// Lock is a no-op used by -copylocks checker from `go vet`.
-func (*noCopy) Lock()   {}
-func (*noCopy) Unlock() {}
+// ============================================================================
+// Slice Utilities
+// ============================================================================
 
 // unsafeSlice provides semi-ergonomic limited slice-like functionality
 // without bounds checking for fixed sized slices.
@@ -3169,6 +3240,23 @@ func makeUnsafeSlice[T any](s []T) unsafeSlice[T] {
 func (s unsafeSlice[T]) At(i int) *T {
 	return (*T)(unsafe.Add(s.ptr, unsafe.Sizeof(*new(T))*uintptr(i)))
 }
+
+// ============================================================================
+// Locker Utilities
+// ============================================================================
+
+// noCopy may be added to structs which must not be copied
+// after the first use.
+//
+// See https://golang.org/issues/8005#issuecomment-190753527
+// for details.
+//
+// Note that it must not be embedded, due to the Lock and Unlock methods.
+type noCopy struct{}
+
+// Lock is a no-op used by -copylocks checker from `go vet`.
+func (*noCopy) Lock()   {}
+func (*noCopy) Unlock() {}
 
 func trySpin(spins *int) bool {
 	if runtime_canSpin(*spins) {
@@ -3204,58 +3292,9 @@ func runtime_canSpin(i int) bool
 //goland:noinspection ALL
 func runtime_doSpin()
 
-func parseKeyInterface[K comparable]() (keyHash HashFunc, hashOpts []HashOptimization) {
-	var k *K
-	if _, ok := any(k).(IHashCode); ok {
-		keyHash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
-			return any((*K)(ptr)).(IHashCode).HashCode(seed)
-		}
-		if _, ok := any(k).(IHashOpts); ok {
-			hashOpts = any(*new(K)).(IHashOpts).HashOpts()
-		}
-	}
-	return
-}
-
-func parseValueInterface[V any]() (valEqual EqualFunc) {
-	var v *V
-	if _, ok := any(v).(IEqual[V]); ok {
-		valEqual = func(ptr unsafe.Pointer, other unsafe.Pointer) bool {
-			return any((*V)(ptr)).(IEqual[V]).Equal(*(*V)(other))
-		}
-	}
-	return
-}
-
-func (cfg *MapConfig) hashOpts(intKey *bool) {
-	for _, o := range cfg.HashOpts {
-		switch o {
-		case LinearDistribution:
-			*intKey = true
-		case ShiftDistribution:
-			*intKey = false
-		default:
-			// AutoDistribution: default distribution
-		}
-	}
-}
-
-// GetBuiltInHasher returns Go's built-in hash function for the specified type.
-// This function provides direct access to the same hash function that Go's
-// built-in map uses internally, ensuring optimal performance and compatibility.
-//
-// The returned hash function is type-specific and optimized for the given
-// comparable type T. It uses Go's internal type representation to access
-// the most efficient hashing implementation available.
-//
-// Usage:
-//
-//	hashFunc := GetBuiltInHasher[string]()
-//	m := NewMapOf[string, int](WithKeyHasherUnsafe(GetBuiltInHasher[string]()))
-func GetBuiltInHasher[T comparable]() HashFunc {
-	keyHash, _ := defaultHasherUsingBuiltIn[T, struct{}]()
-	return keyHash
-}
+// ============================================================================
+// Hash Utilities
+// ============================================================================
 
 type (
 	// HashFunc is the function to hash a value of type K.
@@ -3275,7 +3314,7 @@ func defaultHasher[K comparable, V any]() (
 	case uint, int, uintptr:
 		return hashUintptr, valEqual, true
 	case uint64, int64:
-		if bits.UintSize >= 64 {
+		if bits.UintSize == 64 {
 			return hashUint64, valEqual, true
 		} else {
 			return hashUint64On32Bit, valEqual, true
@@ -3301,7 +3340,7 @@ func defaultHasher[K comparable, V any]() (
 		case reflect.Uint, reflect.Int, reflect.Uintptr:
 			return hashUintptr, valEqual, true
 		case reflect.Int64, reflect.Uint64:
-			if bits.UintSize >= 64 {
+			if bits.UintSize == 64 {
 				return hashUint64, valEqual, true
 			} else {
 				return hashUint64On32Bit, valEqual, true
@@ -3458,6 +3497,109 @@ func iTypeOf(a any) *iType {
 type iEmptyInterface struct {
 	Type *iType
 	Data unsafe.Pointer
+}
+
+// ============================================================================
+// Atomic Utilities
+// ============================================================================
+
+// isTSO_ detects TSO architectures; on TSO, plain reads/writes are safe for
+// pointers and native word-sized integers
+//
+//goland:noinspection GoBoolExpressions
+const isTSO_ = runtime.GOARCH == "amd64" ||
+	runtime.GOARCH == "386" ||
+	runtime.GOARCH == "s390x"
+
+//goland:noinspection GoBoolExpressions
+const noRaceTSO_ = !race_ && isTSO_
+
+// loadPtr loads a pointer atomically on non-TSO architectures.
+// On TSO architectures, it performs a plain pointer load.
+//
+//go:nosplit
+func loadPtr(addr *unsafe.Pointer) unsafe.Pointer {
+	if noRaceTSO_ {
+		return *addr
+	} else {
+		return atomic.LoadPointer(addr)
+	}
+}
+
+// storePtr stores a pointer atomically on non-TSO architectures.
+// On TSO architectures, it performs a plain pointer store.
+//
+//go:nosplit
+func storePtr(addr *unsafe.Pointer, val unsafe.Pointer) {
+	if noRaceTSO_ {
+		*addr = val
+	} else {
+		atomic.StorePointer(addr, val)
+	}
+}
+
+// loadInt aligned integer load; plain on TSO when width matches,
+// otherwise atomic
+//
+//go:nosplit
+func loadInt[T ~uint32 | ~uint64 | ~uintptr](addr *T) T {
+	if unsafe.Sizeof(T(0)) == 4 {
+		if noRaceTSO_ {
+			return *addr
+		} else {
+			return T(atomic.LoadUint32((*uint32)(unsafe.Pointer(addr))))
+		}
+	} else {
+		if noRaceTSO_ && bits.UintSize == 64 {
+			return *addr
+		} else {
+			return T(atomic.LoadUint64((*uint64)(unsafe.Pointer(addr))))
+		}
+	}
+}
+
+// storeInt aligned integer store; plain on TSO when width matches,
+// otherwise atomic
+//
+//go:nosplit
+func storeInt[T ~uint32 | ~uint64 | ~uintptr](addr *T, val T) {
+	if unsafe.Sizeof(T(0)) == 4 {
+		if noRaceTSO_ {
+			*addr = val
+		} else {
+			atomic.StoreUint32((*uint32)(unsafe.Pointer(addr)), uint32(val))
+		}
+	} else {
+		if noRaceTSO_ && bits.UintSize == 64 {
+			*addr = val
+		} else {
+			atomic.StoreUint64((*uint64)(unsafe.Pointer(addr)), uint64(val))
+		}
+	}
+}
+
+// loadIntFast performs a non-atomic read, safe only when the caller holds
+// a relevant lock or is within a seqlock read window.
+//
+//go:nosplit
+func loadIntFast[T ~uint32 | ~uint64 | ~uintptr](addr *T) T {
+	if race_ {
+		return loadInt(addr)
+	} else {
+		return *addr
+	}
+}
+
+// storeIntFast performs a non-atomic write, safe only for thread-private or
+// not-yet-published memory locations.
+//
+//go:nosplit
+func storeIntFast[T ~uint32 | ~uint64 | ~uintptr](addr *T, val T) {
+	if race_ {
+		storeInt(addr, val)
+	} else {
+		*addr = val
+	}
 }
 
 // Concurrency variable access rules:
