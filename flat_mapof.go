@@ -167,7 +167,7 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 			delay(&spins)
 			goto retry
 		}
-		meta := loadIntFast(&b.meta)
+		meta := b.meta
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
 			e := b.At(j).ReadUnfenced()
@@ -213,7 +213,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 				delay(&spins)
 				goto retry
 			}
-			meta = loadIntFast(&b.meta)
+			meta = b.meta
 			cacheCount = 0
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
@@ -278,7 +278,7 @@ func (m *FlatMapOf[K, V]) RangeProcess(
 			root := table.buckets.At(i)
 			root.Lock()
 			for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
-				meta := loadIntFast(&b.meta)
+				meta := b.meta
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 					j := firstMarkedByteIndex(marked)
 					e := b.At(j)
@@ -397,7 +397,7 @@ func (m *FlatMapOf[K, V]) Process(
 
 	findLoop:
 		for b := root; b != nil; b = (*flatBucket[K, V])(b.next) {
-			meta := loadIntFast(&b.meta)
+			meta := b.meta
 			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j).Ptr()
@@ -764,9 +764,9 @@ func (m *FlatMapOf[K, V]) helpCopyAndWait(rs *flatRebuildState[K, V]) {
 		start := int(process) * chunkSz
 		end := min(start+chunkSz, tableLen)
 		if isGrowth {
-			m.copyBucket(&table, start, end, &newTable)
+			m.copyBucketGrow(&table, start, end, &newTable)
 		} else {
-			m.copyBucketLock(&table, start, end, &newTable)
+			m.copyBucketShrink(&table, start, end, &newTable)
 		}
 		if atomic.AddInt32(&rs.completed, 1) == chunks {
 			m.tableSeq.WriteLocked(&m.table, newTable)
@@ -776,139 +776,118 @@ func (m *FlatMapOf[K, V]) helpCopyAndWait(rs *flatRebuildState[K, V]) {
 	}
 }
 
-func (m *FlatMapOf[K, V]) copyBucket(
+func (m *FlatMapOf[K, V]) copyBucketGrow(
 	table *flatTable[K, V],
 	start, end int,
 	newTable *flatTable[K, V],
 ) {
+	mask := newTable.mask
+	seed := m.seed
+	keyHash := m.keyHash
+	intKey := m.intKey
 	copied := 0
-	var hash uintptr
 	for i := start; i < end; i++ {
-		srcBucket := table.buckets.At(i)
-		srcBucket.Lock()
-		for b := srcBucket; b != nil; b = (*flatBucket[K, V])(b.next) {
-			meta := loadIntFast(&b.meta)
+		srcB := table.buckets.At(i)
+		srcB.Lock()
+		for b := srcB; b != nil; b = (*flatBucket[K, V])(b.next) {
+			meta := b.meta
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j).Ptr()
+				var hash uintptr
 				if embeddedHash_ {
 					hash = e.getHash()
 				} else {
-					hash = m.keyHash(noescape(unsafe.Pointer(&e.Key)), m.seed)
+					hash = keyHash(noescape(unsafe.Pointer(&e.Key)), seed)
 				}
-				idx := newTable.mask & h1(hash, m.intKey)
-				destBucket := newTable.buckets.At(idx)
+				idx := mask & h1(hash, intKey)
+				destB := newTable.buckets.At(idx)
 				h2v := h2(hash)
-
-				b := destBucket
-			appendTo:
-				for {
-					meta := loadIntFast(&b.meta)
-					empty := (^meta) & metaMask
-					if empty != 0 {
-						emptyIdx := firstMarkedByteIndex(empty)
-						storeIntFast(&b.meta, setByte(meta, h2v, emptyIdx))
-						entry := b.At(emptyIdx).Ptr()
-						entry.Value = e.Value
-						if embeddedHash_ {
-							entry.setHash(hash)
-						}
-						entry.Key = e.Key
-						break appendTo
-					}
-					next := (*flatBucket[K, V])(b.next)
-					if next == nil {
-						newE := EntryOf[K, V]{Key: e.Key, Value: e.Value}
-						if embeddedHash_ {
-							newE.setHash(hash)
-						}
-						bucket := &flatBucket[K, V]{
-							meta: setByte(metaEmpty, h2v, 0),
-							entries: [entriesPerBucket]seqlockSlot[EntryOf[K, V]]{
-								{buf: newE},
-							},
-						}
-						b.next = unsafe.Pointer(bucket)
-						break appendTo
-					}
-					b = next
-				}
+				appendFlatEntry(h2v, e, destB)
 				copied++
 			}
 		}
-		srcBucket.Unlock()
+		srcB.Unlock()
 	}
 	if copied != 0 {
 		newTable.AddSize(start, copied)
 	}
 }
 
-func (m *FlatMapOf[K, V]) copyBucketLock(
+func (m *FlatMapOf[K, V]) copyBucketShrink(
 	table *flatTable[K, V],
 	start, end int,
 	newTable *flatTable[K, V],
 ) {
+	mask := newTable.mask
+	seed := m.seed
+	keyHash := m.keyHash
 	copied := 0
-	var hash uintptr
 	for i := start; i < end; i++ {
-		srcBucket := table.buckets.At(i)
-		srcBucket.Lock()
-		for b := srcBucket; b != nil; b = (*flatBucket[K, V])(b.next) {
-			meta := loadIntFast(&b.meta)
+		srcB := table.buckets.At(i)
+		srcB.Lock()
+		idx := i & mask
+		destB := newTable.buckets.At(idx)
+		locked := false
+		for b := srcB; b != nil; b = (*flatBucket[K, V])(b.next) {
+			meta := b.meta
+			if meta&metaMask == 0 {
+				continue
+			}
+			if !locked {
+				locked = true
+				destB.Lock()
+			}
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				e := b.At(j).Ptr()
+				var hash uintptr
 				if embeddedHash_ {
 					hash = e.getHash()
 				} else {
-					hash = m.keyHash(noescape(unsafe.Pointer(&e.Key)), m.seed)
+					hash = keyHash(noescape(unsafe.Pointer(&e.Key)), seed)
 				}
-				idx := newTable.mask & h1(hash, m.intKey)
-				destBucket := newTable.buckets.At(idx)
 				h2v := h2(hash)
-
-				destBucket.Lock()
-				b := destBucket
-			appendTo:
-				for {
-					meta := loadIntFast(&b.meta)
-					empty := (^meta) & metaMask
-					if empty != 0 {
-						emptyIdx := firstMarkedByteIndex(empty)
-						storeIntFast(&b.meta, setByte(meta, h2v, emptyIdx))
-						entry := b.At(emptyIdx).Ptr()
-						entry.Value = e.Value
-						if embeddedHash_ {
-							entry.setHash(hash)
-						}
-						entry.Key = e.Key
-						break appendTo
-					}
-					next := (*flatBucket[K, V])(b.next)
-					if next == nil {
-						newE := EntryOf[K, V]{Key: e.Key, Value: e.Value}
-						if embeddedHash_ {
-							newE.setHash(hash)
-						}
-						bucket := &flatBucket[K, V]{
-							meta: setByte(metaEmpty, h2v, 0),
-							entries: [entriesPerBucket]seqlockSlot[EntryOf[K, V]]{
-								{buf: newE},
-							},
-						}
-						b.next = unsafe.Pointer(bucket)
-						break appendTo
-					}
-					b = next
-				}
-				destBucket.Unlock()
+				appendFlatEntry(h2v, e, destB)
 				copied++
 			}
 		}
-		srcBucket.Unlock()
+		if locked {
+			destB.Unlock()
+		}
+		srcB.Unlock()
 	}
 	if copied != 0 {
 		newTable.AddSize(start, copied)
+	}
+}
+
+//go:nosplit
+func appendFlatEntry[K comparable, V any](
+	h2v uint8,
+	e *EntryOf[K, V],
+	destB *flatBucket[K, V],
+) {
+	for {
+		meta := destB.meta
+		empty := (^meta) & metaMask
+		if empty != 0 {
+			emptyIdx := firstMarkedByteIndex(empty)
+			destB.meta = setByte(meta, h2v, emptyIdx)
+			*destB.At(emptyIdx).Ptr() = *e
+			return
+		}
+		next := (*flatBucket[K, V])(destB.next)
+		if next == nil {
+			destB.next = unsafe.Pointer(&flatBucket[K, V]{
+				meta: setByte(metaEmpty, h2v, 0),
+				entries: [entriesPerBucket]seqlockSlot[EntryOf[K, V]]{
+					{buf: *e},
+				},
+			})
+			return
+		}
+		destB = next
 	}
 }
 
@@ -976,5 +955,5 @@ func (b *flatBucket[K, V]) tryLock() bool {
 
 //go:nosplit
 func (b *flatBucket[K, V]) Unlock() {
-	atomic.StoreUint64(&b.meta, loadIntFast(&b.meta)&^opLockMask)
+	atomic.StoreUint64(&b.meta, b.meta&^opLockMask)
 }
