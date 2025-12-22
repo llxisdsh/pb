@@ -2,6 +2,11 @@
 [![Go Reference](https://pkg.go.dev/badge/github.com/llxisdsh/pb.svg)](https://pkg.go.dev/github.com/llxisdsh/pb)[![Go Report Card](https://goreportcard.com/badge/github.com/llxisdsh/pb)](https://goreportcard.com/report/github.com/llxisdsh/pb)[![Codecov](https://codecov.io/gh/llxisdsh/pb/branch/main/graph/badge.svg)](https://codecov.io/gh/llxisdsh/pb)[![GitHub Actions](https://github.com/llxisdsh/pb/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/llxisdsh/pb/actions)
 -->
 
+> This repository is stable and focuses on bug fixes.
+Prefer a simpler API with more concurrency primitives? Try
+[Concurrent Core](https://llxisdsh.github.io/cc/) — a lightweight, high‑performance Go toolkit for
+latency‑critical paths.
+
 # MapOf
 
 MapOf is a high-performance concurrent map optimized for read-dominant and mixed read/write workloads, outperforming sync.Map in many common scenarios. Its core design combines lock-free reads with bucket-level fine-grained synchronization on writes, together with cache-line–aware layout, parallel resizing, and pluggable hashing/equality. This yields high throughput with markedly improved tail-latency stability.
