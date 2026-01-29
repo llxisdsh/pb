@@ -17,7 +17,7 @@ import (
 func TestHashTrieMapStructSize(t *testing.T) {
 	size := unsafe.Sizeof(HashTrieMap[string, int]{})
 	t.Log("HashTrieMap[string,int] size:", size)
-	structType := reflect.TypeOf(HashTrieMap[string, int]{})
+	structType := reflect.TypeFor[HashTrieMap[string, int]]()
 	t.Logf("Struct: %s", structType.Name())
 
 	for i := range structType.NumField() {
@@ -33,7 +33,7 @@ func TestHashTrieMapStructSize(t *testing.T) {
 
 	size = unsafe.Sizeof(indirect[string, int]{})
 	t.Log("indirect[string,int] size:", size)
-	structType = reflect.TypeOf(indirect[string, int]{})
+	structType = reflect.TypeFor[indirect[string, int]]()
 	for i := range structType.NumField() {
 		field := structType.Field(i)
 		fieldName := field.Name
@@ -47,7 +47,7 @@ func TestHashTrieMapStructSize(t *testing.T) {
 
 	size = unsafe.Sizeof(entry[string, int]{})
 	t.Log("entry[string,int] size:", size)
-	structType = reflect.TypeOf(entry[string, int]{})
+	structType = reflect.TypeFor[entry[string, int]]()
 	for i := range structType.NumField() {
 		field := structType.Field(i)
 		fieldName := field.Name
@@ -144,10 +144,10 @@ func NewTruncHashTrieMap[K, V comparable]() *HashTrieMap[K, V] {
 	// Stub out the good hash function with a terrible one.
 	// Everything should still work as expected.
 	var m HashTrieMap[K, V]
-	//hasher := defaultHasherUintptr[K]()
-	//m.keyHash = func(k K, n uintptr) uintptr {
+	// hasher := defaultHasherUintptr[K]()
+	// m.keyHash = func(k K, n uintptr) uintptr {
 	//	return hasher(k, n) & ((uintptr(1) << 4) - 1)
-	//}
+	// }
 	hasher, _ := defaultHasherUsingBuiltIn[K, V]()
 	m.keyHash = func(pointer unsafe.Pointer, u uintptr) uintptr {
 		return hasher(pointer, u) & ((uintptr(1) << 4) - 1)

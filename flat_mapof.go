@@ -34,7 +34,6 @@ type FlatMapOf[K comparable, V any] struct {
 	keyHash  HashFunc
 	tableSeq seqlock[uint32, flatTable[K, V]] // seqlock of table
 	shrinkOn bool                             // WithShrinkEnabled
-	intKey   bool
 }
 
 type flatRebuildState[K comparable, V any] struct {
@@ -77,7 +76,6 @@ type flatBucket[K comparable, V any] struct {
 //   - WithShrinkEnabled(): enable automatic shrinking when load drops.
 //   - WithKeyHasher / WithKeyHasherUnsafe / WithBuiltInHasher: custom or
 //     built-in hashing.
-//   - HashOptimization: control h1 distribution strategy (Linear/Shift/Auto).
 //
 // Example:
 //
@@ -101,13 +99,12 @@ func (m *FlatMapOf[K, V]) init(
 ) {
 	// parse interface
 	if cfg.KeyHash == nil {
-		cfg.KeyHash, cfg.HashOpts = parseKeyInterface[K]()
+		cfg.KeyHash = parseKeyInterface[K]()
 	}
 	// perform initialization
-	m.keyHash, _, m.intKey = defaultHasher[K, V]()
+	m.keyHash, _ = defaultHasher[K, V]()
 	if cfg.KeyHash != nil {
 		m.keyHash = cfg.KeyHash
-		cfg.hashOpts(&m.intKey)
 	}
 
 	m.seed = uintptr(rand.Uint64())
@@ -158,7 +155,7 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
-	idx := table.mask & h1(hash, m.intKey)
+	idx := table.mask & h1(hash)
 	for b := table.buckets.At(idx); b != nil; b = (*flatBucket[K, V])(loadPtr(&b.next)) {
 		var spins int
 	retry:
@@ -355,7 +352,7 @@ func (m *FlatMapOf[K, V]) Process(
 			continue
 		}
 		hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
-		h1v := h1(hash, m.intKey)
+		h1v := h1(hash)
 		h2v := h2(hash)
 		h2w := broadcast(h2v)
 		idx := table.mask & h1v
@@ -794,7 +791,6 @@ func (m *FlatMapOf[K, V]) copyBucket(
 	mask := newTable.mask
 	seed := m.seed
 	keyHash := m.keyHash
-	intKey := m.intKey
 	copied := 0
 	for i := start; i < end; i++ {
 		// Visit all source buckets that map to this destination bucket.
@@ -813,7 +809,7 @@ func (m *FlatMapOf[K, V]) copyBucket(
 					} else {
 						hash = keyHash(noescape(unsafe.Pointer(&e.Key)), seed)
 					}
-					idx := mask & h1(hash, intKey)
+					idx := mask & h1(hash)
 					destB := newTable.buckets.At(idx)
 					// Append entry to the destination bucket
 					h2v := h2(hash)

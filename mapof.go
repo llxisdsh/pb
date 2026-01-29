@@ -53,8 +53,8 @@ const (
 	metaEmpty uint64 = 0
 	metaMask  uint64 = 0x8080808080808080 >>
 		(64 - min(entriesPerBucket*8, 64))
-	slotEmpty uint8 = 0
-	slotMask  uint8 = 0x80
+	slotEmpty = 0
+	slotMask  = 0x80
 )
 
 // Performance and resizing configuration
@@ -80,10 +80,6 @@ const (
 	// enableFastPath: optimize read operations by avoiding locks when possible
 	// Can reduce latency by up to 100x in read-heavy scenarios
 	enableFastPath = true
-
-	// enableHashSpread: improve hash distribution for non-integer keys
-	// Reduces collisions for complex types but adds computational overhead
-	enableHashSpread = false
 )
 
 const (
@@ -124,7 +120,6 @@ type MapOf[K comparable, V any] struct {
 	valEqual EqualFunc // WithValueEqual
 	minLen   int       // WithPresize
 	shrinkOn bool      // WithShrinkEnabled
-	intKey   bool
 }
 
 // rebuildState represents the current state of a resizing operation
@@ -208,6 +203,8 @@ type MapConfig struct {
 	// in the h1 function. Different strategies work better for different
 	// key patterns and distributions.
 	// If empty, AutoDistribution will be used (recommended for most cases).
+	//
+	// Deprecated: AutoDistribution is always the default.
 	HashOpts []HashOptimization
 
 	// ValEqual specifies a custom equality function for values.
@@ -230,19 +227,6 @@ type MapConfig struct {
 	// which provides better performance but may use more memory.
 	// When true, the map will shrink when occupancy < 1/shrinkFraction.
 	ShrinkEnabled bool
-}
-
-func (cfg *MapConfig) hashOpts(intKey *bool) {
-	for _, o := range cfg.HashOpts {
-		switch o {
-		case LinearDistribution:
-			*intKey = true
-		case ShiftDistribution:
-			*intKey = false
-		default:
-			// AutoDistribution: default distribution
-		}
-	}
 }
 
 // WithPresize configuring new MapOf instance with capacity enough
@@ -268,6 +252,8 @@ func WithShrinkEnabled() func(*MapConfig) {
 // HashOptimization defines hash distribution optimization strategies.
 // These strategies control how hash values are converted to bucket indices
 // in the h1 function, affecting performance for different key patterns.
+//
+// Deprecated: AutoDistribution is always the default.
 type HashOptimization int
 
 const (
@@ -276,6 +262,8 @@ const (
 	// Based on key type analysis: integer types use linear distribution,
 	// other types use shift distribution. This provides optimal performance
 	// for most use cases without manual tuning.
+	//
+	// Deprecated: AutoDistribution is always the default.
 	AutoDistribution HashOptimization = iota
 
 	// LinearDistribution uses division-based bucket index calculation.
@@ -284,6 +272,8 @@ const (
 	// auto-incrementing IDs, or any pattern with continuous key values.
 	// Provides better cache locality and reduces hash collisions for such
 	// patterns.
+	//
+	// Deprecated: AutoDistribution is always the default.
 	LinearDistribution
 
 	// ShiftDistribution uses bit-shifting for bucket index calculation.
@@ -292,6 +282,8 @@ const (
 	// or any pattern with pseudo-random hash distribution.
 	// Faster computation but may have suboptimal distribution for sequential
 	// keys.
+	//
+	// Deprecated: AutoDistribution is always the default.
 	ShiftDistribution
 )
 
@@ -302,20 +294,11 @@ const (
 // Parameters:
 //   - keyHash: custom hash function that takes a key and seed,
 //     returns hash value. Pass nil to use the default built-in hasher
-//   - opts: optional hash distribution optimization strategies.
-//     Controls how hash values are converted to bucket indices.
-//     If not specified, AutoDistribution will be used.
+//   - opts: Deprecated, AutoDistribution is always the default.
 //
 // Usage:
 //
-//	// Basic custom hasher
 //	m := NewMapOf[string, int](WithKeyHasher(myCustomHashFunc))
-//
-//	// Custom hasher with linear distribution for sequential keys
-//	m := NewMapOf[int, string](WithKeyHasher(myIntHasher, LinearDistribution))
-//
-//	// Custom hasher with shift distribution for random keys
-//	m := NewMapOf[string, int](WithKeyHasher(myStringHasher, ShiftDistribution))
 //
 // Use cases:
 //   - Optimize hash distribution for specific data patterns
@@ -332,7 +315,6 @@ func WithKeyHasher[K comparable](
 			c.KeyHash = func(pointer unsafe.Pointer, u uintptr) uintptr {
 				return keyHash(*(*K)(pointer), u)
 			}
-			c.HashOpts = opts
 		}
 	}
 }
@@ -346,24 +328,16 @@ func WithKeyHasher[K comparable](
 //   - hs: unsafe hash function that operates on raw unsafe.Pointer.
 //     The pointer points to the key data in memory.
 //     Pass nil to use the default built-in hasher
-//   - opts: optional hash distribution optimization strategies.
-//     Controls how hash values are converted to bucket indices.
-//     If not specified, AutoDistribution will be used.
+//   - opts: Deprecated, AutoDistribution is always the default.
 //
 // Usage:
 //
-//	// Basic unsafe hasher
 //	unsafeHasher := func(ptr unsafe.Pointer, seed uintptr) uintptr {
 //		// Cast ptr to your key type and implement hashing
 //		key := *(*string)(ptr)
 //		return uintptr(len(key)) // example hash
 //	}
 //	m := NewMapOf[string, int](WithKeyHasherUnsafe(unsafeHasher))
-//
-//	// Unsafe hasher with specific distribution strategy
-//	m := NewMapOf[int, string](WithKeyHasherUnsafe(fastIntHasher,
-//
-// LinearDistribution))
 //
 // Notes:
 //   - You must correctly cast unsafe.Pointer to the actual key type
@@ -376,7 +350,6 @@ func WithKeyHasherUnsafe(
 ) func(*MapConfig) {
 	return func(c *MapConfig) {
 		c.KeyHash = hs
-		c.HashOpts = opts
 	}
 }
 
@@ -524,18 +497,17 @@ type IHashCode interface {
 //	func (*SequentialID) HashOpts() []HashOptimization {
 //		return []HashOptimization{LinearDistribution}
 //	}
+//
+// Deprecated: AutoDistribution is always the default.
 type IHashOpts interface {
 	HashOpts() []HashOptimization
 }
 
-func parseKeyInterface[K comparable]() (keyHash HashFunc, hashOpts []HashOptimization) {
+func parseKeyInterface[K comparable]() (keyHash HashFunc) {
 	var k *K
 	if _, ok := any(k).(IHashCode); ok {
 		keyHash = func(ptr unsafe.Pointer, seed uintptr) uintptr {
 			return any((*K)(ptr)).(IHashCode).HashCode(seed)
-		}
-		if _, ok := any(k).(IHashOpts); ok {
-			hashOpts = any(*new(K)).(IHashOpts).HashOpts()
 		}
 	}
 	return
@@ -580,7 +552,7 @@ func parseValueInterface[V any]() (valEqual EqualFunc) {
 //
 // Configuration Priority (highest to lowest):
 //   - Explicit With* functions (WithKeyHasher, WithValueEqual)
-//   - Interface implementations (IHashCode, IHashOpts, IEqual)
+//   - Interface implementations (IHashCode, IEqual)
 //   - Default built-in implementations (defaultHasher) - fallback
 //
 // Parameters:
@@ -613,16 +585,15 @@ func (m *MapOf[K, V]) init(
 ) *mapOfTable {
 	// parse interface
 	if cfg.KeyHash == nil {
-		cfg.KeyHash, cfg.HashOpts = parseKeyInterface[K]()
+		cfg.KeyHash = parseKeyInterface[K]()
 	}
 	if cfg.ValEqual == nil {
 		cfg.ValEqual = parseValueInterface[V]()
 	}
 	// perform initialization
-	m.keyHash, m.valEqual, m.intKey = defaultHasher[K, V]()
+	m.keyHash, m.valEqual = defaultHasher[K, V]()
 	if cfg.KeyHash != nil {
 		m.keyHash = cfg.KeyHash
-		cfg.hashOpts(&m.intKey)
 	}
 	if cfg.ValEqual != nil {
 		m.valEqual = cfg.ValEqual
@@ -688,7 +659,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	hash := m.keyHash(noescape(unsafe.Pointer(&key)), m.seed)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
-	idx := table.mask & h1(hash, m.intKey)
+	idx := table.mask & h1(hash)
 	for b := table.buckets.At(idx); b != nil; b = (*bucketOf)(loadPtr(&b.next)) {
 		meta := loadInt(&b.meta)
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
@@ -732,7 +703,7 @@ func (m *MapOf[K, V]) findEntry(
 ) *EntryOf[K, V] {
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
-	idx := table.mask & h1(hash, m.intKey)
+	idx := table.mask & h1(hash)
 	for b := table.buckets.At(idx); b != nil; b = (*bucketOf)(loadPtr(&b.next)) {
 		meta := loadInt(&b.meta)
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
@@ -759,7 +730,7 @@ func (m *MapOf[K, V]) processEntry(
 	key *K,
 	fn func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool),
 ) (V, bool) {
-	h1v := h1(hash, m.intKey)
+	h1v := h1(hash)
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 
@@ -1156,7 +1127,6 @@ func (m *MapOf[K, V]) copyBucket(
 	mask := newTable.mask
 	seed := m.seed
 	keyHash := m.keyHash
-	intKey := m.intKey
 	copied := 0
 	for i := start; i < end; i++ {
 		// Visit all source buckets that map to this destination bucket.
@@ -1175,7 +1145,7 @@ func (m *MapOf[K, V]) copyBucket(
 						} else {
 							hash = keyHash(noescape(unsafe.Pointer(&e.Key)), seed)
 						}
-						idx := mask & h1(hash, intKey)
+						idx := mask & h1(hash)
 						destB := newTable.buckets.At(idx)
 						// Append entry to the destination bucket
 						h2v := h2(hash)
@@ -2711,7 +2681,6 @@ func (m *MapOf[K, V]) CloneTo(clone *MapOf[K, V]) {
 	clone.valEqual = m.valEqual
 	clone.minLen = m.minLen
 	clone.shrinkOn = m.shrinkOn
-	clone.intKey = m.intKey
 	atomic.StorePointer(&clone.table,
 		unsafe.Pointer(newMapOfTable(clone.minLen, runtime.GOMAXPROCS(0))),
 	)
@@ -3030,59 +2999,18 @@ func nextPowOf2(n int) int {
 // SWAR Utilities
 // ============================================================================
 
-// spread improves hash distribution by XORing the original hash with its high
-// bits.
-// This function increases randomness in the lower bits of the hash value,
-// which helps reduce collisions when calculating bucket indices.
-// It's particularly effective for hash values where significant bits
-// are concentrated in the upper positions.
-//
-//go:nosplit
-func spread(h uintptr) uintptr {
-	// Multi-stage hash spreading for better low-byte information density
-	// Stage 1: Mix high bits into low bits with 16-bit shift
-	h ^= h >> 16
-	// Stage 2: Further mix with 8-bit shift to enhance byte-level distribution
-	h ^= h >> 8
-	// Stage 3: Final mix with 4-bit shift for maximum low-byte entropy
-	h ^= h >> 4
-	// Multiply by odd constant to ensure all bits contribute to low byte
-	// 0x9e3779b1 is the golden ratio hash constant (32-bit)
-	// For 64-bit systems, we use 0x9e3779b97f4a7c15
-	if unsafe.Sizeof(h) == 8 {
-		var c64 uint64 = 0x9e3779b97f4a7c15
-		h *= uintptr(c64)
-	} else {
-		var c32 uint32 = 0x9e3779b1
-		h *= uintptr(c32)
-	}
-	return h
-}
-
 // h1 extracts the bucket index from a hash value.
 //
 //go:nosplit
-func h1(h uintptr, intKey bool) int {
-	if intKey {
-		// Possible values: [1,2,3,4,...entriesPerBucket].
-		return int(h) / entriesPerBucket
-	}
-	if enableHashSpread {
-		return int(spread(h)) >> 7
-	} else {
-		return int(h) >> 7
-	}
+func h1(h uintptr) int {
+	return int(h) >> 7
 }
 
 // h2 extracts the byte-level hash for in-bucket lookups.
 //
 //go:nosplit
 func h2(h uintptr) uint8 {
-	if enableHashSpread {
-		return uint8(spread(h)) | slotMask
-	} else {
-		return uint8(h) | slotMask
-	}
+	return uint8(h) | slotMask
 }
 
 // broadcast replicates a byte value across all bytes of an uint64.
@@ -3240,94 +3168,115 @@ type (
 func defaultHasher[K comparable, V any]() (
 	keyHash HashFunc,
 	valEqual EqualFunc,
-	intKey bool,
 ) {
 	keyHash, valEqual = defaultHasherUsingBuiltIn[K, V]()
 
 	switch any(*new(K)).(type) {
 	case uint, int, uintptr:
-		return hashUintptr, valEqual, true
+		return hashUintptr, valEqual
 	case uint64, int64:
 		if bits.UintSize == 64 {
-			return hashUint64, valEqual, true
-		} else {
-			return hashUint64On32Bit, valEqual, true
+			return hashUint64, valEqual
 		}
+		return hashUint64On32Bit, valEqual
 	case uint32, int32:
-		return hashUint32, valEqual, true
+		return hashUint32, valEqual
 	case uint16, int16:
-		return hashUint16, valEqual, true
+		return hashUint16, valEqual
 	case uint8, int8:
-		return hashUint8, valEqual, true
+		return hashUint8, valEqual
 	case string:
-		return hashString, valEqual, false
+		return hashString, valEqual
 	case []byte:
-		return hashString, valEqual, false
+		return hashString, valEqual
 	default:
 		// for types like integers
 		kType := reflect.TypeFor[K]()
-		if kType == nil {
-			// Handle nil interface types
-			return keyHash, valEqual, false
-		}
 		switch kType.Kind() {
 		case reflect.Uint, reflect.Int, reflect.Uintptr:
-			return hashUintptr, valEqual, true
+			return hashUintptr, valEqual
 		case reflect.Int64, reflect.Uint64:
 			if bits.UintSize == 64 {
-				return hashUint64, valEqual, true
+				return hashUint64, valEqual
 			} else {
-				return hashUint64On32Bit, valEqual, true
+				return hashUint64On32Bit, valEqual
 			}
 		case reflect.Int32, reflect.Uint32:
-			return hashUint32, valEqual, true
+			return hashUint32, valEqual
 		case reflect.Int16, reflect.Uint16:
-			return hashUint16, valEqual, true
+			return hashUint16, valEqual
 		case reflect.Int8, reflect.Uint8:
-			return hashUint8, valEqual, true
+			return hashUint8, valEqual
 		case reflect.String:
-			return hashString, valEqual, false
+			return hashString, valEqual
 		case reflect.Slice:
 			// Check if it's []byte
 			if kType.Elem().Kind() == reflect.Uint8 {
-				return hashString, valEqual, false
+				return hashString, valEqual
 			}
-			return keyHash, valEqual, false
+			return keyHash, valEqual
 		default:
-			return keyHash, valEqual, false
+			return keyHash, valEqual
 		}
 	}
 }
 
+// Integer Hash Strategy (Unified Format)
+//
+// All hash functions output a unified format:
+//
+//	[high bits: bucket index] [low 7: h2 entropy]
+//
+// This enables branch-free h1/h2 extraction:
+//
+//	h1(h) = h >> 7
+//	h2(h) = uint8(h) | 0x80
+//
+// For integers, we preserve sequential key distribution:
+//   - High bits: (v / entriesPerBucket) << 7 - maintains bucket ordering
+//   - Low bits: entropy from (v ^ seed) * hashPrime - provides h2 variety
+//
+// This achieves:
+//  1. Sequential keys fill buckets optimally (100% density)
+//  2. Good h2 distribution even for aligned pointers
+//  3. Zero-branch h1/h2 extraction (14-18% faster in mixed-type scenarios)
+//
 //go:nosplit
-func hashUintptr(ptr unsafe.Pointer, _ uintptr) uintptr {
-	return *(*uintptr)(ptr)
+func mixUintptr(v uintptr, seed uintptr) uintptr {
+	h := (v / uintptr(entriesPerBucket)) << 7
+	l := (v ^ seed*hashPrime) & (slotMask - 1)
+	return h | l
 }
 
 //go:nosplit
-func hashUint64On32Bit(ptr unsafe.Pointer, _ uintptr) uintptr {
+func hashUintptr(ptr unsafe.Pointer, seed uintptr) uintptr {
+	return mixUintptr(*(*uintptr)(ptr), seed)
+}
+
+//go:nosplit
+func hashUint64On32Bit(ptr unsafe.Pointer, seed uintptr) uintptr {
 	v := *(*uint64)(ptr)
-	return uintptr(v) ^ uintptr(v>>32)
+	return mixUintptr(uintptr(v)^uintptr(v>>32), seed)
 }
 
 //go:nosplit
-func hashUint64(ptr unsafe.Pointer, _ uintptr) uintptr {
-	return uintptr(*(*uint64)(ptr))
+func hashUint64(ptr unsafe.Pointer, seed uintptr) uintptr {
+	return mixUintptr(uintptr(*(*uint64)(ptr)), seed)
 }
 
 //go:nosplit
-func hashUint32(ptr unsafe.Pointer, _ uintptr) uintptr {
-	return uintptr(*(*uint32)(ptr))
+func hashUint32(ptr unsafe.Pointer, seed uintptr) uintptr {
+	return mixUintptr(uintptr(*(*uint32)(ptr)), seed)
 }
 
 //go:nosplit
-func hashUint16(ptr unsafe.Pointer, _ uintptr) uintptr {
-	return uintptr(*(*uint16)(ptr))
+func hashUint16(ptr unsafe.Pointer, seed uintptr) uintptr {
+	return mixUintptr(uintptr(*(*uint16)(ptr)), seed)
 }
 
 //go:nosplit
-func hashUint8(ptr unsafe.Pointer, _ uintptr) uintptr {
-	return uintptr(*(*uint8)(ptr))
+func hashUint8(ptr unsafe.Pointer, seed uintptr) uintptr {
+	return mixUintptr(uintptr(*(*uint8)(ptr)), seed)
 }
 
 //go:nosplit

@@ -865,10 +865,9 @@ func TestMapOf_BatchProcessImmutableEntries(t *testing.T) {
 				// Key exists, double the new value and return old value
 				newValue := entry.Value * 2
 				return &EntryOf[string, int]{Key: entry.Key, Value: newValue}, loaded.Value, true
-			} else {
-				// Key doesn't exist, insert new value
-				return &EntryOf[string, int]{Key: entry.Key, Value: entry.Value}, entry.Value, false
 			}
+			// Key doesn't exist, insert new value
+			return &EntryOf[string, int]{Key: entry.Key, Value: entry.Value}, entry.Value, false
 		},
 	)
 
@@ -930,10 +929,9 @@ func TestMapOf_BatchProcessEntries(t *testing.T) {
 				// Key exists, add 100 to entry value and return old value
 				newValue := entry.Value + 100
 				return &EntryOf[string, int]{Key: entry.Key, Value: newValue}, loaded.Value, true
-			} else {
-				// Key doesn't exist, insert entry value as-is
-				return &EntryOf[string, int]{Key: entry.Key, Value: entry.Value}, entry.Value, false
 			}
+			// Key doesn't exist, insert entry value as-is
+			return &EntryOf[string, int]{Key: entry.Key, Value: entry.Value}, entry.Value, false
 		},
 	)
 
@@ -990,10 +988,9 @@ func TestMapOf_BatchProcessKeys(t *testing.T) {
 				// Key exists, multiply by 10 and return old value
 				newValue := loaded.Value * 10
 				return &EntryOf[string, int]{Key: key, Value: newValue}, loaded.Value, true
-			} else {
-				// Key doesn't exist, set to 999
-				return &EntryOf[string, int]{Key: key, Value: 999}, 999, false
 			}
+			// Key doesn't exist, set to 999
+			return &EntryOf[string, int]{Key: key, Value: 999}, 999, false
 		},
 	)
 
@@ -1795,7 +1792,7 @@ func TestMapOfWithKeyHasherUnsafe(t *testing.T) {
 			return uintptr(val*31) ^ seed
 		}
 
-		m := NewMapOf[int, string](WithKeyHasherUnsafe(unsafeIntHasher, LinearDistribution))
+		m := NewMapOf[int, string](WithKeyHasherUnsafe(unsafeIntHasher))
 
 		// Test with sequential keys (good for linear distribution)
 		for i := range 100 {
@@ -1822,7 +1819,7 @@ func TestMapOfWithKeyHasherUnsafe(t *testing.T) {
 			return hash
 		}
 
-		m := NewMapOf[string, int](WithKeyHasherUnsafe(unsafeStringHasher, ShiftDistribution))
+		m := NewMapOf[string, int](WithKeyHasherUnsafe(unsafeStringHasher))
 
 		// Test with random-like string keys
 		keys := []string{"apple", "banana", "cherry", "date", "elderberry"}
@@ -2404,16 +2401,6 @@ func (c CustomKey) HashCode(seed uintptr) uintptr {
 	return uintptr(c.ID)*31 + uintptr(len(c.Name)) + seed
 }
 
-type SequentialKey int64
-
-func (s SequentialKey) HashCode(seed uintptr) uintptr {
-	return uintptr(s) + seed
-}
-
-func (s SequentialKey) HashOpts() []HashOptimization {
-	return []HashOptimization{LinearDistribution}
-}
-
 type CustomValue struct {
 	Data []int
 	Meta string
@@ -2440,10 +2427,6 @@ func (s SmartKey) HashCode(seed uintptr) uintptr {
 	return uintptr(s.ID) + seed
 }
 
-func (s SmartKey) HashOpts() []HashOptimization {
-	return []HashOptimization{LinearDistribution}
-}
-
 type SmartValue struct {
 	Value   int
 	Ignored string
@@ -2467,7 +2450,7 @@ func (e EqualValue) Equal(other EqualValue) bool {
 	return e.Value == other.Value
 }
 
-// TestMapOf_Interfaces tests the IHashCode, IHashOpts, and IEqual interfaces
+// TestMapOf_Interfaces tests the IHashCode and IEqual interfaces
 func TestMapOf_Interfaces(t *testing.T) {
 	t.Run("IHashCode", func(t *testing.T) {
 		m := NewMapOf[CustomKey, string]()
@@ -2492,28 +2475,6 @@ func TestMapOf_Interfaces(t *testing.T) {
 				val,
 				ok,
 			)
-		}
-	})
-
-	t.Run("IHashOpts", func(t *testing.T) {
-		m := NewMapOf[SequentialKey, string]()
-
-		// Store sequential keys
-		for i := SequentialKey(1); i <= 10; i++ {
-			m.Store(i, fmt.Sprintf("value%d", i))
-		}
-
-		// Verify all values can be retrieved
-		for i := SequentialKey(1); i <= 10; i++ {
-			expected := fmt.Sprintf("value%d", i)
-			if val, ok := m.Load(i); !ok || val != expected {
-				t.Errorf("Expected %s, got %s, exists=%v", expected, val, ok)
-			}
-		}
-
-		// Test size
-		if size := m.Size(); size != 10 {
-			t.Errorf("Expected size 10, got %d", size)
 		}
 	})
 
@@ -4183,12 +4144,11 @@ func murmur3Finalizer(i int, _ uintptr) uintptr {
 		l = (l ^ (l >> 13)) * 0xc2b2ae35
 		l = l ^ (l >> 16)
 		return uintptr(h)<<32 | uintptr(l)
-	} else {
-		h := uintptr(i)
-		h = (h ^ (h >> 16)) * 0x85ebca6b
-		h = (h ^ (h >> 13)) * 0xc2b2ae35
-		return h ^ (h >> 16)
 	}
+	h := uintptr(i)
+	h = (h ^ (h >> 16)) * 0x85ebca6b
+	h = (h ^ (h >> 13)) * 0xc2b2ae35
+	return h ^ (h >> 16)
 
 	// h := uintptr(i)
 	// h = (h ^ (h >> 33)) * 0xff51afd7ed558ccd
@@ -5526,9 +5486,8 @@ func BenchmarkIntMapStandard_NoWarmUp(b *testing.B) {
 				v, ok := m.Load(k)
 				if ok {
 					return v.(int), ok
-				} else {
-					return 0, false
 				}
+				return 0, false
 			}, func(k int, v int) {
 				m.Store(k, v)
 			}, func(k int) {
@@ -5552,9 +5511,8 @@ func BenchmarkIntMapStandard_WarmUp(b *testing.B) {
 				v, ok := m.Load(k)
 				if ok {
 					return v.(int), ok
-				} else {
-					return 0, false
 				}
+				return 0, false
 			}, func(k int, v int) {
 				m.Store(k, v)
 			}, func(k int) {
@@ -8835,11 +8793,30 @@ func TestMapOf_SetDefaultJSONMarshal(t *testing.T) {
 func TestMapOf_HashUint64On32Bit(t *testing.T) {
 	val := uint64(0x123456789ABCDEF0)
 	hash := hashUint64On32Bit(unsafe.Pointer(&val), 0)
-	// The function XORs the lower 32 bits with the upper 32 bits
-	expected := uint32(0x9ABCDEF0) ^ uint32(0x12345678)
-	if uint32(hash) != expected {
-		t.Errorf("Expected hash %x, got %x", expected, hash)
+
+	// The new unified hash format:
+	// h = lower32 ^ upper32 = 0x9ABCDEF0 ^ 0x12345678 = 0x88888888
+	// high = (h / entriesPerBucket) << h2Bits
+	// low = (h * HashPrime) & h2Mask
+	h := uintptr(uint32(0x9ABCDEF0) ^ uint32(0x12345678))
+
+	// Verify the hash can be used to extract h1 and h2 correctly
+	h1v := h1(hash)
+	h2v := h2(hash)
+
+	// h1 should be hash >> h2Bits
+	expectedH1 := int(hash) >> 7
+	if h1v != expectedH1 {
+		t.Errorf("h1 mismatch: got %d, want %d", h1v, expectedH1)
 	}
+
+	// h2 should have high bit set (h2TopBit)
+	if h2v&0x80 == 0 {
+		t.Errorf("h2 should have high bit set, got %x", h2v)
+	}
+
+	// Verify the hash is derived from XOR'ed value
+	t.Logf("Input: %x, XOR'd: %x, Hash: %x, h1: %d, h2: %x", val, h, hash, h1v, h2v)
 }
 
 func TestMapOf_UnlockWithMeta(t *testing.T) {
@@ -8912,7 +8889,7 @@ func TestMapOf_EmbeddedHash(t *testing.T) {
 
 // TestDefaultHasherEdgeCases tests edge cases for defaultHasher to improve coverage
 func TestMapOf_DefaultHasherEdgeCases(t *testing.T) {
-	keyHash, _, _ := defaultHasher[string, int]()
+	keyHash, _ := defaultHasher[string, int]()
 
 	// Test with empty string
 	emptyStr := ""

@@ -19,7 +19,7 @@ Design highlights
 - Zero-value usability and lazy initialization to reduce integration complexity.
 - Full sync.Map API compatibility, plus extensions: LoadOrStoreFn, ProcessEntry, Size, IsZero, Clone, and batch operations.
 - Parallel resizing to lower resize tail latency and improve scalability.
-- Pluggable hashing and equality: WithKeyHasher / IHashCode / IHashOpts / WithValueEqual / IEqual, enabling domain-specific tuning for keys/values.
+- Pluggable hashing and equality: WithKeyHasher / IHashCode / WithValueEqual / IEqual, enabling domain-specific tuning for keys/values.
 - Defaults to Go’s built-in hashing; when hash computation is expensive, embedded hash caching can be enabled via mapof_opt_embeddedhash.
 
 Applicability (overview)
@@ -512,7 +512,7 @@ import (
 func customOptimizations() {
     // Configuration Priority (highest to lowest):
     //   - Explicit With* functions (WithKeyHasher, WithValueEqual)
-    //   - Interface implementations (IHashCode, IHashOpts, IEqual)
+    //   - Interface implementations (IHashCode, IEqual)
     //   - Default built-in implementations (defaultHasher) - fallback
     
     // Method 1: Using With* functions for runtime configuration
@@ -865,7 +865,7 @@ Systematic comparison with MapOf
   - FlatMapOf: it does not currently offer dedicated convenience APIs such as CompareAndSwap/CompareAndDelete, but such semantics can be expressed using Process.
   - MapOf: a more complete API surface including multiple CompareAnd*, and batch operations, plus richer customization of equality and hashing, making it more mature for migration and production use.
 - Hashing and optimizations:
-  - Both support WithKeyHasher/IHashCode/IHashOpts; FlatMapOf also supports WithPresize and WithShrinkEnabled.
+  - Both support WithKeyHasher/IHashCode; FlatMapOf also supports WithPresize and WithShrinkEnabled.
 
 Advantages (FlatMapOf)
 - More stable hit latency and tail behavior in cold working sets and random-access workloads.
@@ -890,7 +890,7 @@ Usage guidance and boundaries
 API overview
 - Provided: Load, Store, Delete, LoadOrStore, LoadOrStoreFn, LoadAndDelete, LoadAndUpdate, Swap, Range, Process, RangeProcess, Clear, Size, IsZero.
 - Compositional semantics: Process can express atomic read-modify-write, conditional updates, and conditional deletes.
-- Construction and configuration: supports zero-initialization; supports WithPresize and WithShrinkEnabled for capacity and shrinking; supports custom hashing and distribution via IHashCode/IHashOpts/WithKeyHasher.
+- Construction and configuration: supports zero-initialization; supports WithPresize and WithShrinkEnabled for capacity and shrinking; supports custom hashing and distribution via IHashCode/WithKeyHasher.
 
 ---
 
