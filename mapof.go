@@ -3279,9 +3279,23 @@ func hashUint8(ptr unsafe.Pointer, seed uintptr) uintptr {
 	return mixUintptr(uintptr(*(*uint8)(ptr)), seed)
 }
 
+// hashString computes a hash for short strings optimized for sequential insertion.
+//
+// Why 133? Since h1 = hash >> 7, using 133 = (1<<7) + 5 ensures:
+//
+//	seed' = seed*133 + byte = (seed<<7) + seed*5 + byte
+//	h1'   = seed' >> 7 ≈ seed + small_delta
+//
+// Each byte adds ~1 to h1, distributing sequential keys ("key0","key1"...)
+// across consecutive buckets. In contrast, 31 = (1<<5)-1 shifts only 5 bits,
+// causing h1 to change too slowly and sequential keys to cluster.
+//
+// Why 12 bytes? The simple loop beats built-in hash for short strings due to
+// lower call overhead. 12 is the empirical crossover point where the built-in
+// hash becomes faster for longer strings.
+//
 //go:nosplit
 func hashString(ptr unsafe.Pointer, seed uintptr) uintptr {
-	// The algorithm has good cache affinity
 	type stringHeader struct {
 		data unsafe.Pointer
 		len  int
@@ -3289,11 +3303,11 @@ func hashString(ptr unsafe.Pointer, seed uintptr) uintptr {
 	s := (*stringHeader)(ptr)
 	if s.len <= 12 {
 		for i := range s.len {
-			seed = seed*31 + uintptr(*(*uint8)(unsafe.Add(noescape(s.data), i)))
+			seed = seed*133 + uintptr(*(*uint8)(unsafe.Add(noescape(s.data), i)))
 		}
 		return seed
 	}
-	// Fallback to the built-in hash function
+	// Fallback to the built-in hash function for longer strings
 	return builtInStringHasher(ptr, seed)
 }
 
