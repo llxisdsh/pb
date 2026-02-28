@@ -2789,19 +2789,19 @@ type MapStats struct {
 // ToString returns string representation of map stats.
 func (s *MapStats) ToString() string {
 	var sb strings.Builder
-	sb.WriteString("MapStats{\n")
-	sb.WriteString(fmt.Sprintf("RootBuckets:  %d\n", s.RootBuckets))
-	sb.WriteString(fmt.Sprintf("TotalBuckets: %d\n", s.TotalBuckets))
-	sb.WriteString(fmt.Sprintf("EmptyBuckets: %d\n", s.EmptyBuckets))
-	sb.WriteString(fmt.Sprintf("Capacity:     %d\n", s.Capacity))
-	sb.WriteString(fmt.Sprintf("Size:         %d\n", s.Size))
-	sb.WriteString(fmt.Sprintf("Counter:      %d\n", s.Counter))
-	sb.WriteString(fmt.Sprintf("CounterLen:   %d\n", s.CounterLen))
-	sb.WriteString(fmt.Sprintf("MinEntries:   %d\n", s.MinEntries))
-	sb.WriteString(fmt.Sprintf("MaxEntries:   %d\n", s.MaxEntries))
-	sb.WriteString(fmt.Sprintf("TotalGrowths: %d\n", s.TotalGrowths))
-	sb.WriteString(fmt.Sprintf("TotalShrinks: %d\n", s.TotalShrinks))
-	sb.WriteString("}\n")
+	_, _ = fmt.Fprintf(&sb, "MapStats{\n")
+	_, _ = fmt.Fprintf(&sb, "RootBuckets:  %d\n", s.RootBuckets)
+	_, _ = fmt.Fprintf(&sb, "TotalBuckets: %d\n", s.TotalBuckets)
+	_, _ = fmt.Fprintf(&sb, "EmptyBuckets: %d\n", s.EmptyBuckets)
+	_, _ = fmt.Fprintf(&sb, "Capacity:     %d\n", s.Capacity)
+	_, _ = fmt.Fprintf(&sb, "Size:         %d\n", s.Size)
+	_, _ = fmt.Fprintf(&sb, "Counter:      %d\n", s.Counter)
+	_, _ = fmt.Fprintf(&sb, "CounterLen:   %d\n", s.CounterLen)
+	_, _ = fmt.Fprintf(&sb, "MinEntries:   %d\n", s.MinEntries)
+	_, _ = fmt.Fprintf(&sb, "MaxEntries:   %d\n", s.MaxEntries)
+	_, _ = fmt.Fprintf(&sb, "TotalGrowths: %d\n", s.TotalGrowths)
+	_, _ = fmt.Fprintf(&sb, "TotalShrinks: %d\n", s.TotalShrinks)
+	_, _ = fmt.Fprintf(&sb, "}\n")
 	return sb.String()
 }
 
@@ -3234,7 +3234,7 @@ func defaultHasher[K comparable, V any]() (
 //
 // For integers, we preserve sequential key distribution:
 //   - High bits: (v / entriesPerBucket) << 7 - maintains bucket ordering
-//   - Low bits: entropy from (v ^ seed) * hashPrime - provides h2 variety
+//   - Low bits: entropy from v * hashPrime - provides h2 variety
 //
 // This achieves:
 //  1. Sequential keys fill buckets optimally (100% density)
@@ -3242,41 +3242,41 @@ func defaultHasher[K comparable, V any]() (
 //  3. Zero-branch h1/h2 extraction (14-18% faster in mixed-type scenarios)
 //
 //go:nosplit
-func mixUintptr(v uintptr, seed uintptr) uintptr {
+func mixUintptr(v uintptr) uintptr {
 	h := (v / uintptr(entriesPerBucket)) << 7
-	l := (v ^ seed*hashPrime) & (slotMask - 1)
+	l := (v * hashPrime) & (slotMask - 1)
 	return h | l
 }
 
 //go:nosplit
-func hashUintptr(ptr unsafe.Pointer, seed uintptr) uintptr {
-	return mixUintptr(*(*uintptr)(ptr), seed)
+func hashUintptr(ptr unsafe.Pointer, _ uintptr) uintptr {
+	return mixUintptr(*(*uintptr)(ptr))
 }
 
 //go:nosplit
-func hashUint64On32Bit(ptr unsafe.Pointer, seed uintptr) uintptr {
+func hashUint64On32Bit(ptr unsafe.Pointer, _ uintptr) uintptr {
 	v := *(*uint64)(ptr)
-	return mixUintptr(uintptr(v)^uintptr(v>>32), seed)
+	return mixUintptr(uintptr(v) ^ uintptr(v>>32))
 }
 
 //go:nosplit
-func hashUint64(ptr unsafe.Pointer, seed uintptr) uintptr {
-	return mixUintptr(uintptr(*(*uint64)(ptr)), seed)
+func hashUint64(ptr unsafe.Pointer, _ uintptr) uintptr {
+	return mixUintptr(uintptr(*(*uint64)(ptr)))
 }
 
 //go:nosplit
-func hashUint32(ptr unsafe.Pointer, seed uintptr) uintptr {
-	return mixUintptr(uintptr(*(*uint32)(ptr)), seed)
+func hashUint32(ptr unsafe.Pointer, _ uintptr) uintptr {
+	return mixUintptr(uintptr(*(*uint32)(ptr)))
 }
 
 //go:nosplit
-func hashUint16(ptr unsafe.Pointer, seed uintptr) uintptr {
-	return mixUintptr(uintptr(*(*uint16)(ptr)), seed)
+func hashUint16(ptr unsafe.Pointer, _ uintptr) uintptr {
+	return mixUintptr(uintptr(*(*uint16)(ptr)))
 }
 
 //go:nosplit
-func hashUint8(ptr unsafe.Pointer, seed uintptr) uintptr {
-	return mixUintptr(uintptr(*(*uint8)(ptr)), seed)
+func hashUint8(ptr unsafe.Pointer, _ uintptr) uintptr {
+	return mixUintptr(uintptr(*(*uint8)(ptr)))
 }
 
 // hashString computes a hash for short strings optimized for sequential insertion.
