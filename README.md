@@ -370,6 +370,7 @@ To achieve exceptional performance, MapOf employs multiple optimization strategi
 - Interface implementations are automatically detected at initial time
 - `With*` functions take precedence over interface implementations
 - Well-designed custom hash functions typically outweigh collision risks
+- WithBuiltInHasher() uses Go's native map hashing, ideal for random keys with no sequential-key acceleration.
 
 ## 🚀 Quick Start
 
