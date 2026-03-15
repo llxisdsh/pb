@@ -880,7 +880,7 @@ func (b *flatBucket[K, V]) At(i int) *seqlockSlot[EntryOf[K, V]] {
 }
 
 func (b *flatBucket[K, V]) Lock() {
-	cur := loadInt(&b.meta)
+	cur := atomic.LoadUint64(&b.meta)
 	if atomic.CompareAndSwapUint64(&b.meta, cur&(^opLockMask), cur|opLockMask) {
 		return
 	}
@@ -889,20 +889,14 @@ func (b *flatBucket[K, V]) Lock() {
 
 func (b *flatBucket[K, V]) slowLock() {
 	var spins int
-	for !b.tryLock() {
-		delay(&spins)
-	}
-}
-
-//go:nosplit
-func (b *flatBucket[K, V]) tryLock() bool {
 	for {
-		cur := loadInt(&b.meta)
+		cur := atomic.LoadUint64(&b.meta)
 		if cur&opLockMask != 0 {
-			return false
+			delay(&spins)
+			continue
 		}
 		if atomic.CompareAndSwapUint64(&b.meta, cur, cur|opLockMask) {
-			return true
+			return
 		}
 	}
 }

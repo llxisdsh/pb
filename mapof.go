@@ -652,7 +652,7 @@ func (m *MapOf[K, V]) initSlow() *mapOfTable {
 func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	table := (*mapOfTable)(loadPtr(&m.table))
 	if table == nil {
-		return
+		return *new(V), false
 	}
 
 	// inline findEntry
@@ -677,7 +677,7 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 			}
 		}
 	}
-	return
+	return *new(V), false
 }
 
 // LoadEntry finds and returns the entry pointer for the given key.
@@ -2845,7 +2845,7 @@ func (t *mapOfTable) SumSize() int {
 // Uses atomic operations on the meta field to avoid false sharing overhead.
 // Implements optimistic locking with fallback to spinning.
 func (b *bucketOf) Lock() {
-	cur := loadInt(&b.meta)
+	cur := atomic.LoadUint64(&b.meta)
 	if atomic.CompareAndSwapUint64(&b.meta, cur&(^opLockMask), cur|opLockMask) {
 		return
 	}
@@ -2854,20 +2854,14 @@ func (b *bucketOf) Lock() {
 
 func (b *bucketOf) slowLock() {
 	var spins int
-	for !b.tryLock() {
-		delay(&spins)
-	}
-}
-
-//go:nosplit
-func (b *bucketOf) tryLock() bool {
 	for {
-		cur := loadInt(&b.meta)
+		cur := atomic.LoadUint64(&b.meta)
 		if cur&opLockMask != 0 {
-			return false
+			delay(&spins)
+			continue
 		}
 		if atomic.CompareAndSwapUint64(&b.meta, cur, cur|opLockMask) {
-			return true
+			return
 		}
 	}
 }
@@ -3120,19 +3114,13 @@ type noCopy struct{}
 func (*noCopy) Lock()   {}
 func (*noCopy) Unlock() {}
 
-func trySpin(spins *int) bool {
+func delay(spins *int) {
 	if runtime_canSpin(*spins) {
 		*spins++
 		runtime_doSpin()
-		return true
-	}
-	return false
-}
-
-func delay(spins *int) {
-	if trySpin(spins) {
 		return
 	}
+
 	*spins = 0
 	// time.Sleep with non-zero duration (≈Millisecond level) works
 	// effectively as backoff under high concurrency.
@@ -3185,10 +3173,6 @@ func defaultHasher[K comparable, V any]() (
 		return hashUint16, valEqual
 	case uint8, int8:
 		return hashUint8, valEqual
-	case string:
-		return hashString, valEqual
-	case []byte:
-		return hashString, valEqual
 	default:
 		// for types like integers
 		kType := reflect.TypeFor[K]()
@@ -3207,14 +3191,6 @@ func defaultHasher[K comparable, V any]() (
 			return hashUint16, valEqual
 		case reflect.Int8, reflect.Uint8:
 			return hashUint8, valEqual
-		case reflect.String:
-			return hashString, valEqual
-		case reflect.Slice:
-			// Check if it's []byte
-			if kType.Elem().Kind() == reflect.Uint8 {
-				return hashString, valEqual
-			}
-			return keyHash, valEqual
 		default:
 			return keyHash, valEqual
 		}
@@ -3278,40 +3254,6 @@ func hashUint16(ptr unsafe.Pointer, _ uintptr) uintptr {
 func hashUint8(ptr unsafe.Pointer, _ uintptr) uintptr {
 	return mixUintptr(uintptr(*(*uint8)(ptr)))
 }
-
-// hashString computes a hash for short strings optimized for sequential insertion.
-//
-// Why 133? Since h1 = hash >> 7, using 133 = (1<<7) + 5 ensures:
-//
-//	seed' = seed*133 + byte = (seed<<7) + seed*5 + byte
-//	h1'   = seed' >> 7 ≈ seed + small_delta
-//
-// Each byte adds ~1 to h1, distributing sequential keys ("key0","key1"...)
-// across consecutive buckets. In contrast, 31 = (1<<5)-1 shifts only 5 bits,
-// causing h1 to change too slowly and sequential keys to cluster.
-//
-// Why 12 bytes? The simple loop beats built-in hash for short strings due to
-// lower call overhead. 12 is the empirical crossover point where the built-in
-// hash becomes faster for longer strings.
-//
-//go:nosplit
-func hashString(ptr unsafe.Pointer, seed uintptr) uintptr {
-	type stringHeader struct {
-		data unsafe.Pointer
-		len  int
-	}
-	s := (*stringHeader)(ptr)
-	if s.len <= 12 {
-		for i := range s.len {
-			seed = seed*133 + uintptr(*(*uint8)(unsafe.Add(noescape(s.data), i)))
-		}
-		return seed
-	}
-	// Fallback to the built-in hash function for longer strings
-	return builtInStringHasher(ptr, seed)
-}
-
-var builtInStringHasher, _ = defaultHasherUsingBuiltIn[string, struct{}]()
 
 // defaultHasherUsingBuiltIn gets Go's built-in hash and equality functions
 // for the specified types using reflection.
