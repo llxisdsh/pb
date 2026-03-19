@@ -2,7 +2,7 @@
 
 ### 🚀 Prefer a simpler, faster API?
 
-**Try [Concurrent Core](https://llxisdsh.github.io/cc/)**  
+**Try [Concurrent Core](https://github.com/llxisdsh/cc)**  
 Lightweight · High-performance · Built for latency-critical paths
 
 </div>
