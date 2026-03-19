@@ -19,6 +19,7 @@ const (
 	// opByteIdx reserves the highest byte of meta for extended status flags
 	opByteIdx    = 7
 	opLockMask   = uint64(1) << (opByteIdx*8 + 7)
+	opNextMask   = uint64(1) << (opByteIdx*8 + 6)
 	metaDataMask = uint64(0x00ffffffffffffff)
 
 	// entriesPerBucket defines the number of per-bucket entry pointers.
@@ -660,24 +661,24 @@ func (m *MapOf[K, V]) Load(key K) (value V, ok bool) {
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 	idx := table.mask & h1(hash)
-	for b := table.buckets.At(idx); b != nil; b = (*bucketOf)(loadPtr(&b.next)) {
-		meta := loadInt(&b.meta)
+	b := table.buckets.At(idx)
+	for {
+		meta := loadUint64(&b.meta)
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
 			if e := (*EntryOf[K, V])(loadPtr(b.At(j))); e != nil {
-				if embeddedHash_ {
-					if e.getHash() == hash && e.Key == key {
-						return e.Value, true
-					}
-				} else {
+				if !embeddedHash_ || e.getHash() == hash {
 					if e.Key == key {
 						return e.Value, true
 					}
 				}
 			}
 		}
+		if meta&opNextMask == 0 {
+			return *new(V), false
+		}
+		b = (*bucketOf)(loadPtr(&b.next))
 	}
-	return *new(V), false
 }
 
 // LoadEntry finds and returns the entry pointer for the given key.
@@ -704,24 +705,24 @@ func (m *MapOf[K, V]) findEntry(
 	h2v := h2(hash)
 	h2w := broadcast(h2v)
 	idx := table.mask & h1(hash)
-	for b := table.buckets.At(idx); b != nil; b = (*bucketOf)(loadPtr(&b.next)) {
-		meta := loadInt(&b.meta)
+	b := table.buckets.At(idx)
+	for {
+		meta := loadUint64(&b.meta)
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
 			if e := (*EntryOf[K, V])(loadPtr(b.At(j))); e != nil {
-				if embeddedHash_ {
-					if e.getHash() == hash && e.Key == *key {
-						return e
-					}
-				} else {
+				if !embeddedHash_ || e.getHash() == hash {
 					if e.Key == *key {
 						return e
 					}
 				}
 			}
 		}
+		if meta&opNextMask == 0 {
+			return nil
+		}
+		b = (*bucketOf)(loadPtr(&b.next))
 	}
-	return nil
 }
 
 func (m *MapOf[K, V]) processEntry(
@@ -779,21 +780,15 @@ func (m *MapOf[K, V]) processEntry(
 			emptyB    *bucketOf
 			emptyIdx  int
 			emptyMeta uint64
-			lastB     *bucketOf
 		)
-
+		b := root
 	findLoop:
-		for b := root; b != nil; b = (*bucketOf)(b.next) {
-			meta := loadIntFast(&b.meta)
+		for {
+			meta := loadUint64Fast(&b.meta)
 			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
-					if embeddedHash_ {
-						if e.getHash() == hash && e.Key == *key {
-							oldEntry, oldB, oldIdx, oldMeta = e, b, j, meta
-							break findLoop
-						}
-					} else {
+					if !embeddedHash_ || e.getHash() == hash {
 						if e.Key == *key {
 							oldEntry, oldB, oldIdx, oldMeta = e, b, j, meta
 							break findLoop
@@ -808,7 +803,10 @@ func (m *MapOf[K, V]) processEntry(
 					emptyMeta = meta
 				}
 			}
-			lastB = b
+			if meta&opNextMask == 0 {
+				break
+			}
+			b = (*bucketOf)(b.next)
 		}
 
 		// --- Processing Logic ---
@@ -839,19 +837,22 @@ func (m *MapOf[K, V]) processEntry(
 			if oldB == root {
 				root.UnlockWithMeta(newMeta)
 			} else {
-				storeInt(&oldB.meta, newMeta)
+				storeUint64(&oldB.meta, newMeta)
 				root.Unlock()
 			}
 			table.AddSize(idx, -1)
 
 			// Check if table shrinking is needed
-			if m.shrinkOn && newMeta&metaDataMask == metaEmpty &&
-				loadPtr(&m.rs) == nil {
-				tableLen := table.mask + 1
-				if m.minLen < tableLen {
-					size := table.SumSize()
-					if size < tableLen*entriesPerBucket/shrinkFraction {
-						m.tryResize(mapShrinkHint, size, 0)
+			if m.shrinkOn {
+				if newMeta&metaDataMask == metaEmpty {
+					if loadPtr(&m.rs) == nil {
+						tableLen := table.mask + 1
+						if m.minLen < tableLen {
+							size := table.SumSize()
+							if size < tableLen*entriesPerBucket/shrinkFraction {
+								m.tryResize(mapShrinkHint, size, 0)
+							}
+						}
 					}
 				}
 			}
@@ -879,7 +880,7 @@ func (m *MapOf[K, V]) processEntry(
 			if emptyB == root {
 				root.UnlockWithMeta(newMeta)
 			} else {
-				storeInt(&emptyB.meta, newMeta)
+				storeUint64(&emptyB.meta, newMeta)
 				root.Unlock()
 			}
 			table.AddSize(idx, 1)
@@ -887,13 +888,19 @@ func (m *MapOf[K, V]) processEntry(
 		}
 
 		// No empty slot, create new bucket and insert
-		storePtr(&lastB.next, unsafe.Pointer(&bucketOf{
+		storePtr(&b.next, unsafe.Pointer(&bucketOf{
 			meta: setByte(metaEmpty, h2v, 0),
 			entries: [entriesPerBucket]unsafe.Pointer{
 				unsafe.Pointer(newEntry),
 			},
 		}))
-		root.Unlock()
+		newMeta := loadUint64Fast(&b.meta) | opNextMask
+		if b == root {
+			root.UnlockWithMeta(newMeta)
+		} else {
+			storeUint64(&b.meta, newMeta)
+			root.Unlock()
+		}
 		table.AddSize(idx, 1)
 
 		// Check if the table needs to grow
@@ -1134,8 +1141,9 @@ func (m *MapOf[K, V]) copyBucket(
 		for srcIdx := i; srcIdx < oldLen; srcIdx += baseLen {
 			srcB := table.buckets.At(srcIdx)
 			srcB.Lock()
-			for b := srcB; b != nil; b = (*bucketOf)(b.next) {
-				meta := loadIntFast(&b.meta)
+			b := srcB
+			for {
+				meta := loadUint64Fast(&b.meta)
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 					j := firstMarkedByteIndex(marked)
 					if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
@@ -1150,11 +1158,10 @@ func (m *MapOf[K, V]) copyBucket(
 						// Append entry to the destination bucket
 						h2v := h2(hash)
 						for {
-							meta := loadIntFast(&destB.meta)
-							empty := (^meta) & metaMask
-							if empty != 0 {
+							meta := destB.meta
+							if empty := (^meta) & metaMask; empty != 0 {
 								emptyIdx := firstMarkedByteIndex(empty)
-								storeIntFast(&destB.meta, setByte(meta, h2v, emptyIdx))
+								destB.meta = setByte(meta, h2v, emptyIdx)
 								*destB.At(emptyIdx) = unsafe.Pointer(e)
 								break
 							}
@@ -1164,6 +1171,7 @@ func (m *MapOf[K, V]) copyBucket(
 									meta:    setByte(metaEmpty, h2v, 0),
 									entries: [entriesPerBucket]unsafe.Pointer{unsafe.Pointer(e)},
 								})
+								destB.meta = meta | opNextMask
 								break
 							}
 							destB = next
@@ -1171,6 +1179,10 @@ func (m *MapOf[K, V]) copyBucket(
 						copied++
 					}
 				}
+				if meta&opNextMask == 0 {
+					break
+				}
+				b = (*bucketOf)(b.next)
 			}
 			srcB.Unlock()
 		}
@@ -1255,13 +1267,13 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 		for i := 0; i <= table.mask; i++ {
 			root := table.buckets.At(i)
 			root.Lock()
-			for b := root; b != nil; b = (*bucketOf)(b.next) {
-				meta := loadIntFast(&b.meta)
+			b := root
+			for {
+				meta := loadUint64Fast(&b.meta)
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 					j := firstMarkedByteIndex(marked)
 					if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
 						newEntry, shouldContinue := fn(e)
-
 						if newEntry != nil {
 							if newEntry != e {
 								// Update
@@ -1276,7 +1288,7 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 							storePtr(b.At(j), nil)
 							// Keep snapshot fresh to prevent stale meta
 							meta = setByte(meta, slotEmpty, j)
-							storeInt(&b.meta, meta)
+							storeUint64(&b.meta, meta)
 							table.AddSize(i, -1)
 						}
 
@@ -1286,6 +1298,10 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 						}
 					}
 				}
+				if meta&opNextMask == 0 {
+					break
+				}
+				b = (*bucketOf)(b.next)
 			}
 			root.Unlock()
 		}
@@ -1629,12 +1645,13 @@ func (m *MapOf[K, V]) CompareAndSwap(key K, old V, new V) (swapped bool) {
 	_, swapped = m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			var zero V
-			if loaded != nil &&
-				m.valEqual(
+			if loaded != nil {
+				if m.valEqual(
 					noescape(unsafe.Pointer(&loaded.Value)),
 					noescape(unsafe.Pointer(&old)),
 				) {
-				return &EntryOf[K, V]{Value: new}, zero, true
+					return &EntryOf[K, V]{Value: new}, zero, true
+				}
 			}
 			return loaded, zero, false
 		},
@@ -1672,12 +1689,13 @@ func (m *MapOf[K, V]) CompareAndDelete(key K, old V) (deleted bool) {
 	_, deleted = m.processEntry(table, hash, &key,
 		func(loaded *EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
 			var zero V
-			if loaded != nil &&
-				m.valEqual(
+			if loaded != nil {
+				if m.valEqual(
 					noescape(unsafe.Pointer(&loaded.Value)),
 					noescape(unsafe.Pointer(&old)),
 				) {
-				return nil, zero, true
+					return nil, zero, true
+				}
 			}
 			return loaded, zero, false
 		},
@@ -1787,12 +1805,13 @@ func (m *MapOf[K, V]) LoadAndStore(key K, value V) (actual V, loaded bool) {
 	if enableFastPath {
 		// deduplicates identical values
 		if m.valEqual != nil {
-			if e := m.findEntry(table, hash, &key); e != nil &&
-				m.valEqual(
+			if e := m.findEntry(table, hash, &key); e != nil {
+				if m.valEqual(
 					noescape(unsafe.Pointer(&e.Value)),
 					noescape(unsafe.Pointer(&value)),
 				) {
-				return value, true
+					return value, true
+				}
 			}
 		}
 	}
@@ -1912,12 +1931,13 @@ func (m *MapOf[K, V]) Compute(
 					// it's better to let users handle same-value filtering
 					// with CancelOp instead.
 					if enableFastPath {
-						if m.valEqual != nil &&
-							m.valEqual(
+						if m.valEqual != nil {
+							if m.valEqual(
 								noescape(unsafe.Pointer(&loaded.Value)),
 								noescape(unsafe.Pointer(&newValue)),
 							) {
-							return loaded, loaded.Value, true
+								return loaded, loaded.Value, true
+							}
 						}
 					}
 					return &EntryOf[K, V]{Value: newValue}, newValue, true
@@ -2095,8 +2115,9 @@ func (m *MapOf[K, V]) RangeEntry(yield func(loaded *EntryOf[K, V]) bool) {
 		return
 	}
 	for i := 0; i <= table.mask; i++ {
-		for b := table.buckets.At(i); b != nil; b = (*bucketOf)(loadPtr(&b.next)) {
-			meta := loadInt(&b.meta)
+		b := table.buckets.At(i)
+		for {
+			meta := loadUint64(&b.meta)
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				if e := (*EntryOf[K, V])(loadPtr(b.At(j))); e != nil {
@@ -2105,6 +2126,10 @@ func (m *MapOf[K, V]) RangeEntry(yield func(loaded *EntryOf[K, V]) bool) {
 					}
 				}
 			}
+			if meta&opNextMask == 0 {
+				break
+			}
+			b = (*bucketOf)(loadPtr(&b.next))
 		}
 	}
 }
@@ -2702,8 +2727,8 @@ func (m *MapOf[K, V]) CloneTo(clone *MapOf[K, V]) {
 // so it should be used only for diagnostics or debugging purposes.
 func (m *MapOf[K, V]) Stats() *MapStats {
 	stats := &MapStats{
-		TotalGrowths: loadInt(&m.growths),
-		TotalShrinks: loadInt(&m.shrinks),
+		TotalGrowths: loadUint32(&m.growths),
+		TotalShrinks: loadUint32(&m.shrinks),
 		MinEntries:   math.MaxInt,
 	}
 	table := (*mapOfTable)(loadPtr(&m.table))
@@ -2715,12 +2740,13 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 	stats.CounterLen = table.sizeMask + 1
 	for i := 0; i <= table.mask; i++ {
 		entries := 0
-		for b := table.buckets.At(i); b != nil; b = (*bucketOf)(loadPtr(&b.next)) {
+		b := table.buckets.At(i)
+		for {
 			stats.TotalBuckets++
 			entriesLocal := 0
 			stats.Capacity += entriesPerBucket
 
-			meta := loadInt(&b.meta)
+			meta := loadUint64(&b.meta)
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
 				if e := (*EntryOf[K, V])(loadPtr(b.At(j))); e != nil {
@@ -2732,6 +2758,10 @@ func (m *MapOf[K, V]) Stats() *MapStats {
 			if entriesLocal == 0 {
 				stats.EmptyBuckets++
 			}
+			if meta&opNextMask == 0 {
+				break
+			}
+			b = (*bucketOf)(loadPtr(&b.next))
 		}
 
 		if entries < stats.MinEntries {
@@ -2836,9 +2866,17 @@ func (t *mapOfTable) AddSize(idx, delta int) {
 func (t *mapOfTable) SumSize() int {
 	var sum uintptr
 	for i := 0; i <= t.sizeMask; i++ {
-		sum += loadInt(&t.size.At(i).c)
+		sum += loadUintptr(&t.size.At(i).c)
 	}
 	return int(sum)
+}
+
+//go:nosplit
+func (b *bucketOf) At(i int) *unsafe.Pointer {
+	return (*unsafe.Pointer)(unsafe.Add(
+		unsafe.Pointer(&b.entries),
+		uintptr(i)*unsafe.Sizeof(unsafe.Pointer(nil))),
+	)
 }
 
 // Lock acquires a spinlock for the bucket using embedded metadata.
@@ -2868,20 +2906,12 @@ func (b *bucketOf) slowLock() {
 
 //go:nosplit
 func (b *bucketOf) Unlock() {
-	atomic.StoreUint64(&b.meta, loadIntFast(&b.meta)&^opLockMask)
+	atomic.StoreUint64(&b.meta, loadUint64Fast(&b.meta)&^opLockMask)
 }
 
 //go:nosplit
 func (b *bucketOf) UnlockWithMeta(meta uint64) {
 	atomic.StoreUint64(&b.meta, meta&^opLockMask)
-}
-
-//go:nosplit
-func (b *bucketOf) At(i int) *unsafe.Pointer {
-	return (*unsafe.Pointer)(unsafe.Add(
-		unsafe.Pointer(&b.entries),
-		uintptr(i)*unsafe.Sizeof(unsafe.Pointer(nil))),
-	)
 }
 
 // ============================================================================
@@ -3356,6 +3386,7 @@ const noRaceTSO_ = !race_ && isTSO_
 // loadPtr loads a pointer atomically on non-TSO architectures.
 // On TSO architectures, it performs a plain pointer load.
 //
+//nolint:unused
 //go:nosplit
 func loadPtr(addr *unsafe.Pointer) unsafe.Pointer {
 	if noRaceTSO_ {
@@ -3368,6 +3399,7 @@ func loadPtr(addr *unsafe.Pointer) unsafe.Pointer {
 // storePtr stores a pointer atomically on non-TSO architectures.
 // On TSO architectures, it performs a plain pointer store.
 //
+//nolint:unused
 //go:nosplit
 func storePtr(addr *unsafe.Pointer, val unsafe.Pointer) {
 	if noRaceTSO_ {
@@ -3377,65 +3409,127 @@ func storePtr(addr *unsafe.Pointer, val unsafe.Pointer) {
 	}
 }
 
-// loadInt aligned integer load; plain on TSO when width matches,
-// otherwise atomic
-//
+//nolint:unused
 //go:nosplit
-func loadInt[T ~uint32 | ~uint64 | ~uintptr](addr *T) T {
-	if unsafe.Sizeof(T(0)) == 4 {
-		if noRaceTSO_ {
-			return *addr
-		} else {
-			return T(atomic.LoadUint32((*uint32)(unsafe.Pointer(addr))))
-		}
+func loadUint64(addr *uint64) uint64 {
+	if noRaceTSO_ && bits.UintSize == 64 {
+		return *addr
 	} else {
-		if noRaceTSO_ && bits.UintSize == 64 {
-			return *addr
-		} else {
-			return T(atomic.LoadUint64((*uint64)(unsafe.Pointer(addr))))
-		}
+		return atomic.LoadUint64(addr)
 	}
 }
 
-// storeInt aligned integer store; plain on TSO when width matches,
-// otherwise atomic
-//
+//nolint:unused
 //go:nosplit
-func storeInt[T ~uint32 | ~uint64 | ~uintptr](addr *T, val T) {
-	if unsafe.Sizeof(T(0)) == 4 {
-		if noRaceTSO_ {
-			*addr = val
-		} else {
-			atomic.StoreUint32((*uint32)(unsafe.Pointer(addr)), uint32(val))
-		}
+func storeUint64(addr *uint64, val uint64) {
+	if noRaceTSO_ && bits.UintSize == 64 {
+		*addr = val
 	} else {
-		if noRaceTSO_ && bits.UintSize == 64 {
-			*addr = val
-		} else {
-			atomic.StoreUint64((*uint64)(unsafe.Pointer(addr)), uint64(val))
-		}
+		atomic.StoreUint64(addr, val)
 	}
 }
 
-// loadIntFast performs a non-atomic read, safe only when the caller holds
+//nolint:unused
+//go:nosplit
+func loadUint32(addr *uint32) uint32 {
+	if noRaceTSO_ {
+		return *addr
+	} else {
+		return atomic.LoadUint32(addr)
+	}
+}
+
+//nolint:unused
+//go:nosplit
+func storeUint32(addr *uint32, val uint32) {
+	if noRaceTSO_ {
+		*addr = val
+	} else {
+		atomic.StoreUint32(addr, val)
+	}
+}
+
+//nolint:unused
+//go:nosplit
+func loadUintptr(addr *uintptr) uintptr {
+	if noRaceTSO_ {
+		return *addr
+	} else {
+		return atomic.LoadUintptr(addr)
+	}
+}
+
+//nolint:unused
+//go:nosplit
+func storeUintptr(addr *uintptr, val uintptr) {
+	if noRaceTSO_ {
+		*addr = val
+	} else {
+		atomic.StoreUintptr(addr, val)
+	}
+}
+
+// loadUint64Fast performs a non-atomic read, safe only when the caller holds
 // a relevant lock or is within a seqlock read window.
 //
+//nolint:unused
 //go:nosplit
-func loadIntFast[T ~uint32 | ~uint64 | ~uintptr](addr *T) T {
+func loadUint64Fast(addr *uint64) uint64 {
 	if race_ {
-		return loadInt(addr)
+		return atomic.LoadUint64(addr)
 	} else {
 		return *addr
 	}
 }
 
-// storeIntFast performs a non-atomic write, safe only for thread-private or
+// storeUint64Fast performs a non-atomic write, safe only for thread-private or
 // not-yet-published memory locations.
 //
+//nolint:unused
 //go:nosplit
-func storeIntFast[T ~uint32 | ~uint64 | ~uintptr](addr *T, val T) {
+func storeUint64Fast(addr *uint64, val uint64) {
 	if race_ {
-		storeInt(addr, val)
+		atomic.StoreUint64(addr, val)
+	} else {
+		*addr = val
+	}
+}
+
+//nolint:unused
+//go:nosplit
+func loadUint32Fast(addr *uint32) uint32 {
+	if race_ {
+		return atomic.LoadUint32(addr)
+	} else {
+		return *addr
+	}
+}
+
+//nolint:unused
+//go:nosplit
+func storeUint32Fast(addr *uint32, val uint32) {
+	if race_ {
+		atomic.StoreUint32(addr, val)
+	} else {
+		*addr = val
+	}
+}
+
+//nolint:unused
+//go:nosplit
+func loadUintptrFast(addr *uintptr) uintptr {
+	if race_ {
+		return atomic.LoadUintptr(addr)
+	} else {
+		return *addr
+	}
+}
+
+//nolint:unused
+//go:nosplit
+func storeUintptrFast(addr *uintptr, val uintptr) {
+	if race_ {
+		atomic.StoreUintptr(addr, val)
 	} else {
 		*addr = val
 	}
