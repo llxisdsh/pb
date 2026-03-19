@@ -1,3 +1,11 @@
+<div align="center">
+
+### 🚀 Prefer a simpler, faster API?
+
+**Try [Concurrent Core](https://llxisdsh.github.io/cc/)**  
+Lightweight · High-performance · Built for latency-critical paths
+
+</div>
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/llxisdsh/pb.svg)](https://pkg.go.dev/github.com/llxisdsh/pb)
 
@@ -5,14 +13,6 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/llxisdsh/pb)](https://goreportcard.com/report/github.com/llxisdsh/pb)[![Codecov](https://codecov.io/gh/llxisdsh/pb/branch/main/graph/badge.svg)](https://codecov.io/gh/llxisdsh/pb)[![GitHub Actions](https://github.com/llxisdsh/pb/actions/workflows/go.yml/badge.svg?branch=main)](https://github.com/llxisdsh/pb/actions)
 -->
 
-
----
-
-### 🚀 Prefer a simpler, faster API?
-
-Try [Concurrent Core](https://llxisdsh.github.io/cc/) — a lightweight, high-performance Go toolkit with rich concurrency primitives for latency-critical paths.
-
----
 
 # MapOf
 
