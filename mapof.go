@@ -614,15 +614,8 @@ func (m *MapOf[K, V]) init(
 //
 //go:noinline
 func (m *MapOf[K, V]) initSlow() *mapOfTable {
-	rs := (*rebuildState)(loadPtr(&m.rs))
-	if rs != nil {
-		rs.wg.Wait()
-		// Now the table should be initialized
-		return (*mapOfTable)(loadPtr(&m.table))
-	}
-
-	rs, ok := m.beginRebuild(mapRebuildBlockWritersHint)
-	if !ok {
+	rs := m.beginRebuild(mapRebuildBlockWritersHint)
+	if rs == nil {
 		// Another goroutine is initializing, wait for it to complete
 		rs = (*rebuildState)(loadPtr(&m.rs))
 		if rs != nil {
@@ -787,12 +780,11 @@ func (m *MapOf[K, V]) processEntry(
 			meta := loadUint64Fast(&b.meta)
 			for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
-				if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
-					if !embeddedHash_ || e.getHash() == hash {
-						if e.Key == *key {
-							oldEntry, oldB, oldIdx, oldMeta = e, b, j, meta
-							break findLoop
-						}
+				e := (*EntryOf[K, V])(*b.At(j))
+				if !embeddedHash_ || e.getHash() == hash {
+					if e.Key == *key {
+						oldEntry, oldB, oldIdx, oldMeta = e, b, j, meta
+						break findLoop
 					}
 				}
 			}
@@ -977,14 +969,16 @@ func (m *MapOf[K, V]) doResize(
 	}
 }
 
-func (m *MapOf[K, V]) beginRebuild(hint mapRebuildHint) (*rebuildState, bool) {
-	rs := new(rebuildState)
-	rs.hint = hint
+func (m *MapOf[K, V]) beginRebuild(hint mapRebuildHint) *rebuildState {
+	if loadPtr(&m.rs) != nil {
+		return nil
+	}
+	rs := &rebuildState{hint: hint}
 	rs.wg.Add(1)
 	if !atomic.CompareAndSwapPointer(&m.rs, nil, unsafe.Pointer(rs)) {
-		return nil, false
+		return nil
 	}
-	return rs, true
+	return rs
 }
 
 func (m *MapOf[K, V]) endRebuild(rs *rebuildState) {
@@ -1016,7 +1010,7 @@ func (m *MapOf[K, V]) rebuild(
 			}
 		}
 
-		if rs, ok := m.beginRebuild(hint); ok {
+		if rs := m.beginRebuild(hint); rs != nil {
 			fn()
 			m.endRebuild(rs)
 			return
@@ -1029,8 +1023,8 @@ func (m *MapOf[K, V]) tryResize(
 	hint mapRebuildHint,
 	size, sizeAdd int,
 ) {
-	rs, ok := m.beginRebuild(hint)
-	if !ok {
+	rs := m.beginRebuild(hint)
+	if rs == nil {
 		return
 	}
 
@@ -1146,38 +1140,37 @@ func (m *MapOf[K, V]) copyBucket(
 				meta := loadUint64Fast(&b.meta)
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 					j := firstMarkedByteIndex(marked)
-					if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
-						var hash uintptr
-						if embeddedHash_ {
-							hash = e.getHash()
-						} else {
-							hash = keyHash(noescape(unsafe.Pointer(&e.Key)), seed)
-						}
-						idx := mask & h1(hash)
-						destB := newTable.buckets.At(idx)
-						// Append entry to the destination bucket
-						h2v := h2(hash)
-						for {
-							meta := destB.meta
-							if empty := (^meta) & metaMask; empty != 0 {
-								emptyIdx := firstMarkedByteIndex(empty)
-								destB.meta = setByte(meta, h2v, emptyIdx)
-								*destB.At(emptyIdx) = unsafe.Pointer(e)
-								break
-							}
-							next := (*bucketOf)(destB.next)
-							if next == nil {
-								destB.next = unsafe.Pointer(&bucketOf{
-									meta:    setByte(metaEmpty, h2v, 0),
-									entries: [entriesPerBucket]unsafe.Pointer{unsafe.Pointer(e)},
-								})
-								destB.meta = meta | opNextMask
-								break
-							}
-							destB = next
-						}
-						copied++
+					e := (*EntryOf[K, V])(*b.At(j))
+					var hash uintptr
+					if embeddedHash_ {
+						hash = e.getHash()
+					} else {
+						hash = keyHash(noescape(unsafe.Pointer(&e.Key)), seed)
 					}
+					idx := mask & h1(hash)
+					destB := newTable.buckets.At(idx)
+					// Append entry to the destination bucket
+					h2v := h2(hash)
+					for {
+						meta := destB.meta
+						if empty := (^meta) & metaMask; empty != 0 {
+							emptyIdx := firstMarkedByteIndex(empty)
+							destB.meta = setByte(meta, h2v, emptyIdx)
+							*destB.At(emptyIdx) = unsafe.Pointer(e)
+							break
+						}
+						next := (*bucketOf)(destB.next)
+						if next == nil {
+							destB.next = unsafe.Pointer(&bucketOf{
+								meta:    setByte(metaEmpty, h2v, 0),
+								entries: [entriesPerBucket]unsafe.Pointer{unsafe.Pointer(e)},
+							})
+							destB.meta = meta | opNextMask
+							break
+						}
+						destB = next
+					}
+					copied++
 				}
 				if meta&opNextMask == 0 {
 					break
@@ -1272,30 +1265,29 @@ func (m *MapOf[K, V]) rangeProcessEntryWithBreak(
 				meta := loadUint64Fast(&b.meta)
 				for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 					j := firstMarkedByteIndex(marked)
-					if e := (*EntryOf[K, V])(*b.At(j)); e != nil {
-						newEntry, shouldContinue := fn(e)
-						if newEntry != nil {
-							if newEntry != e {
-								// Update
-								if embeddedHash_ {
-									newEntry.setHash(e.getHash())
-								}
-								newEntry.Key = e.Key
-								storePtr(b.At(j), unsafe.Pointer(newEntry))
+					e := (*EntryOf[K, V])(*b.At(j))
+					newEntry, shouldContinue := fn(e)
+					if newEntry != nil {
+						if newEntry != e {
+							// Update
+							if embeddedHash_ {
+								newEntry.setHash(e.getHash())
 							}
-						} else {
-							// Delete
-							storePtr(b.At(j), nil)
-							// Keep snapshot fresh to prevent stale meta
-							meta = setByte(meta, slotEmpty, j)
-							storeUint64(&b.meta, meta)
-							table.AddSize(i, -1)
+							newEntry.Key = e.Key
+							storePtr(b.At(j), unsafe.Pointer(newEntry))
 						}
+					} else {
+						// Delete
+						storePtr(b.At(j), nil)
+						// Keep snapshot fresh to prevent stale meta
+						meta = setByte(meta, slotEmpty, j)
+						storeUint64(&b.meta, meta)
+						table.AddSize(i, -1)
+					}
 
-						if !shouldContinue {
-							root.Unlock()
-							return
-						}
+					if !shouldContinue {
+						root.Unlock()
+						return
 					}
 				}
 				if meta&opNextMask == 0 {

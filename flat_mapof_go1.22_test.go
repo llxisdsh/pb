@@ -672,7 +672,7 @@ func TestFlatMapOf_IsZero(t *testing.T) {
 
 func TestFlatMapOf_LoadOrStoreFn_OnceUnderRace(t *testing.T) {
 	m := NewFlatMapOf[int, int]()
-	var called int32
+	var called atomic.Int32
 	var wg sync.WaitGroup
 	workers := max(2, runtime.GOMAXPROCS(0)) // Reduce Concurrency
 	wg.Add(workers)
@@ -681,7 +681,7 @@ func TestFlatMapOf_LoadOrStoreFn_OnceUnderRace(t *testing.T) {
 			defer wg.Done()
 			_, _ = m.LoadOrStoreFn(999, func() int {
 				// widen race window
-				atomic.AddInt32(&called, 1)
+				called.Add(1)
 				time.Sleep(1 * time.Millisecond)
 				return 777
 			})
@@ -689,7 +689,7 @@ func TestFlatMapOf_LoadOrStoreFn_OnceUnderRace(t *testing.T) {
 	}
 	wg.Wait()
 
-	if got := atomic.LoadInt32(&called); got != 1 {
+	if got := called.Load(); got != 1 {
 		t.Fatalf("LoadOrStoreFn invoked %d times; want 1", got)
 	}
 	if v, ok := m.Load(999); !ok || v != 777 {
@@ -780,7 +780,7 @@ func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
 	var (
 		wg   sync.WaitGroup
 		stop = make(chan struct{})
-		seq  uint32
+		seq  atomic.Uint32
 	)
 
 	// Start multiple writers to maximize flip frequency on the same slot
@@ -794,7 +794,7 @@ func TestFlatMapOf_DoubleBufferConsistency_StressABA(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					s := atomic.AddUint32(&seq, 1)
+					s := seq.Add(1)
 					val := pair{X: uint16(s), Y: ^uint16(s)}
 					m.Process(
 						0,
@@ -849,7 +849,7 @@ func TestFlatMapOf_SeqlockConsistency_StressABA(t *testing.T) {
 	var (
 		wg   sync.WaitGroup
 		stop = make(chan struct{})
-		seq  uint32
+		seq  atomic.Uint32
 	)
 
 	writerN := 4 // Reduce Concurrency
@@ -862,7 +862,7 @@ func TestFlatMapOf_SeqlockConsistency_StressABA(t *testing.T) {
 				case <-stop:
 					return
 				default:
-					s := atomic.AddUint32(&seq, 1)
+					s := seq.Add(1)
 					val := pair{X: uint64(s), Y: ^uint64(s)}
 					m.Process(
 						0,
@@ -912,8 +912,8 @@ func TestFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
 	const insertedVal uint32 = 1
 
 	var (
-		anom uint64
-		stop uint32
+		anom atomic.Uint64
+		stop atomic.Uint32
 	)
 
 	readers := max(2, runtime.GOMAXPROCS(0)) // Reduce Concurrency
@@ -931,26 +931,26 @@ func TestFlatMapOf_LoadDeleteRace_Semantics(t *testing.T) {
 			m.Delete(key)
 			runtime.Gosched()
 		}
-		atomic.StoreUint32(&stop, 1)
+		stop.Store(1)
 	}()
 
 	for range readers {
 		go func() {
 			defer wg.Done()
-			for atomic.LoadUint32(&stop) == 0 {
+			for stop.Load() == 0 {
 				v, ok := m.Load(key)
 				if ok && v == 0 {
-					atomic.AddUint64(&anom, 1)
+					anom.Add(1)
 				}
 			}
 		}()
 	}
 
 	wg.Wait()
-	if anom > 0 {
+	if anom.Load() > 0 {
 		t.Fatalf(
 			"Load/Delete race: observed ok==true && value==0 %d times",
-			anom,
+			anom.Load(),
 		)
 	}
 }
@@ -1187,14 +1187,14 @@ func TestFlatMapOf_Range_NoDuplicateVisit_Heavy(t *testing.T) {
 		m.Store(i, i)
 	}
 
-	var stop uint32
+	var stop atomic.Uint32
 	writerN := max(4, runtime.GOMAXPROCS(0))
 	var wg sync.WaitGroup
 	wg.Add(writerN)
 	for w := range writerN {
 		go func(offset int) {
 			defer wg.Done()
-			for atomic.LoadUint32(&stop) == 0 {
+			for stop.Load() == 0 {
 				for i := offset; i < N; i += writerN {
 					m.Process(
 						i,
@@ -1226,7 +1226,7 @@ func TestFlatMapOf_Range_NoDuplicateVisit_Heavy(t *testing.T) {
 		})
 	}
 
-	atomic.StoreUint32(&stop, 1)
+	stop.Store(1)
 	wg.Wait()
 }
 
@@ -1239,14 +1239,14 @@ func TestFlatMapOf_Range_NoDuplicateVisit(t *testing.T) {
 		m.Store(i, i)
 	}
 
-	var stop uint32
+	var stop atomic.Uint32
 	writerN := max(2, runtime.GOMAXPROCS(0)/2) // Reduce Concurrency
 	var wg sync.WaitGroup
 	wg.Add(writerN)
 	for w := range writerN {
 		go func(offset int) {
 			defer wg.Done()
-			for atomic.LoadUint32(&stop) == 0 {
+			for stop.Load() == 0 {
 				for i := offset; i < N; i += writerN {
 					// mutate value to force seq changes
 					m.Process(
@@ -1278,7 +1278,7 @@ func TestFlatMapOf_Range_NoDuplicateVisit(t *testing.T) {
 		})
 	}
 
-	atomic.StoreUint32(&stop, 1)
+	stop.Store(1)
 	wg.Wait()
 }
 

@@ -115,13 +115,8 @@ func (m *FlatMapOf[K, V]) init(
 
 //go:noinline
 func (m *FlatMapOf[K, V]) initSlow() {
-	rs := (*flatRebuildState[K, V])(loadPtr(&m.rs))
-	if rs != nil {
-		rs.wg.Wait()
-		return
-	}
-	rs, ok := m.beginRebuild(mapRebuildBlockWritersHint)
-	if !ok {
+	rs := m.beginRebuild(mapRebuildBlockWritersHint)
+	if rs == nil {
 		rs = (*flatRebuildState[K, V])(loadPtr(&m.rs))
 		if rs != nil {
 			rs.wg.Wait()
@@ -157,20 +152,20 @@ func (m *FlatMapOf[K, V]) Load(key K) (value V, ok bool) {
 	h2w := broadcast(h2v)
 	idx := table.mask & h1(hash)
 	b := table.buckets.At(idx)
+retry:
 	for {
-		var spins int
-	retry:
+		// var spins int
 		s1, ok := b.seq.BeginRead()
 		if !ok {
-			delay(&spins)
-			goto retry
+			// delay(&spins)
+			continue retry
 		}
 		meta := b.meta
 		for marked := markZeroBytes(meta ^ h2w); marked != 0; marked &= marked - 1 {
 			j := firstMarkedByteIndex(marked)
 			e := b.At(j).ReadUnfenced()
 			if !b.seq.EndRead(s1) {
-				goto retry
+				continue retry
 			}
 			if !embeddedHash_ || e.getHash() == hash {
 				if e.Key == key {
@@ -202,14 +197,14 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	var cacheCount int
 	for i := 0; i <= table.mask; i++ {
 		b := table.buckets.At(i)
+	retry:
 		for {
-			var spins int
-		retry:
+			// var spins int
 			s1, ok := b.seq.BeginRead()
 
 			if !ok {
-				delay(&spins)
-				goto retry
+				// delay(&spins)
+				continue retry
 			}
 			meta = b.meta
 			cacheCount = 0
@@ -219,7 +214,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 				cacheCount++
 			}
 			if !b.seq.EndRead(s1) {
-				goto retry
+				continue retry
 			}
 			for j := range cacheCount {
 				kv := &cache[j]
@@ -655,14 +650,16 @@ func (m *FlatMapOf[K, V]) IsZero() bool {
 	return m.Size() == 0
 }
 
-func (m *FlatMapOf[K, V]) beginRebuild(hint mapRebuildHint) (*flatRebuildState[K, V], bool) {
-	rs := new(flatRebuildState[K, V])
-	rs.hint = hint
+func (m *FlatMapOf[K, V]) beginRebuild(hint mapRebuildHint) *flatRebuildState[K, V] {
+	if loadPtr(&m.rs) != nil {
+		return nil
+	}
+	rs := &flatRebuildState[K, V]{hint: hint}
 	rs.wg.Add(1)
 	if !atomic.CompareAndSwapPointer(&m.rs, nil, unsafe.Pointer(rs)) {
-		return nil, false
+		return nil
 	}
-	return rs, true
+	return rs
 }
 
 func (m *FlatMapOf[K, V]) endRebuild(rs *flatRebuildState[K, V]) {
@@ -692,7 +689,7 @@ func (m *FlatMapOf[K, V]) rebuild(
 				rs.wg.Wait()
 			}
 		}
-		if rs, ok := m.beginRebuild(hint); ok {
+		if rs := m.beginRebuild(hint); rs != nil {
 			fn()
 			m.endRebuild(rs)
 			return
@@ -702,8 +699,8 @@ func (m *FlatMapOf[K, V]) rebuild(
 
 //go:noinline
 func (m *FlatMapOf[K, V]) tryResize(hint mapRebuildHint, size, sizeAdd int) {
-	rs, ok := m.beginRebuild(hint)
-	if !ok {
+	rs := m.beginRebuild(hint)
+	if rs == nil {
 		return
 	}
 

@@ -41,7 +41,7 @@ func (sl *seqlock[SEQ, T]) Read(slot *seqlockSlot[T]) (v T) {
 }
 
 func (sl *seqlock[SEQ, T]) slowRead(slot *seqlockSlot[T]) (v T) {
-	var spins int
+	// var spins int
 	for {
 		if s1, ok := sl.BeginRead(); ok {
 			v = slot.ReadUnfenced()
@@ -50,7 +50,7 @@ func (sl *seqlock[SEQ, T]) slowRead(slot *seqlockSlot[T]) (v T) {
 			}
 			continue
 		}
-		delay(&spins)
+		// delay(&spins)
 	}
 }
 
