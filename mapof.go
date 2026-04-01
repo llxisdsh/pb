@@ -39,9 +39,9 @@ const (
 	//   - 32-bit: bucket size becomes 32B → 2/4/8 buckets per
 	//     64/128/256B cache line, also without Padding.
 	//
-	// Example outcomes (ptrSize, CacheLineSize → entries):
-	//   (8,  32) → 2  ; (8,  64) → 6 ; (8, 128) → 6 ; (8, 256) → 6
-	//   (4,  32) → 5  ; (4,  64) → 5 ; (4, 128) → 5 ; (4, 256) → 5
+	// Example outcomes (cacheLineSize → entriesPerBucket):
+	//   64bit: 32B → 2; 64B → 6; 128B → 6; 256B → 6
+	//   32bit: 32B → 5; 64B → 5; 128B → 5; 256B → 5
 	pointerSize    = int(unsafe.Sizeof(unsafe.Pointer(nil)))
 	bucketOverhead = int(unsafe.Sizeof(struct {
 		meta uint64
@@ -504,6 +504,7 @@ type IHashOpts interface {
 	HashOpts() []HashOptimization
 }
 
+//go:nosplit
 func parseKeyInterface[K comparable]() (keyHash HashFunc) {
 	var k *K
 	if _, ok := any(k).(IHashCode); ok {
@@ -511,7 +512,7 @@ func parseKeyInterface[K comparable]() (keyHash HashFunc) {
 			return any((*K)(ptr)).(IHashCode).HashCode(seed)
 		}
 	}
-	return
+	return keyHash
 }
 
 // IEqual defines a custom equality comparison interface for value types.
@@ -537,6 +538,7 @@ type IEqual[T any] interface {
 	Equal(other T) bool
 }
 
+//go:nosplit
 func parseValueInterface[V any]() (valEqual EqualFunc) {
 	var v *V
 	if _, ok := any(v).(IEqual[V]); ok {
@@ -544,7 +546,7 @@ func parseValueInterface[V any]() (valEqual EqualFunc) {
 			return any((*V)(ptr)).(IEqual[V]).Equal(*(*V)(other))
 		}
 	}
-	return
+	return valEqual
 }
 
 // InitWithOptions initializes the MapOf instance using variadic option
@@ -739,8 +741,7 @@ func (m *MapOf[K, V]) processEntry(
 		if rs := (*rebuildState)(loadPtr(&m.rs)); rs != nil {
 			switch rs.hint {
 			case mapGrowHint, mapShrinkHint:
-				if loadPtr(&rs.table) != nil /*skip init*/ &&
-					loadPtr(&rs.newTable) != nil /*skip newTable is nil*/ {
+				if loadPtr(&rs.newTable) != nil {
 					root.Unlock()
 					m.helpCopyAndWait(rs)
 					table = (*mapOfTable)(loadPtr(&m.table))
@@ -842,7 +843,7 @@ func (m *MapOf[K, V]) processEntry(
 						if m.minLen < tableLen {
 							size := table.SumSize()
 							if size < tableLen*entriesPerBucket/shrinkFraction {
-								m.tryResize(mapShrinkHint, size, 0)
+								m.tryResize(mapShrinkHint, tableLen>>1)
 							}
 						}
 					}
@@ -901,7 +902,7 @@ func (m *MapOf[K, V]) processEntry(
 			size := table.SumSize()
 			const sizeHintFactor = float64(entriesPerBucket) * loadFactor
 			if size >= int(float64(tableLen)*sizeHintFactor) {
-				m.tryResize(mapGrowHint, size, 0)
+				m.tryResize(mapGrowHint, tableLen<<1)
 			}
 		}
 
@@ -922,29 +923,23 @@ func (m *MapOf[K, V]) doResize(
 	hint mapRebuildHint,
 	sizeAdd int,
 ) {
-	var size int
 	for {
 		// Resize check
 		table := (*mapOfTable)(loadPtr(&m.table))
 		tableLen := table.mask + 1
+		var newLen int
 		if hint == mapGrowHint {
 			if sizeAdd <= 0 {
 				return
 			}
-			size = table.SumSize()
-			newTableLen := calcTableLen(size + sizeAdd)
-			if tableLen >= newTableLen {
+			newLen = calcTableLen(table.SumSize() + sizeAdd)
+			if newLen <= tableLen {
 				return
 			}
 		} else {
 			// mapShrinkHint
-			if tableLen <= m.minLen {
-				return
-			}
-			// Recalculate the shrink size to avoid over-shrinking
-			size = table.SumSize()
-			newTableLen := calcTableLen(size)
-			if tableLen <= newTableLen {
+			newLen = calcTableLen(table.SumSize())
+			if newLen >= tableLen {
 				return
 			}
 		}
@@ -953,8 +948,7 @@ func (m *MapOf[K, V]) doResize(
 		if rs := (*rebuildState)(loadPtr(&m.rs)); rs != nil {
 			switch rs.hint {
 			case mapGrowHint, mapShrinkHint:
-				if loadPtr(&rs.table) != nil /*skip init*/ &&
-					loadPtr(&rs.newTable) != nil /*skip newTable is nil*/ {
+				if loadPtr(&rs.newTable) != nil {
 					m.helpCopyAndWait(rs)
 				} else {
 					runtime.Gosched()
@@ -965,7 +959,9 @@ func (m *MapOf[K, V]) doResize(
 			}
 		}
 
-		m.tryResize(hint, size, sizeAdd)
+		if m.tryResize(hint, newLen) {
+			return
+		}
 	}
 }
 
@@ -998,8 +994,7 @@ func (m *MapOf[K, V]) rebuild(
 		if rs := (*rebuildState)(loadPtr(&m.rs)); rs != nil {
 			switch rs.hint {
 			case mapGrowHint, mapShrinkHint:
-				if loadPtr(&rs.table) != nil /*skip init*/ &&
-					loadPtr(&rs.newTable) != nil /*skip newTable is nil*/ {
+				if loadPtr(&rs.newTable) != nil {
 					m.helpCopyAndWait(rs)
 				} else {
 					runtime.Gosched()
@@ -1019,64 +1014,45 @@ func (m *MapOf[K, V]) rebuild(
 }
 
 //go:noinline
-func (m *MapOf[K, V]) tryResize(
-	hint mapRebuildHint,
-	size, sizeAdd int,
-) {
+func (m *MapOf[K, V]) tryResize(hint mapRebuildHint, newLen int) bool {
 	rs := m.beginRebuild(hint)
 	if rs == nil {
-		return
+		return false
 	}
 
 	table := (*mapOfTable)(loadPtr(&m.table))
 	tableLen := table.mask + 1
-	var newLen int
 	if hint == mapGrowHint {
-		if sizeAdd == 0 {
-			newLen = max(calcTableLen(size), tableLen<<1)
-		} else {
-			newLen = calcTableLen(size + sizeAdd)
-			if newLen <= tableLen {
-				m.endRebuild(rs)
-				return
-			}
+		if newLen <= tableLen {
+			m.endRebuild(rs)
+			return true
 		}
 		atomic.AddUint32(&m.growths, 1)
 	} else {
 		// mapShrinkHint
-		if sizeAdd == 0 {
-			newLen = tableLen >> 1
-			if newLen < m.minLen {
-				m.endRebuild(rs)
-				return
-			}
-		} else {
-			newLen = calcTableLen(size)
-			if newLen >= tableLen {
-				m.endRebuild(rs)
-				return
-			}
+		if newLen >= tableLen || newLen < m.minLen {
+			m.endRebuild(rs)
+			return true
 		}
 		atomic.AddUint32(&m.shrinks, 1)
 	}
 
+	rs.table = unsafe.Pointer(table)
 	cpus := runtime.GOMAXPROCS(0)
-	if cpus > 1 &&
-		newLen*int(unsafe.Sizeof(bucketOf{})) >= asyncThreshold {
-		// The big table, use goroutines to create new table and copy entries
-		go m.finalizeResize(table, newLen, rs, cpus)
+	if newLen*int(unsafe.Sizeof(bucketOf{})) < asyncThreshold || cpus <= 1 {
+		m.finalizeResize(newLen, rs, cpus)
 	} else {
-		m.finalizeResize(table, newLen, rs, cpus)
+		// The big table, use goroutines to create new table and copy entries
+		go m.finalizeResize(newLen, rs, cpus)
 	}
+	return true
 }
 
 func (m *MapOf[K, V]) finalizeResize(
-	table *mapOfTable,
 	newLen int,
 	rs *rebuildState,
 	cpus int,
 ) {
-	atomic.StorePointer(&rs.table, unsafe.Pointer(table))
 	newTable := newMapOfTable(newLen, cpus)
 	atomic.StorePointer(&rs.newTable, unsafe.Pointer(newTable))
 	m.helpCopyAndWait(rs)
@@ -1084,11 +1060,11 @@ func (m *MapOf[K, V]) finalizeResize(
 
 //go:noinline
 func (m *MapOf[K, V]) helpCopyAndWait(rs *rebuildState) {
-	table := (*mapOfTable)(loadPtr(&rs.table))
-	oldLen := table.mask + 1
-	chunks := int32(table.chunks)
 	newTable := (*mapOfTable)(loadPtr(&rs.newTable))
 	newLen := newTable.mask + 1
+	table := (*mapOfTable)(rs.table)
+	oldLen := table.mask + 1
+	chunks := int32(table.chunks)
 	// Determines the concurrent task range for destination buckets.
 	// We iterate based on the "Destination Constraint" to allow lock-free
 	// writes:
@@ -2995,11 +2971,11 @@ func calcSizeLen(tableLen, cpus int) int {
 // Compatible with both 32-bit and 64-bit systems.
 //
 //go:nosplit
-func nextPowOf2(n int) int {
-	if n <= 0 {
+func nextPowOf2(v int) int {
+	if v <= 0 {
 		return 1
 	}
-	v := n - 1
+	v--
 	v |= v >> 1
 	v |= v >> 2
 	v |= v >> 4
@@ -3008,7 +2984,8 @@ func nextPowOf2(n int) int {
 	if bits.UintSize == 64 {
 		v |= v >> 32
 	}
-	return v + 1
+	v++
+	return v
 }
 
 // ============================================================================
@@ -3286,12 +3263,13 @@ func hashUint8(ptr unsafe.Pointer, _ uintptr) uintptr {
 // Notes:
 //   - This implementation relies on Go's internal type representation
 //   - It should be verified for compatibility with each Go version upgrade
+//
+//go:nosplit
 func defaultHasherUsingBuiltIn[K comparable, V any]() (
 	keyHash HashFunc,
 	valEqual EqualFunc,
 ) {
-	var m map[K]V
-	mapType := iTypeOf(m).MapType()
+	mapType := iTypeOf((map[K]V)(nil)).MapType()
 	return mapType.Hasher, mapType.Elem.Equal
 }
 
@@ -3332,6 +3310,7 @@ type iType struct {
 	PtrToThis iTypeOff // type for pointer to this type, may be zero
 }
 
+//go:nosplit
 func (t *iType) MapType() *iMapType {
 	return (*iMapType)(unsafe.Pointer(t))
 }
@@ -3345,6 +3324,7 @@ type iMapType struct {
 	Hasher func(unsafe.Pointer, uintptr) uintptr
 }
 
+//go:nosplit
 func iTypeOf(a any) *iType {
 	eface := *(*iEmptyInterface)(unsafe.Pointer(&a))
 	// Types are either static (for compiler-created types) or

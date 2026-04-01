@@ -476,7 +476,7 @@ func (m *FlatMapOf[K, V]) Process(
 				size := table.SumSize()
 				const sizeHintFactor = float64(entriesPerBucket) * loadFactor
 				if size >= int(float64(tableLen)*sizeHintFactor) {
-					m.tryResize(mapGrowHint, size, 0)
+					m.tryResize(mapGrowHint, tableLen<<1)
 				}
 			}
 			return value, status
@@ -503,7 +503,7 @@ func (m *FlatMapOf[K, V]) Process(
 						if minTableLen < tableLen {
 							size := table.SumSize()
 							if size < tableLen*entriesPerBucket/shrinkFraction {
-								m.tryResize(mapShrinkHint, size, 0)
+								m.tryResize(mapShrinkHint, tableLen>>1)
 							}
 						}
 					}
@@ -698,60 +698,44 @@ func (m *FlatMapOf[K, V]) rebuild(
 }
 
 //go:noinline
-func (m *FlatMapOf[K, V]) tryResize(hint mapRebuildHint, size, sizeAdd int) {
+func (m *FlatMapOf[K, V]) tryResize(hint mapRebuildHint, newLen int) bool {
 	rs := m.beginRebuild(hint)
 	if rs == nil {
-		return
+		return false
 	}
 
 	table := m.table.Ptr()
 	tableLen := table.mask + 1
-	var newLen int
 	if hint == mapGrowHint {
-		if sizeAdd == 0 {
-			newLen = max(calcTableLen(size), tableLen<<1)
-		} else {
-			newLen = calcTableLen(size + sizeAdd)
-			if newLen <= tableLen {
-				m.endRebuild(rs)
-				return
-			}
+		if newLen <= tableLen {
+			m.endRebuild(rs)
+			return true
 		}
 	} else {
 		// mapShrinkHint
-		if sizeAdd == 0 {
-			newLen = tableLen >> 1
-			if newLen < minTableLen {
-				m.endRebuild(rs)
-				return
-			}
-		} else {
-			newLen = calcTableLen(size)
-			if newLen >= tableLen {
-				m.endRebuild(rs)
-				return
-			}
+		if newLen >= tableLen || newLen < minTableLen {
+			m.endRebuild(rs)
+			return true
 		}
 	}
 
 	cpus := runtime.GOMAXPROCS(0)
-	if cpus > 1 &&
-		newLen*int(unsafe.Sizeof(flatBucket[K, V]{})) >= asyncThreshold {
-		go m.finalizeResize(table, newLen, rs, cpus)
+	overCpus := cpus * resizeOverPartition
+	_, chunks := calcParallelism(table.mask+1, minBucketsPerCPU, overCpus)
+	rs.chunks = int32(chunks)
+	if newLen*int(unsafe.Sizeof(flatBucket[K, V]{})) < asyncThreshold || cpus <= 1 {
+		m.finalizeResize(newLen, rs, cpus)
 	} else {
-		m.finalizeResize(table, newLen, rs, cpus)
+		go m.finalizeResize(newLen, rs, cpus)
 	}
+	return true
 }
 
 func (m *FlatMapOf[K, V]) finalizeResize(
-	table *flatTable[K, V],
 	newLen int,
 	rs *flatRebuildState[K, V],
 	cpus int,
 ) {
-	overCpus := cpus * resizeOverPartition
-	_, chunks := calcParallelism(table.mask+1, minBucketsPerCPU, overCpus)
-	rs.chunks = int32(chunks)
 	rs.newTableSeq.WriteLocked(&rs.newTable, newFlatTable[K, V](newLen, cpus)) // Release rs
 	m.helpCopyAndWait(rs)
 }
