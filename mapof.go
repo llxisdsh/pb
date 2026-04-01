@@ -938,6 +938,9 @@ func (m *MapOf[K, V]) doResize(
 			}
 		} else {
 			// mapShrinkHint
+			if tableLen <= m.minLen {
+				return
+			}
 			newLen = calcTableLen(table.SumSize())
 			if newLen >= tableLen {
 				return
