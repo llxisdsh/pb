@@ -750,7 +750,7 @@ func (m *FlatMapOf[K, V]) finalizeResize(
 func (m *FlatMapOf[K, V]) helpCopyAndWait(rs *flatRebuildState[K, V]) {
 	newTable := rs.newTableSeq.Read(&rs.newTable) // Acquire rs
 	newLen := newTable.mask + 1
-	table := m.tableSeq.Read(&m.table)
+	table := rs.oldTable
 	oldLen := table.mask + 1
 	chunks := rs.chunks
 	// Determines the concurrent task range for destination buckets.
