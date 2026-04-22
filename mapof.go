@@ -48,7 +48,7 @@ const (
 		next unsafe.Pointer
 	}{}))
 	maxBucketBytes   = min(int(CacheLineSize), 32+32*(pointerSize/8))
-	entriesPerBucket = min(opByteIdx, (maxBucketBytes-bucketOverhead)/pointerSize)
+	entriesPerBucket = min(7, (maxBucketBytes-bucketOverhead)/pointerSize)
 
 	// Metadata constants for bucket entry management
 	metaEmpty uint64 = 0
@@ -113,14 +113,14 @@ type EntryOf[K comparable, V any] struct {
 type MapOf[K comparable, V any] struct {
 	_        noCopy
 	table    unsafe.Pointer // *mapOfTable
+	seed     uintptr
+	keyHash  HashFunc       // WithKeyHasher
+	valEqual EqualFunc      // WithValueEqual
 	rs       unsafe.Pointer // *rebuildState
+	minLen   int            // WithPresize
+	shrinkOn bool           // WithShrinkEnabled
 	growths  uint32
 	shrinks  uint32
-	seed     uintptr
-	keyHash  HashFunc  // WithKeyHasher
-	valEqual EqualFunc // WithValueEqual
-	minLen   int       // WithPresize
-	shrinkOn bool      // WithShrinkEnabled
 }
 
 // rebuildState represents the current state of a resizing operation
@@ -1138,8 +1138,7 @@ func (m *MapOf[K, V]) copyBucket(
 							*destB.At(emptyIdx) = unsafe.Pointer(e)
 							break
 						}
-						next := (*bucketOf)(destB.next)
-						if next == nil {
+						if meta&opNextMask == 0 {
 							destB.next = unsafe.Pointer(&bucketOf{
 								meta:    setByte(metaEmpty, h2v, 0),
 								entries: [entriesPerBucket]unsafe.Pointer{unsafe.Pointer(e)},
@@ -1147,7 +1146,7 @@ func (m *MapOf[K, V]) copyBucket(
 							destB.meta = meta | opNextMask
 							break
 						}
-						destB = next
+						destB = (*bucketOf)(destB.next)
 					}
 					copied++
 				}
@@ -2677,12 +2676,9 @@ func (m *MapOf[K, V]) CloneTo(clone *MapOf[K, V]) {
 	clone.valEqual = m.valEqual
 	clone.minLen = m.minLen
 	clone.shrinkOn = m.shrinkOn
-	atomic.StorePointer(&clone.table,
-		unsafe.Pointer(newMapOfTable(clone.minLen, runtime.GOMAXPROCS(0))),
-	)
-
-	// Pre-fetch size to optimize initial capacity
-	clone.Grow(m.Size())
+	newLen := calcTableLen(table.SumSize())
+	newTable := newMapOfTable(newLen, runtime.GOMAXPROCS(0))
+	atomic.StorePointer(&clone.table, unsafe.Pointer(newTable))
 	m.RangeEntry(func(e *EntryOf[K, V]) bool {
 		clone.ProcessEntry(e.Key,
 			func(*EntryOf[K, V]) (*EntryOf[K, V], V, bool) {
@@ -3013,7 +3009,7 @@ func h2(h uintptr) uint8 {
 //
 //go:nosplit
 func broadcast(b uint8) uint64 {
-	return 0x101010101010101 * uint64(b)
+	return 0x0101010101010101 * uint64(b)
 }
 
 // firstMarkedByteIndex finds the index of the first marked byte in an uint64.
@@ -3095,8 +3091,13 @@ func makeUnsafeSlice[T any](s []T) unsafeSlice[T] {
 }
 
 //go:nosplit
+func toUnsafeSlice[T any](ptr *T) unsafeSlice[T] {
+	return unsafeSlice[T]{ptr: unsafe.Pointer(ptr)}
+}
+
+//go:nosplit
 func (s unsafeSlice[T]) At(i int) *T {
-	return (*T)(unsafe.Add(s.ptr, unsafe.Sizeof(*new(T))*uintptr(i)))
+	return (*T)(unsafe.Add(s.ptr, uintptr(i)*unsafe.Sizeof(*new(T))))
 }
 
 // ============================================================================

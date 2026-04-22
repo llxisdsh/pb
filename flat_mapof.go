@@ -29,16 +29,17 @@ import (
 type FlatMapOf[K comparable, V any] struct {
 	_        noCopy
 	table    seqlockSlot[flatTable[K, V]]
-	rs       unsafe.Pointer // *flatRebuildState[K,V]
+	tableSeq seqlock[uint32, flatTable[K, V]] // seqlock of table
 	seed     uintptr
 	keyHash  HashFunc
-	tableSeq seqlock[uint32, flatTable[K, V]] // seqlock of table
-	shrinkOn bool                             // WithShrinkEnabled
+	rs       unsafe.Pointer // *flatRebuildState[K,V]
+	shrinkOn bool           // WithShrinkEnabled
 }
 
 type flatRebuildState[K comparable, V any] struct {
 	hint        mapRebuildHint
 	chunks      int32
+	oldTable    flatTable[K, V]
 	newTable    seqlockSlot[flatTable[K, V]]
 	newTableSeq seqlock[uint32, flatTable[K, V]] // seqlock of new table
 	process     int32                            // atomic
@@ -109,8 +110,9 @@ func (m *FlatMapOf[K, V]) init(
 
 	m.seed = uintptr(rand.Uint64())
 	m.shrinkOn = cfg.ShrinkEnabled
-	tableLen := calcTableLen(cfg.SizeHint)
-	m.tableSeq.WriteLocked(&m.table, newFlatTable[K, V](tableLen, runtime.GOMAXPROCS(0)))
+	newLen := calcTableLen(cfg.SizeHint)
+	newTable := newFlatTable[K, V](newLen, runtime.GOMAXPROCS(0))
+	m.tableSeq.WriteLocked(&m.table, newTable)
 }
 
 //go:noinline
@@ -195,6 +197,7 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 	var meta uint64
 	var cache [entriesPerBucket]EntryOf[K, V]
 	var cacheCount int
+	unsafeCache := toUnsafeSlice(&cache[0])
 	for i := 0; i <= table.mask; i++ {
 		b := table.buckets.At(i)
 	retry:
@@ -210,14 +213,14 @@ func (m *FlatMapOf[K, V]) Range(yield func(K, V) bool) {
 			cacheCount = 0
 			for marked := meta & metaMask; marked != 0; marked &= marked - 1 {
 				j := firstMarkedByteIndex(marked)
-				cache[cacheCount] = b.At(j).ReadUnfenced()
+				*unsafeCache.At(cacheCount) = b.At(j).ReadUnfenced()
 				cacheCount++
 			}
 			if !b.seq.EndRead(s1) {
 				continue retry
 			}
 			for j := range cacheCount {
-				kv := &cache[j]
+				kv := unsafeCache.At(j)
 				if !yield(kv.Key, kv.Value) {
 					return
 				}
@@ -623,7 +626,8 @@ func (m *FlatMapOf[K, V]) Clear() {
 	}
 
 	m.rebuild(mapRebuildBlockWritersHint, func() {
-		m.tableSeq.WriteLocked(&m.table, newFlatTable[K, V](minTableLen, runtime.GOMAXPROCS(0)))
+		newTable := newFlatTable[K, V](minTableLen, runtime.GOMAXPROCS(0))
+		m.tableSeq.WriteLocked(&m.table, newTable)
 	})
 }
 
@@ -723,6 +727,7 @@ func (m *FlatMapOf[K, V]) tryResize(hint mapRebuildHint, newLen int) bool {
 	overCpus := cpus * resizeOverPartition
 	_, chunks := calcParallelism(table.mask+1, minBucketsPerCPU, overCpus)
 	rs.chunks = int32(chunks)
+	rs.oldTable = *table
 	if newLen*int(unsafe.Sizeof(flatBucket[K, V]{})) < asyncThreshold || cpus <= 1 {
 		m.finalizeResize(newLen, rs, cpus)
 	} else {
@@ -736,20 +741,18 @@ func (m *FlatMapOf[K, V]) finalizeResize(
 	rs *flatRebuildState[K, V],
 	cpus int,
 ) {
-	rs.newTableSeq.WriteLocked(&rs.newTable, newFlatTable[K, V](newLen, cpus)) // Release rs
+	newTable := newFlatTable[K, V](newLen, cpus)
+	rs.newTableSeq.WriteLocked(&rs.newTable, newTable) // Release rs
 	m.helpCopyAndWait(rs)
 }
 
 //go:noinline
 func (m *FlatMapOf[K, V]) helpCopyAndWait(rs *flatRebuildState[K, V]) {
-	table := m.tableSeq.Read(&m.table)
 	newTable := rs.newTableSeq.Read(&rs.newTable) // Acquire rs
-	if newTable.buckets.ptr == table.buckets.ptr {
-		rs.wg.Wait()
-		return
-	}
-	oldLen := table.mask + 1
 	newLen := newTable.mask + 1
+	table := m.tableSeq.Read(&m.table)
+	oldLen := table.mask + 1
+	chunks := rs.chunks
 	// Determines the concurrent task range for destination buckets.
 	// We iterate based on the "Destination Constraint" to allow lock-free
 	// writes:
@@ -759,7 +762,6 @@ func (m *FlatMapOf[K, V]) helpCopyAndWait(rs *flatRebuildState[K, V]) {
 	// (srcIdx += baseLen) in the inner loop, a single goroutine exclusively
 	// owns the write operations for its assigned destination buckets.
 	baseLen := min(newLen, oldLen)
-	chunks := rs.chunks
 	chunkSz := (baseLen + int(chunks) - 1) / int(chunks)
 	for {
 		process := atomic.AddInt32(&rs.process, 1)
@@ -819,8 +821,7 @@ func (m *FlatMapOf[K, V]) copyBucket(
 							*destB.At(emptyIdx).Ptr() = *e
 							break
 						}
-						next := (*flatBucket[K, V])(destB.next)
-						if next == nil {
+						if meta&opNextMask == 0 {
 							destB.next = unsafe.Pointer(&flatBucket[K, V]{
 								meta: setByte(metaEmpty, h2v, 0),
 								entries: [entriesPerBucket]seqlockSlot[EntryOf[K, V]]{
@@ -830,7 +831,7 @@ func (m *FlatMapOf[K, V]) copyBucket(
 							destB.meta = meta | opNextMask
 							break
 						}
-						destB = next
+						destB = (*flatBucket[K, V])(destB.next)
 					}
 					copied++
 				}
