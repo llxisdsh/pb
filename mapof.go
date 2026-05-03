@@ -140,7 +140,9 @@ type mapOfTable struct {
 	size     unsafeSlice[counterStripe]
 	sizeMask int
 	// number of chunks and chunks size for resizing
-	chunks int
+	chunks    int
+	stripeCap int
+	growCap   int
 }
 
 // counterStripe represents a striped counter to reduce contention.
@@ -894,15 +896,15 @@ func (m *MapOf[K, V]) processEntry(
 			storeUint64(&b.meta, newMeta)
 			root.Unlock()
 		}
-		table.AddSize(idx, 1)
 
+		localSize := int(table.AddSize(idx, 1))
 		// Check if the table needs to grow
-		if loadPtr(&m.rs) == nil {
-			tableLen := table.mask + 1
-			size := table.SumSize()
-			const sizeHintFactor = float64(entriesPerBucket) * loadFactor
-			if size >= int(float64(tableLen)*sizeHintFactor) {
-				m.tryResize(mapGrowHint, tableLen<<1)
+		if localSize >= table.stripeCap {
+			if loadPtr(&m.rs) == nil {
+				size := table.SumSize()
+				if size >= table.growCap {
+					m.tryResize(mapGrowHint, (table.mask+1)<<1)
+				}
 			}
 		}
 
@@ -2810,20 +2812,24 @@ func newMapOfTable(tableLen, cpus int) *mapOfTable {
 	overCpus := cpus * resizeOverPartition
 	_, chunks := calcParallelism(tableLen, minBucketsPerCPU, overCpus)
 	sizeLen := calcSizeLen(tableLen, cpus)
+	const capFactor = float64(entriesPerBucket) * loadFactor
+	growCap := int(float64(tableLen) * capFactor)
 	return &mapOfTable{
-		buckets:  makeUnsafeSlice(make([]bucketOf, tableLen)),
-		mask:     tableLen - 1,
-		size:     makeUnsafeSlice(make([]counterStripe, sizeLen)),
-		sizeMask: sizeLen - 1,
-		chunks:   chunks,
+		buckets:   makeUnsafeSlice(make([]bucketOf, tableLen)),
+		mask:      tableLen - 1,
+		size:      makeUnsafeSlice(make([]counterStripe, sizeLen)),
+		sizeMask:  sizeLen - 1,
+		chunks:    chunks,
+		stripeCap: growCap >> bits.TrailingZeros32(uint32(sizeLen)),
+		growCap:   growCap,
 	}
 }
 
 // AddSize atomically adds delta to the size counter for the given bucket index.
 //
 //go:nosplit
-func (t *mapOfTable) AddSize(idx, delta int) {
-	atomic.AddUintptr(&t.size.At(t.sizeMask&idx).c, uintptr(delta))
+func (t *mapOfTable) AddSize(idx, delta int) uintptr {
+	return atomic.AddUintptr(&t.size.At(t.sizeMask&idx).c, uintptr(delta))
 }
 
 // SumSize calculates the total number of entries in the table
@@ -3051,7 +3057,7 @@ func markZeroBytes(w uint64) uint64 {
 //
 //go:nosplit
 func setByte(w uint64, b uint8, idx int) uint64 {
-	shift := idx << 3
+	shift := (idx & 7) << 3 // & 7: hints compiler to elide shift bounds checks
 	return (w &^ (0xff << shift)) | (uint64(b) << shift)
 }
 
@@ -3223,7 +3229,7 @@ func defaultHasher[K comparable, V any]() (
 //go:nosplit
 func mixUintptr(v uintptr) uintptr {
 	h := (v / uintptr(entriesPerBucket)) << 7
-	l := (v * hashPrime) & (slotMask - 1)
+	l := (v ^ (v >> 16)) & (slotMask - 1)
 	return h | l
 }
 

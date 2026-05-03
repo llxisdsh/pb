@@ -3,4 +3,6 @@
 package pb
 
 // hashPrime is the 64-bit Golden Ratio mixing constant.
+//
+//nolint:unused
 const hashPrime = 0x9E3779B185EBCA87

@@ -3,6 +3,7 @@
 package pb
 
 import (
+	"math/bits"
 	"math/rand/v2"
 	"runtime"
 	"sync"
@@ -472,14 +473,17 @@ func (m *FlatMapOf[K, V]) Process(
 				storeUint64(&b.meta, newMeta)
 				root.Unlock()
 			}
-			table.AddSize(idx, 1)
-			// Auto-grow check (parallel resize)
-			if loadPtr(&m.rs) == nil {
-				tableLen := table.mask + 1
-				size := table.SumSize()
-				const sizeHintFactor = float64(entriesPerBucket) * loadFactor
-				if size >= int(float64(tableLen)*sizeHintFactor) {
-					m.tryResize(mapGrowHint, tableLen<<1)
+			localSize := int(table.AddSize(idx, 1))
+			// Check if the table needs to grow
+			const capFactor = float64(entriesPerBucket) * loadFactor
+			tableLen := table.mask + 1
+			growCap := int(float64(tableLen) * capFactor)
+			stripeCap := growCap >> bits.TrailingZeros32(uint32(table.sizeMask+1))
+			if localSize >= stripeCap {
+				if loadPtr(&m.rs) == nil {
+					if table.SumSize() >= growCap {
+						m.tryResize(mapGrowHint, tableLen<<1)
+					}
 				}
 			}
 			return value, status
@@ -861,8 +865,8 @@ func newFlatTable[K comparable, V any](
 }
 
 //go:nosplit
-func (t *flatTable[K, V]) AddSize(idx, delta int) {
-	atomic.AddUintptr(&t.size.At(t.sizeMask&idx).c, uintptr(delta))
+func (t *flatTable[K, V]) AddSize(idx, delta int) uintptr {
+	return atomic.AddUintptr(&t.size.At(t.sizeMask&idx).c, uintptr(delta))
 }
 
 //go:nosplit
